@@ -1,0 +1,386 @@
+' ═══════════════════════════════════════════════════════════════
+' MainShell.vb — 메인 도킹 셸
+' ═══════════════════════════════════════════════════════════════
+' 불변 설계: 새 서브폼은 ShowDockForm() 호출 한 줄로 추가.
+' MainShell 코드를 수정할 필요 없음.
+' ═══════════════════════════════════════════════════════════════
+
+Imports System.Windows.Forms
+Imports [Shared]
+Imports WeifenLuo.WinFormsUI.Docking
+
+Public Class MainShell
+
+    ' ─── 도킹 폼 인스턴스 (싱글톤 관리) ───
+    Private ReadOnly _dockForms As New Dictionary(Of String, DockFormBase)(StringComparer.OrdinalIgnoreCase)
+
+    ' ─── 타이머 ───
+    Private WithEvents _clockTimer As Timer
+
+    ' ════════════════════════════════════════
+    ' 초기화
+    ' ════════════════════════════════════════
+
+    Protected Overrides Sub OnLoad(e As EventArgs)
+        MyBase.OnLoad(e)
+
+        ' UI 컨텍스트 설정 (EmitOnUI가 동작하려면 필수)
+        MessageBus.I.SetUIContext(System.Threading.SynchronizationContext.Current)
+
+        ' 시계 타이머
+        _clockTimer = New Timer()
+        _clockTimer.Interval = 1000
+        _clockTimer.Start()
+
+        ' Bus 구독 (상태바 업데이트)
+        MessageBus.I.On(Topics.SYS_SERVER_STATUS, AddressOf OnServerStatus)
+        MessageBus.I.On(Topics.SYS_AUTOTRADE, AddressOf OnAutoTradeStatus)
+
+        ' ── 기본 폼 배치 ──
+        ' 1) 로그 폼 (하단)
+        ShowDockForm(Of LogForm)(DockState.DockBottom)
+
+        ' 로그 시작 메시지
+        AppLogger.I.Info("═══════════════════════════════════════", "MainShell")
+        AppLogger.I.Info("  AutoTrading System 시작", "MainShell")
+        AppLogger.I.Info($"  시간: {DateTime.Now:yyyy-MM-dd HH:mm:ss}", "MainShell")
+        AppLogger.I.Info("═══════════════════════════════════════", "MainShell")
+
+        AppLogger.I.Info("MainShell 로드 완료. 도킹 패널 준비됨.", "MainShell")
+        AppLogger.I.Info("메뉴 [데이터 → 키움 로그인]으로 시작하세요.", "MainShell")
+    End Sub
+
+    ' ════════════════════════════════════════
+    ' 도킹 폼 관리 (핵심 메서드)
+    ' ════════════════════════════════════════
+
+    ''' <summary>
+    ''' 도킹 폼을 표시한다. 이미 있으면 활성화, 없으면 생성.
+    ''' 새 서브폼 추가 시 이 메서드 한 줄이면 충분.
+    ''' </summary>
+    Public Function ShowDockForm(Of T As {DockFormBase, New})(Optional state As DockState = DockState.Unknown) As T
+        Dim key = GetType(T).Name
+
+        ' 이미 존재하면 보이기 + 활성화
+        If _dockForms.ContainsKey(key) Then
+            Dim existing = DirectCast(_dockForms(key), T)
+            If existing.IsHidden Then
+                existing.Show(dockPanel)
+            End If
+            existing.Activate()
+            AppLogger.I.Debug($"폼 활성화: {key}", "Shell")
+            Return existing
+        End If
+
+        ' 새로 생성
+        Dim frm As New T()
+        Dim dockStateRet = If(state = DockState.Unknown, frm.DefaultDockState, state)
+        frm.Show(dockPanel, dockStateRet)
+        _dockForms(key) = frm
+        AppLogger.I.Debug($"폼 생성: {key} → {dockStateRet}", "Shell")
+        Return frm
+    End Function
+
+    ''' <summary>
+    ''' Document 영역에 고유 키로 폼을 추가 (차트 등 멀티 인스턴스용)
+    ''' </summary>
+    Public Function ShowDocumentForm(Of T As {DockFormBase, New})(uniqueKey As String, Optional setup As Action(Of T) = Nothing) As T
+        ' 이미 있으면 활성화
+        If _dockForms.ContainsKey(uniqueKey) Then
+            Dim existing = DirectCast(_dockForms(uniqueKey), T)
+            If existing.IsHidden Then existing.Show(dockPanel)
+            existing.Activate()
+            Return existing
+        End If
+
+        Dim frm As New T()
+        setup?.Invoke(frm)
+        frm.Show(dockPanel, DockState.Document)
+        _dockForms(uniqueKey) = frm
+        AppLogger.I.Info($"Document 폼 생성: {uniqueKey}", "Shell")
+        Return frm
+    End Function
+
+    ' ════════════════════════════════════════
+    ' 데이터소스 메뉴 핸들러
+    ' ════════════════════════════════════════
+
+    Private Sub mnuShowStockInfo_Click(sender As Object, e As EventArgs) Handles mnuShowStockInfo.Click
+        ShowDockForm(Of StockInfoForm)(DockState.DockLeft)
+    End Sub
+
+    Private Sub mnuSrcCondition_Click(sender As Object, e As EventArgs) Handles mnuSrcCondition.Click
+        ' 종목정보 폼 먼저 표시
+        ShowDockForm(Of StockInfoForm)(DockState.DockLeft)
+
+        Using dlg As New ConditionSelectDialog()
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                AppLogger.I.Info($"조건검색 실행: [{dlg.SelectedConditionIndex}] {dlg.SelectedConditionName}", "DataSource")
+
+                ' 조건검색 실행 → 결과 수신 → StockInfoManager에 추가
+                MessageBus.I.On(Topics.CONDITION_SEARCH_RESULT, AddressOf OnConditionSearchResult)
+                MessageBus.I.Emit(Topics.CONDITION_START,
+                                  "name", dlg.SelectedConditionName,
+                                  "index", dlg.SelectedConditionIndex)
+            End If
+        End Using
+    End Sub
+
+    Private Sub OnConditionSearchResult(m As Msg)
+        MessageBus.I.Off(Topics.CONDITION_SEARCH_RESULT, AddressOf OnConditionSearchResult)
+
+        If Not m.Bool("success") Then
+            AppLogger.I.Error($"조건검색 실패: {m.Str("message")}", "DataSource")
+            Return
+        End If
+
+        Dim codes = m.Arr(Of String)("codes")
+        Dim condName = m.Str("condName", "")
+
+        If codes Is Nothing OrElse codes.Length = 0 Then
+            AppLogger.I.Warn($"조건검색 결과: 종목 없음 ({condName})", "DataSource")
+            Return
+        End If
+
+        AppLogger.I.Info($"조건검색 결과: {codes.Length}종목 ({condName})", "DataSource")
+        StockInfoManager.I.AddStocks(codes, DataSourceType.조건검색, condName)
+    End Sub
+
+    Private Sub mnuSrcSector_Click(sender As Object, e As EventArgs) Handles mnuSrcSector.Click
+        ShowDockForm(Of StockInfoForm)(DockState.DockLeft)
+
+        Using dlg As New SectorSelectDialog(SectorSelectDialog.SectorMode.주도섹터)
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                AppLogger.I.Info($"주도섹터 선택: [{dlg.SelectedCode}] {dlg.SelectedName}", "DataSource")
+
+                MessageBus.I.On(Topics.SECTOR_STOCKS_RESULT, AddressOf OnSectorStocksResult)
+                MessageBus.I.Emit(Topics.SECTOR_STOCKS_REQUEST, "sectorCode", dlg.SelectedCode)
+            End If
+        End Using
+    End Sub
+
+    Private Sub OnSectorStocksResult(m As Msg)
+        MessageBus.I.Off(Topics.SECTOR_STOCKS_RESULT, AddressOf OnSectorStocksResult)
+
+        Dim rows = m.DictList("rows")
+        If rows Is Nothing OrElse rows.Count = 0 Then
+            AppLogger.I.Warn("섹터 종목 없음", "DataSource")
+            Return
+        End If
+
+        Dim codes = rows.Select(Function(r)
+                                    If r.ContainsKey("code") Then Return r("code")
+                                    Return ""
+                                End Function).Where(Function(c) c <> "").ToArray()
+
+        AppLogger.I.Info($"섹터 종목: {codes.Length}종목", "DataSource")
+        StockInfoManager.I.AddStocks(codes, DataSourceType.주도섹터)
+    End Sub
+
+    Private Sub mnuSrcProgramBuy_Click(sender As Object, e As EventArgs) Handles mnuSrcProgramBuy.Click
+        ShowDockForm(Of StockInfoForm)(DockState.DockLeft)
+        AppLogger.I.Info("프로그램순매수 상위 조회 요청", "DataSource")
+        ' TODO: 프로그램순매수 상위 종목 추출 로직
+        AppLogger.I.Warn("프로그램순매수 상위 — 추후 구현", "DataSource")
+    End Sub
+
+    Private Sub mnuSrcFavorite_Click(sender As Object, e As EventArgs) Handles mnuSrcFavorite.Click
+        ShowDockForm(Of StockInfoForm)(DockState.DockLeft)
+
+        Dim input = InputBox("관심종목 코드 입력 (세미콜론 구분):", "관심종목", "005930;035720;000660")
+        If String.IsNullOrWhiteSpace(input) Then Return
+
+        Dim codes = input.Split(";"c).Select(Function(c) c.Trim()).Where(Function(c) c <> "").ToArray()
+        AppLogger.I.Info($"관심종목 추가: {codes.Length}종목", "DataSource")
+        StockInfoManager.I.AddStocks(codes, DataSourceType.관심종목, "수동입력")
+    End Sub
+
+    Private Sub mnuSrcKospiFollow_Click(sender As Object, e As EventArgs) Handles mnuSrcKospiFollow.Click
+        ShowDockForm(Of StockInfoForm)(DockState.DockLeft)
+        AppLogger.I.Info("코스피 추종종목 조회 요청", "DataSource")
+        ' TODO: 코스피 시총 상위 N종목 자동 추출
+        AppLogger.I.Warn("코스피 추종 — 추후 구현", "DataSource")
+    End Sub
+
+    Private Sub mnuSrcKosdaqFollow_Click(sender As Object, e As EventArgs) Handles mnuSrcKosdaqFollow.Click
+        ShowDockForm(Of StockInfoForm)(DockState.DockLeft)
+        AppLogger.I.Info("코스닥 추종종목 조회 요청", "DataSource")
+        ' TODO: 코스닥 시총 상위 N종목 자동 추출
+        AppLogger.I.Warn("코스닥 추종 — 추후 구현", "DataSource")
+    End Sub
+
+    ' ════════════════════════════════════════
+    ' 메뉴 이벤트
+    ' ════════════════════════════════════════
+
+    Private Sub mnuExit_Click(sender As Object, e As EventArgs) Handles mnuExit.Click
+        Me.Close()
+    End Sub
+
+    Private Sub mnuNewChart_Click(sender As Object, e As EventArgs) Handles mnuNewChart.Click
+        Dim code = InputBox("종목코드 입력:", "새 차트", "005930")
+        If String.IsNullOrWhiteSpace(code) Then Return
+
+        code = code.Trim()
+        AppLogger.I.Info($"새 차트 요청: {code}", "Shell")
+
+        ' TODO: ChartForm 구현 후 연결
+        ' ShowDocumentForm(Of ChartForm)($"Chart_{code}", Sub(f) f.SetStock(code))
+        AppLogger.I.Warn($"ChartForm 미구현 — 차트 폼은 ★2 단계에서 추가됩니다.", "Shell")
+    End Sub
+
+    Private Sub mnuAutoTradeToggle_CheckedChanged(sender As Object, e As EventArgs) Handles mnuAutoTradeToggle.CheckedChanged
+        Dim enabled = mnuAutoTradeToggle.Checked
+        MessageBus.I.Emit(Topics.SYS_AUTOTRADE, "enabled", enabled)
+        AppLogger.I.Info($"자동매매 {If(enabled, "ON", "OFF")}", "Shell")
+    End Sub
+
+    Private Sub mnuLogin_Click(sender As Object, e As EventArgs) Handles mnuLogin.Click
+        AppLogger.I.Info("키움 로그인 요청...", "Shell")
+        MessageBus.I.Emit(Topics.AUTH_LOGIN_REQUEST)
+    End Sub
+
+    Private Sub mnuServerStatus_Click(sender As Object, e As EventArgs) Handles mnuServerStatus.Click
+        AppLogger.I.Info("서버 상태 조회 요청...", "Shell")
+        MessageBus.I.Emit(Topics.AUTH_STATUS_REQUEST)
+    End Sub
+
+    Private Sub mnuShowLog_Click(sender As Object, e As EventArgs) Handles mnuShowLog.Click
+        ShowDockForm(Of LogForm)(DockState.DockBottom)
+    End Sub
+
+    ' ── 창 메뉴: 나머지 서브폼들 (구현 시 연결) ──
+
+    Private Sub mnuShowCondition_Click(sender As Object, e As EventArgs) Handles mnuShowCondition.Click
+        ' TODO: ShowDockForm(Of ConditionForm)(DockState.DockLeft)
+        AppLogger.I.Warn("ConditionForm 미구현", "Shell")
+    End Sub
+
+    Private Sub mnuShowStockList_Click(sender As Object, e As EventArgs) Handles mnuShowStockList.Click
+        ' TODO: ShowDockForm(Of StockListForm)(DockState.DockLeft)
+        AppLogger.I.Warn("StockListForm 미구현", "Shell")
+    End Sub
+
+    Private Sub mnuShowBalance_Click(sender As Object, e As EventArgs) Handles mnuShowBalance.Click
+        ' TODO: ShowDockForm(Of BalanceForm)(DockState.DockBottom)
+        AppLogger.I.Warn("BalanceForm 미구현", "Shell")
+    End Sub
+
+    Private Sub mnuShowOrderLog_Click(sender As Object, e As EventArgs) Handles mnuShowOrderLog.Click
+        ' TODO: ShowDockForm(Of OrderLogForm)(DockState.DockBottom)
+        AppLogger.I.Warn("OrderLogForm 미구현", "Shell")
+    End Sub
+
+    Private Sub mnuShowOpenOrders_Click(sender As Object, e As EventArgs) Handles mnuShowOpenOrders.Click
+        ' TODO: ShowDockForm(Of OpenOrdersForm)(DockState.DockBottom)
+        AppLogger.I.Warn("OpenOrdersForm 미구현", "Shell")
+    End Sub
+
+    ' ════════════════════════════════════════
+    ' 상태바 업데이트
+    ' ════════════════════════════════════════
+
+    Private Sub OnServerStatus(m As Msg)
+        SafeUI(Sub()
+                   If m.Has("kiwoom") Then
+                       Dim connected = m.Bool("kiwoom")
+                       lblKiwoomStatus.Text = $"키움: {If(connected, "연결됨", "끊김")}"
+                       lblKiwoomStatus.ForeColor = If(connected, Drawing.Color.LimeGreen, Drawing.Color.Red)
+                   End If
+                   If m.Has("cybos") Then
+                       Dim connected = m.Bool("cybos")
+                       lblCybosStatus.Text = $"사이보스: {If(connected, "연결됨", "끊김")}"
+                       lblCybosStatus.ForeColor = If(connected, Drawing.Color.LimeGreen, Drawing.Color.Red)
+                   End If
+               End Sub)
+    End Sub
+
+    Private Sub OnAutoTradeStatus(m As Msg)
+        SafeUI(Sub()
+                   Dim enabled = m.Bool("enabled")
+                   lblAutoTrade.Text = $"자동매매: {If(enabled, "ON", "OFF")}"
+                   lblAutoTrade.ForeColor = If(enabled, Drawing.Color.LimeGreen, Drawing.Color.Gray)
+                   mnuAutoTradeToggle.Checked = enabled
+               End Sub)
+    End Sub
+
+    Private Sub _clockTimer_Tick(sender As Object, e As EventArgs) Handles _clockTimer.Tick
+        lblTime.Text = DateTime.Now.ToString("HH:mm:ss")
+    End Sub
+
+    ' ════════════════════════════════════════
+    ' Bus 이벤트 → 로그 연동 (로그인 결과 등)
+    ' ════════════════════════════════════════
+
+    Protected Overrides Sub OnShown(e As EventArgs)
+        MyBase.OnShown(e)
+
+        ' 로그인 결과 수신
+        MessageBus.I.On(Topics.AUTH_LOGIN_RESULT, Sub(m)
+                                                      If m.Bool("success") Then
+                                                          AppLogger.I.Info($"키움 로그인 성공. 계좌: {m.Str("accountNo")}", "Auth")
+                                                          SafeUI(Sub()
+                                                                     lblKiwoomStatus.Text = "키움: 연결됨"
+                                                                     lblKiwoomStatus.ForeColor = Drawing.Color.LimeGreen
+                                                                 End Sub)
+                                                      Else
+                                                          AppLogger.I.Error($"키움 로그인 실패: {m.Str("message")}", "Auth")
+                                                      End If
+                                                  End Sub)
+
+        ' 캔들 로드 결과
+        MessageBus.I.On(Topics.CANDLE_LOADED, Sub(m)
+                                                  Dim code = m.Str("code")
+                                                  Dim rows = m.DictList("rows")
+                                                  Dim cnt = If(rows IsNot Nothing, rows.Count, 0)
+                                                  AppLogger.I.Info($"캔들 수신: {code} → {cnt}건", "Data")
+                                              End Sub)
+
+        ' 실시간 체결 로그 (샘플링: 100번째마다)
+        Dim tickCounter As Integer = 0
+        MessageBus.I.On(Topics.TICK, Sub(m)
+                                         tickCounter += 1
+                                         If tickCounter Mod 100 = 1 Then
+                                             AppLogger.I.Debug($"틱 #{tickCounter}: {m.Str("code")} {m.Dbl("price"):N0}", "Realtime")
+                                         End If
+                                     End Sub)
+
+        ' 주문 체결
+        MessageBus.I.On(Topics.ORDER_EXECUTED, Sub(m)
+                                                   AppLogger.I.Trade($"체결: {m.Str("종목명")} {m.Str("주문구분")} {m.Str("체결량")}주 @{m.Str("체결가")}", "Order")
+                                               End Sub)
+
+        ' 조건검색 편입
+        MessageBus.I.On(Topics.CONDITION_HIT, Sub(m)
+                                                  AppLogger.I.Info($"조건편입: [{m.Str("condName")}] {m.Str("code")} ({m.Str("type")})", "Condition")
+                                              End Sub)
+    End Sub
+
+    ' ════════════════════════════════════════
+    ' 유틸
+    ' ════════════════════════════════════════
+
+    Private Sub SafeUI(action As Action)
+        If Me.InvokeRequired Then
+            Try
+                Me.BeginInvoke(action)
+            Catch
+            End Try
+        Else
+            action()
+        End If
+    End Sub
+
+    Protected Overrides Sub OnFormClosing(e As FormClosingEventArgs)
+        _clockTimer?.Stop()
+
+        ' 모든 도킹 폼 정리
+        For Each kv In _dockForms
+            Try : kv.Value.Dispose() : Catch : End Try
+        Next
+
+        AppLogger.I.Info("시스템 종료", "MainShell")
+        MyBase.OnFormClosing(e)
+    End Sub
+
+End Class

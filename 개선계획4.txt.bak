@@ -1,0 +1,1161 @@
+
+
+
+여러 종목의 실시간 자동매매의 가혹한 api호출, 전략에서의 상태조회 등의 가혹하고 엄격한 요구조건과 환경에서도 에러없이 조율하는 주문, 잔고, 매매를 담당하는 중앙 관리자가 필요하지 않나요? 이 관리자 없이 잔고가 얼마있는지 일일이 api조회요청을 하면 몇초내로 프로그램이 뻗어요
+맞습니다. 실전 자동매매에서 가장 치명적인 병목이 바로 이 부분입니다. 키움 API는 초당 5회 제한이 있고, 잔고/미체결을 매번 TR로 조회하면 수십 종목 동시 매매 시 즉시 연결이 끊깁니다. 중앙 매매관리자가 체잔(OnReceiveChejanData) 이벤트만으로 잔고/포지션을 실시간 추적하고, 주문은 큐잉하여 제한을 준수해야 합니다.
+
+중앙 매매관리자 설계
+핵심 원칙
+❌ 절대 하지 말 것:
+   - 잔고 확인을 위해 OPW00018 TR 반복 호출
+   - 미체결 확인을 위해 OPT10075 TR 반복 호출
+   - 전략마다 개별적으로 주문 API 호출
+   - 동시에 여러 주문을 병렬 발송
+
+✅ 반드시 이렇게:
+   - 체잔(Chejan) 이벤트로 잔고/미체결을 실시간 인메모리 관리
+   - 프로그램 시작 시 1회만 TR로 초기 동기화
+   - 모든 주문은 OrderQueue를 통해 직렬화
+   - 중복 주문/과다 주문을 관리자가 사전 차단
+추가 파일
+MainApp/
+├── Models/
+│   ├── StockInfoItem.vb          (기존)
+│   ├── PositionItem.vb           ← NEW: 보유종목 모델
+│   └── OrderItem.vb              ← NEW: 주문/미체결 모델
+│
+├── Managers/
+│   ├── StockInfoManager.vb       (기존)
+│   └── TradeManager.vb           ← NEW: 중앙 매매관리자
+Topics.vb — 매매관리 토픽 추가
+Copy    ' ═══ 매매관리자 (추가) ═══
+    Public Const TRADE_ORDER_REQUEST As String = "trade.order.request"
+    Public Const TRADE_ORDER_ACCEPTED As String = "trade.order.accepted"
+    Public Const TRADE_ORDER_REJECTED As String = "trade.order.rejected"
+    Public Const TRADE_ORDER_FILLED As String = "trade.order.filled"
+    Public Const TRADE_POSITION_UPDATED As String = "trade.position.updated"
+    Public Const TRADE_BALANCE_UPDATED As String = "trade.balance.updated"
+    Public Const TRADE_SYNC_REQUEST As String = "trade.sync.request"
+    Public Const TRADE_SYNC_COMPLETE As String = "trade.sync.complete"
+    Public Const TRADE_RISK_ALERT As String = "trade.risk.alert"
+MainApp/Models/PositionItem.vb
+Copy' ═══════════════════════════════════════════════════════════════
+' PositionItem.vb — 보유종목(포지션) 모델
+' ═══════════════════════════════════════════════════════════════
+' Chejan 잔고변경 이벤트로만 업데이트. TR 조회 없음.
+' ═══════════════════════════════════════════════════════════════
+
+Public Class PositionItem
+
+    Public Property Code As String = ""
+    Public Property Name As String = ""
+    Public Property Quantity As Integer = 0          ' 보유수량
+    Public Property AvailableQty As Integer = 0      ' 매도가능수량
+    Public Property AvgPrice As Integer = 0          ' 평균매입가
+    Public Property CurrentPrice As Integer = 0      ' 현재가 (실시간)
+    Public Property PurchaseAmount As Long = 0       ' 매입금액
+    Public Property EvalAmount As Long = 0           ' 평가금액
+    Public Property ProfitLoss As Long = 0           ' 평가손익
+    Public Property ProfitRate As Double = 0         ' 수익률 %
+    Public Property LastUpdated As DateTime = DateTime.Now
+
+    ''' <summary>현재가 기준 평가 재계산</summary>
+    Public Sub Recalculate()
+        If Quantity > 0 AndAlso AvgPrice > 0 Then
+            PurchaseAmount = CLng(AvgPrice) * Quantity
+            EvalAmount = CLng(CurrentPrice) * Quantity
+            ProfitLoss = EvalAmount - PurchaseAmount
+            ProfitRate = If(PurchaseAmount > 0, (CDbl(ProfitLoss) / PurchaseAmount) * 100, 0)
+        Else
+            PurchaseAmount = 0
+            EvalAmount = 0
+            ProfitLoss = 0
+            ProfitRate = 0
+        End If
+        LastUpdated = DateTime.Now
+    End Sub
+
+    ''' <summary>Chejan 잔고변경 이벤트로 업데이트</summary>
+    Public Sub UpdateFromChejan(m As Msg)
+        Dim nm = m.Str("종목명") : If nm <> "" Then Name = nm
+
+        Dim qty = SharedUtil.SafeInt(m.Str("보유수량"))
+        If qty >= 0 Then
+            Quantity = qty
+            AvailableQty = qty   ' 체결 직후에는 전량 매도 가능으로 간주
+        End If
+
+        Dim avg = SharedUtil.SafeInt(m.Str("매입가"))
+        If avg > 0 Then AvgPrice = avg
+
+        Dim cur = SharedUtil.SafeInt(m.Str("현재가"))
+        If cur > 0 Then CurrentPrice = cur
+
+        Dim pr = SharedUtil.SafeDouble(m.Str("손익율"), True)
+        ProfitRate = pr
+
+        Recalculate()
+    End Sub
+
+    ''' <summary>실시간 틱으로 현재가 업데이트</summary>
+    Public Sub UpdatePrice(price As Integer)
+        If price > 0 Then
+            CurrentPrice = price
+            Recalculate()
+        End If
+    End Sub
+
+    ''' <summary>초기 동기화용 (OPW00018 결과)</summary>
+    Public Sub UpdateFromTrSync(row As Dictionary(Of String, String))
+        If row Is Nothing Then Return
+
+        If row.ContainsKey("종목명") Then Name = row("종목명").Trim()
+
+        Dim q = 0 : If row.ContainsKey("보유수량") Then Integer.TryParse(row("보유수량").Trim(), q)
+        Quantity = q
+
+        Dim aq = 0 : If row.ContainsKey("매매가능수량") Then Integer.TryParse(row("매매가능수량").Trim(), aq)
+        AvailableQty = If(aq > 0, aq, q)
+
+        Dim ap = 0 : If row.ContainsKey("매입가") Then Integer.TryParse(row("매입가").Trim().Replace(",", ""), ap)
+        AvgPrice = Math.Abs(ap)
+
+        Dim cp = 0 : If row.ContainsKey("현재가") Then Integer.TryParse(row("현재가").Trim().Replace(",", ""), cp)
+        CurrentPrice = Math.Abs(cp)
+
+        Recalculate()
+    End Sub
+
+    Public Overrides Function ToString() As String
+        Return $"{Code} {Name} {Quantity}주 @{AvgPrice:N0} → {CurrentPrice:N0} ({ProfitRate:+0.00;-0.00}%)"
+    End Function
+
+End Class
+Copy
+MainApp/Models/OrderItem.vb
+Copy' ═══════════════════════════════════════════════════════════════
+' OrderItem.vb — 주문/미체결 모델
+' ═══════════════════════════════════════════════════════════════
+
+Public Enum OrderSide
+    Buy = 1
+    Sell = 2
+End Enum
+
+Public Enum OrderPriceType
+    Market = 0    ' 시장가
+    Limit = 1     ' 지정가
+End Enum
+
+Public Enum OrderStatus
+    Pending = 0       ' 큐에서 대기
+    Submitted = 1     ' API 전송됨
+    Accepted = 2      ' 접수됨
+    PartialFill = 3   ' 부분체결
+    Filled = 4        ' 전량체결
+    Cancelled = 5     ' 취소됨
+    Rejected = 6      ' 거부됨
+    Failed = 7        ' 전송 실패
+End Enum
+
+Public Class OrderItem
+
+    ' ─── 식별 ───
+    Public Property OrderId As String = ""              ' 내부 주문 ID (GUID)
+    Public Property KiwoomOrderNo As String = ""        ' 키움 주문번호 (접수 후 부여)
+    Public Property OrigOrderNo As String = ""          ' 원주문번호 (정정/취소 시)
+
+    ' ─── 종목 ───
+    Public Property Code As String = ""
+    Public Property Name As String = ""
+
+    ' ─── 주문 내용 ───
+    Public Property Side As OrderSide = OrderSide.Buy
+    Public Property PriceType As OrderPriceType = OrderPriceType.Market
+    Public Property OrderQty As Integer = 0             ' 주문수량
+    Public Property OrderPrice As Integer = 0           ' 주문가격 (시장가=0)
+    Public Property FilledQty As Integer = 0            ' 체결수량
+    Public Property FilledPrice As Integer = 0          ' 체결가격
+    Public Property UnfilledQty As Integer = 0          ' 미체결수량
+
+    ' ─── 상태 ───
+    Public Property Status As OrderStatus = OrderStatus.Pending
+    Public Property StatusText As String = ""
+    Public Property Message As String = ""
+
+    ' ─── 시간 ───
+    Public Property RequestTime As DateTime = DateTime.Now
+    Public Property AcceptTime As DateTime = DateTime.MinValue
+    Public Property FillTime As DateTime = DateTime.MinValue
+
+    ' ─── 전략 연결 ───
+    Public Property StrategyName As String = ""         ' 어떤 전략이 발주했는지
+    Public Property Reason As String = ""               ' 발주 사유
+
+    ''' <summary>Chejan 주문체결 이벤트로 업데이트</summary>
+    Public Sub UpdateFromChejan(m As Msg)
+        Dim kno = m.Str("주문번호") : If kno <> "" Then KiwoomOrderNo = kno
+        Dim nm = m.Str("종목명") : If nm <> "" Then Name = nm
+
+        StatusText = m.Str("주문상태")
+
+        Dim fq = SharedUtil.SafeInt(m.Str("체결량"))
+        If fq > 0 Then
+            FilledQty += fq
+            UnfilledQty = OrderQty - FilledQty
+        End If
+
+        Dim fp = SharedUtil.SafeInt(m.Str("체결가"))
+        If fp > 0 Then FilledPrice = fp
+
+        Dim uq = SharedUtil.SafeInt(m.Str("미체결수량"))
+        If uq >= 0 Then UnfilledQty = uq
+
+        ' 상태 판단
+        If StatusText.Contains("체결") AndAlso UnfilledQty = 0 Then
+            Status = OrderStatus.Filled
+            FillTime = DateTime.Now
+        ElseIf StatusText.Contains("체결") AndAlso UnfilledQty > 0 Then
+            Status = OrderStatus.PartialFill
+        ElseIf StatusText.Contains("접수") Then
+            Status = OrderStatus.Accepted
+            AcceptTime = DateTime.Now
+        ElseIf StatusText.Contains("확인") Then
+            Status = OrderStatus.Accepted
+        ElseIf StatusText.Contains("취소") Then
+            Status = OrderStatus.Cancelled
+        End If
+    End Sub
+
+    ''' <summary>초기 동기화용 (OPT10075 미체결)</summary>
+    Public Sub UpdateFromTrSync(row As Dictionary(Of String, String))
+        If row Is Nothing Then Return
+
+        If row.ContainsKey("종목코드") Then Code = SharedUtil.NormalizeCode(row("종목코드"))
+        If row.ContainsKey("종목명") Then Name = row("종목명").Trim()
+        If row.ContainsKey("주문번호") Then KiwoomOrderNo = row("주문번호").Trim()
+        If row.ContainsKey("주문상태") Then StatusText = row("주문상태").Trim()
+
+        Dim oq = 0 : If row.ContainsKey("주문수량") Then Integer.TryParse(row("주문수량").Trim(), oq)
+        OrderQty = oq
+
+        Dim op = 0 : If row.ContainsKey("주문가격") Then Integer.TryParse(row("주문가격").Trim().Replace(",", ""), op)
+        OrderPrice = Math.Abs(op)
+
+        Dim uq = 0 : If row.ContainsKey("미체결수량") Then Integer.TryParse(row("미체결수량").Trim(), uq)
+        UnfilledQty = uq
+
+        FilledQty = OrderQty - UnfilledQty
+
+        Dim gub = If(row.ContainsKey("주문구분"), row("주문구분").Trim(), "")
+        If gub.Contains("매수") Then Side = OrderSide.Buy
+        If gub.Contains("매도") Then Side = OrderSide.Sell
+
+        Status = OrderStatus.Accepted
+    End Sub
+
+    Public ReadOnly Property SideText As String
+        Get
+            Return If(Side = OrderSide.Buy, "매수", "매도")
+        End Get
+    End Property
+
+    Public ReadOnly Property IsDone As Boolean
+        Get
+            Return Status = OrderStatus.Filled OrElse Status = OrderStatus.Cancelled OrElse
+                   Status = OrderStatus.Rejected OrElse Status = OrderStatus.Failed
+        End Get
+    End Property
+
+    Public Overrides Function ToString() As String
+        Return $"[{Status}] {SideText} {Code} {Name} {OrderQty}주 @{OrderPrice:N0} 체결:{FilledQty}"
+    End Function
+
+End Class
+Copy
+MainApp/Managers/TradeManager.vb
+Copy' ═══════════════════════════════════════════════════════════════
+' TradeManager.vb — 중앙 매매관리자
+' ═══════════════════════════════════════════════════════════════
+'
+' ★ 핵심 설계 원칙:
+'   1) 잔고/미체결은 Chejan 이벤트로만 실시간 추적 (TR 조회 금지)
+'   2) 프로그램 시작 시 1회만 OPW00018 + OPT10075로 초기 동기화
+'   3) 모든 주문은 OrderQueue를 통해 직렬화 (초당 제한 준수)
+'   4) 중복 주문, 과다 주문, 잔고 초과를 사전 차단
+'   5) 전략은 TradeManager에게 "매매 의도"만 전달하면 됨
+'
+' ═══════════════════════════════════════════════════════════════
+
+Imports System.Collections.Concurrent
+Imports System.Threading
+
+Public Class TradeManager
+
+    ' ─── 싱글톤 ───
+    Private Shared _instance As TradeManager
+    Private Shared ReadOnly _singletonLock As New Object()
+
+    Public Shared ReadOnly Property I As TradeManager
+        Get
+            If _instance Is Nothing Then
+                SyncLock _singletonLock
+                    If _instance Is Nothing Then _instance = New TradeManager()
+                End SyncLock
+            End If
+            Return _instance
+        End Get
+    End Property
+
+    ' ═══════════════════════════════════════
+    ' 인메모리 상태 (TR 조회 없이 유지)
+    ' ═══════════════════════════════════════
+
+    ''' <summary>보유종목 (code → PositionItem)</summary>
+    Private ReadOnly _positions As New ConcurrentDictionary(Of String, PositionItem)(StringComparer.OrdinalIgnoreCase)
+
+    ''' <summary>활성 주문 (orderId → OrderItem). 완료된 주문은 _orderHistory로 이동.</summary>
+    Private ReadOnly _activeOrders As New ConcurrentDictionary(Of String, OrderItem)(StringComparer.OrdinalIgnoreCase)
+
+    ''' <summary>키움주문번호 → 내부 orderId 매핑</summary>
+    Private ReadOnly _kiwoomToOrderId As New ConcurrentDictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+
+    ''' <summary>완료된 주문 이력 (최근 500건)</summary>
+    Private ReadOnly _orderHistory As New ConcurrentQueue(Of OrderItem)()
+    Private Const MAX_HISTORY As Integer = 500
+
+    ''' <summary>예수금/주문가능금액 (초기 동기화 시 설정)</summary>
+    Public Property AvailableCash As Long = 0
+
+    ''' <summary>계좌번호</summary>
+    Public Property AccountNo As String = ""
+
+    ''' <summary>자동매매 활성화 여부</summary>
+    Public Property AutoTradeEnabled As Boolean = False
+
+    ''' <summary>초기 동기화 완료 여부</summary>
+    Public Property IsSynced As Boolean = False
+
+    ' ═══════════════════════════════════════
+    ' 리스크 설정
+    ' ═══════════════════════════════════════
+
+    ''' <summary>종목당 최대 보유 금액</summary>
+    Public Property MaxPositionAmount As Long = 5_000_000
+
+    ''' <summary>종목당 최대 보유 수량</summary>
+    Public Property MaxPositionQty As Integer = 1000
+
+    ''' <summary>전체 최대 보유 종목 수</summary>
+    Public Property MaxPositionCount As Integer = 20
+
+    ''' <summary>동일 종목 동시 미체결 주문 최대 수</summary>
+    Public Property MaxPendingOrdersPerStock As Integer = 2
+
+    ''' <summary>손절 비율 (%)</summary>
+    Public Property StopLossRate As Double = -3.0
+
+    ''' <summary>익절 비율 (%)</summary>
+    Public Property TakeProfitRate As Double = 5.0
+
+    ' ═══════════════════════════════════════
+    ' 주문 큐 (초당 제한 준수)
+    ' ═══════════════════════════════════════
+
+    Private ReadOnly _orderQueue As New ConcurrentQueue(Of OrderItem)()
+    Private ReadOnly _queueTimer As Timer
+    Private ReadOnly _recentSends As New List(Of Long)()
+    Private ReadOnly _queueLock As New Object()
+    Private Const MAX_ORDERS_PER_SEC As Integer = 3  ' 안전 마진 (제한 5 중 3만 사용)
+
+    ' ═══════════════════════════════════════
+    ' 초기화
+    ' ═══════════════════════════════════════
+
+    Private Sub New()
+        ' 주문 큐 타이머 (300ms 간격)
+        _queueTimer = New Timer(AddressOf ProcessOrderQueue, Nothing, 1000, 300)
+
+        ' ── Bus 구독 ──
+
+        ' 체잔 이벤트 (★ 가장 중요: API 호출 없이 잔고/주문 추적)
+        MessageBus.I.On(Topics.ORDER_EXECUTED, AddressOf OnChejanOrder)
+        MessageBus.I.On(Topics.ORDER_BALANCE_CHANGED, AddressOf OnChejanBalance)
+
+        ' 실시간 틱 → 보유종목 현재가 업데이트
+        MessageBus.I.On(Topics.TICK, AddressOf OnTick)
+
+        ' 주문 요청 (전략/플러그인 → TradeManager)
+        MessageBus.I.On(Topics.TRADE_ORDER_REQUEST, AddressOf OnOrderRequest)
+
+        ' 자동매매 토글
+        MessageBus.I.On(Topics.SYS_AUTOTRADE, AddressOf OnAutoTradeToggle)
+
+        ' 동기화 요청
+        MessageBus.I.On(Topics.TRADE_SYNC_REQUEST, AddressOf OnSyncRequest)
+
+        ' 로그인 결과 → 자동 동기화
+        MessageBus.I.On(Topics.AUTH_LOGIN_RESULT, AddressOf OnLoginResult)
+
+        AppLogger.I.Info("TradeManager 초기화 완료", "Trade")
+    End Sub
+
+    ' ═══════════════════════════════════════
+    ' 공개 조회 (인메모리, API 호출 없음!)
+    ' ═══════════════════════════════════════
+
+    ''' <summary>보유종목 전체 조회</summary>
+    Public Function GetPositions() As List(Of PositionItem)
+        Return _positions.Values.Where(Function(p) p.Quantity > 0).ToList()
+    End Function
+
+    ''' <summary>특정 종목 보유 조회</summary>
+    Public Function GetPosition(code As String) As PositionItem
+        Dim p As PositionItem = Nothing
+        _positions.TryGetValue(code, p)
+        Return p
+    End Function
+
+    ''' <summary>특정 종목 보유수량</summary>
+    Public Function GetHoldingQty(code As String) As Integer
+        Dim p = GetPosition(code)
+        Return If(p IsNot Nothing, p.Quantity, 0)
+    End Function
+
+    ''' <summary>특정 종목 매도가능수량</summary>
+    Public Function GetAvailableQty(code As String) As Integer
+        Dim p = GetPosition(code)
+        Return If(p IsNot Nothing, p.AvailableQty, 0)
+    End Function
+
+    ''' <summary>특정 종목 보유 여부</summary>
+    Public Function HasPosition(code As String) As Boolean
+        Return GetHoldingQty(code) > 0
+    End Function
+
+    ''' <summary>활성 주문 전체 조회</summary>
+    Public Function GetActiveOrders() As List(Of OrderItem)
+        Return _activeOrders.Values.ToList()
+    End Function
+
+    ''' <summary>특정 종목의 미체결 주문 수</summary>
+    Public Function GetPendingOrderCount(code As String) As Integer
+        Return _activeOrders.Values.Count(Function(o) o.Code = code AndAlso Not o.IsDone)
+    End Function
+
+    ''' <summary>전체 보유종목 수</summary>
+    Public ReadOnly Property PositionCount As Integer
+        Get
+            Return _positions.Values.Count(Function(p) p.Quantity > 0)
+        End Get
+    End Property
+
+    ''' <summary>전체 평가금액</summary>
+    Public ReadOnly Property TotalEvalAmount As Long
+        Get
+            Return _positions.Values.Where(Function(p) p.Quantity > 0).Sum(Function(p) p.EvalAmount)
+        End Get
+    End Property
+
+    ''' <summary>전체 평가손익</summary>
+    Public ReadOnly Property TotalProfitLoss As Long
+        Get
+            Return _positions.Values.Where(Function(p) p.Quantity > 0).Sum(Function(p) p.ProfitLoss)
+        End Get
+    End Property
+
+    ''' <summary>주문 이력</summary>
+    Public Function GetOrderHistory() As List(Of OrderItem)
+        Return _orderHistory.ToList()
+    End Function
+
+    ' ═══════════════════════════════════════
+    ' 주문 요청 (전략 → TradeManager)
+    ' ═══════════════════════════════════════
+
+    ''' <summary>
+    ''' 매매 의도를 전달. TradeManager가 검증 후 큐에 넣음.
+    ''' 전략은 이 메서드만 호출하면 됨.
+    ''' </summary>
+    Public Function RequestOrder(code As String,
+                                  side As OrderSide,
+                                  qty As Integer,
+                                  Optional price As Integer = 0,
+                                  Optional priceType As OrderPriceType = OrderPriceType.Market,
+                                  Optional strategyName As String = "",
+                                  Optional reason As String = "") As OrderItem
+
+        ' 1) 기본 검증
+        If Not IsSynced Then
+            AppLogger.I.Warn($"주문 거부: 초기 동기화 미완료 ({code})", "Trade")
+            Return Nothing
+        End If
+
+        If Not AutoTradeEnabled AndAlso strategyName <> "" Then
+            AppLogger.I.Warn($"주문 거부: 자동매매 OFF ({code} {side})", "Trade")
+            Return Nothing
+        End If
+
+        ' 2) 리스크 검증
+        Dim rejectReason = ValidateOrder(code, side, qty, price)
+        If rejectReason <> "" Then
+            AppLogger.I.Warn($"주문 거부: {rejectReason} ({code} {side} {qty}주)", "Trade")
+
+            Dim rm As New Msg(Topics.TRADE_ORDER_REJECTED)
+            rm("code") = code
+            rm("reason") = rejectReason
+            MessageBus.I.EmitOnUI(rm)
+            Return Nothing
+        End If
+
+        ' 3) 주문 생성
+        Dim order As New OrderItem()
+        order.OrderId = Guid.NewGuid().ToString("N")
+        order.Code = code
+        order.Side = side
+        order.PriceType = priceType
+        order.OrderQty = qty
+        order.OrderPrice = price
+        order.UnfilledQty = qty
+        order.StrategyName = strategyName
+        order.Reason = reason
+        order.Status = OrderStatus.Pending
+
+        ' 종목명 조회 (인메모리)
+        Dim si = StockInfoManager.I.GetItem(code)
+        If si IsNot Nothing Then order.Name = si.Name
+
+        ' 4) 큐에 등록
+        _activeOrders(order.OrderId) = order
+        _orderQueue.Enqueue(order)
+
+        AppLogger.I.Trade($"주문 접수: {order.SideText} {code} {order.Name} {qty}주 @{If(price = 0, "시장가", price.ToString("N0"))} [{strategyName}] {reason}", "Trade")
+
+        Dim am As New Msg(Topics.TRADE_ORDER_ACCEPTED)
+        am("orderId") = order.OrderId
+        am("code") = code
+        am("side") = side.ToString()
+        am("qty") = qty
+        MessageBus.I.EmitOnUI(am)
+
+        Return order
+    End Function
+
+    ' ─── Bus 경유 주문 요청 핸들러 ───
+
+    Private Sub OnOrderRequest(m As Msg)
+        Dim code = m.Str("code")
+        Dim sideStr = m.Str("side", "buy").ToLower()
+        Dim side = If(sideStr.Contains("sell"), OrderSide.Sell, OrderSide.Buy)
+        Dim qty = m.Int("qty", 1)
+        Dim price = m.Int("price", 0)
+        Dim priceType = If(price > 0, OrderPriceType.Limit, OrderPriceType.Market)
+        Dim strategy = m.Str("strategy", "")
+        Dim reason = m.Str("reason", "")
+
+        RequestOrder(code, side, qty, price, priceType, strategy, reason)
+    End Sub
+
+    ' ═══════════════════════════════════════
+    ' 리스크 검증
+    ' ═══════════════════════════════════════
+
+    Private Function ValidateOrder(code As String, side As OrderSide, qty As Integer, price As Integer) As String
+
+        ' 수량 검증
+        If qty <= 0 Then Return "수량이 0 이하"
+
+        ' 동일종목 미체결 주문 수 제한
+        If GetPendingOrderCount(code) >= MaxPendingOrdersPerStock Then
+            Return $"동일종목 미체결 {MaxPendingOrdersPerStock}건 초과"
+        End If
+
+        If side = OrderSide.Buy Then
+            ' ── 매수 검증 ──
+
+            ' 보유종목 수 제한
+            If Not HasPosition(code) AndAlso PositionCount >= MaxPositionCount Then
+                Return $"최대 보유종목 {MaxPositionCount}개 초과"
+            End If
+
+            ' 종목당 최대 금액
+            Dim estimatedPrice = If(price > 0, price, GetEstimatedPrice(code))
+            Dim estimatedAmount = CLng(estimatedPrice) * qty
+            Dim currentAmount = GetPosition(code)?.EvalAmount
+            If currentAmount.GetValueOrDefault() + estimatedAmount > MaxPositionAmount Then
+                Return $"종목당 최대금액 {MaxPositionAmount:N0}원 초과"
+            End If
+
+            ' 주문가능금액 (인메모리 추정)
+            If AvailableCash > 0 AndAlso estimatedAmount > AvailableCash Then
+                Return $"주문가능금액 부족 (필요:{estimatedAmount:N0}, 가용:{AvailableCash:N0})"
+            End If
+
+            ' 종목당 최대 수량
+            Dim currentQty = GetHoldingQty(code)
+            If currentQty + qty > MaxPositionQty Then
+                Return $"종목당 최대수량 {MaxPositionQty}주 초과"
+            End If
+
+        Else
+            ' ── 매도 검증 ──
+
+            Dim availQty = GetAvailableQty(code)
+            If availQty < qty Then
+                Return $"매도가능수량 부족 (가용:{availQty}, 요청:{qty})"
+            End If
+        End If
+
+        Return ""  ' 통과
+    End Function
+
+    Private Function GetEstimatedPrice(code As String) As Integer
+        ' 인메모리에서 현재가 추정
+        Dim pos = GetPosition(code)
+        If pos IsNot Nothing AndAlso pos.CurrentPrice > 0 Then Return pos.CurrentPrice
+
+        Dim si = StockInfoManager.I.GetItem(code)
+        If si IsNot Nothing AndAlso si.Price > 0 Then Return si.Price
+
+        Return 0
+    End Function
+
+    ' ═══════════════════════════════════════
+    ' 주문 큐 처리 (초당 제한 준수)
+    ' ═══════════════════════════════════════
+
+    Private Sub ProcessOrderQueue(state As Object)
+        SyncLock _queueLock
+            ' 1초 이전 기록 제거
+            Dim now = DateTime.Now.Ticks
+            Dim oneSecAgo = now - TimeSpan.TicksPerSecond
+            _recentSends.RemoveAll(Function(t) t < oneSecAgo)
+
+            ' 여유가 있으면 큐에서 꺼내서 전송
+            While _recentSends.Count < MAX_ORDERS_PER_SEC
+                Dim order As OrderItem = Nothing
+                If Not _orderQueue.TryDequeue(order) Then Exit While
+
+                _recentSends.Add(now)
+                SendOrderToApi(order)
+            End While
+        End SyncLock
+    End Sub
+
+    Private Sub SendOrderToApi(order As OrderItem)
+        Try
+            order.Status = OrderStatus.Submitted
+
+            Dim topic As String
+            If order.Side = OrderSide.Buy Then
+                topic = If(order.PriceType = OrderPriceType.Market, Topics.ORDER_BUY_MARKET, Topics.ORDER_BUY_LIMIT)
+            Else
+                topic = If(order.PriceType = OrderPriceType.Market, Topics.ORDER_SELL_MARKET, Topics.ORDER_SELL_LIMIT)
+            End If
+
+            ' 매도 시 가용수량 선차감 (중복 매도 방지)
+            If order.Side = OrderSide.Sell Then
+                Dim pos = GetPosition(order.Code)
+                If pos IsNot Nothing Then
+                    pos.AvailableQty = Math.Max(0, pos.AvailableQty - order.OrderQty)
+                End If
+            End If
+
+            ' 매수 시 가용현금 선차감
+            If order.Side = OrderSide.Buy Then
+                Dim est = CLng(If(order.OrderPrice > 0, order.OrderPrice, GetEstimatedPrice(order.Code))) * order.OrderQty
+                AvailableCash = Math.Max(0, AvailableCash - est)
+            End If
+
+            MessageBus.I.Emit(topic,
+                              "code", order.Code,
+                              "qty", order.OrderQty,
+                              "price", order.OrderPrice,
+                              "accountNo", AccountNo)
+
+            AppLogger.I.Trade($"주문 전송: {order.SideText} {order.Code} {order.OrderQty}주 → API", "Trade")
+
+        Catch ex As Exception
+            order.Status = OrderStatus.Failed
+            order.Message = ex.Message
+            AppLogger.I.Error($"주문 전송 실패: {order.Code} {ex.Message}", "Trade")
+            MoveToHistory(order)
+        End Try
+    End Sub
+
+    ' ═══════════════════════════════════════
+    ' Chejan 이벤트 처리 (★ 핵심: TR 없이 상태 추적)
+    ' ═══════════════════════════════════════
+
+    ''' <summary>주문체결 이벤트 (sGubun=0)</summary>
+    Private Sub OnChejanOrder(m As Msg)
+        Dim kiwoomNo = m.Str("주문번호")
+        Dim code = m.Str("종목코드")
+        If String.IsNullOrEmpty(code) Then code = SharedUtil.NormalizeCode(m.Str("종목코드"))
+
+        ' 내부 주문 찾기
+        Dim orderId As String = ""
+        Dim order As OrderItem = Nothing
+
+        If kiwoomNo <> "" AndAlso _kiwoomToOrderId.TryGetValue(kiwoomNo, orderId) Then
+            _activeOrders.TryGetValue(orderId, order)
+        End If
+
+        ' 내부 주문이 없으면 (외부 HTS에서 발주한 주문 등) 추적용으로 생성
+        If order Is Nothing AndAlso kiwoomNo <> "" Then
+            order = _activeOrders.Values.FirstOrDefault(Function(o) o.Code = code AndAlso o.Status = OrderStatus.Submitted AndAlso o.KiwoomOrderNo = "")
+            If order IsNot Nothing Then
+                order.KiwoomOrderNo = kiwoomNo
+                _kiwoomToOrderId(kiwoomNo) = order.OrderId
+            Else
+                ' 외부 주문 → 추적 등록
+                order = New OrderItem()
+                order.OrderId = $"EXT_{kiwoomNo}"
+                order.KiwoomOrderNo = kiwoomNo
+                order.Code = code
+                order.StrategyName = "외부"
+                _activeOrders(order.OrderId) = order
+                _kiwoomToOrderId(kiwoomNo) = order.OrderId
+            End If
+        End If
+
+        If order IsNot Nothing Then
+            order.UpdateFromChejan(m)
+
+            AppLogger.I.Trade($"체결: {order}", "Trade")
+
+            ' 완료된 주문 → 이력으로 이동
+            If order.IsDone Then
+                MoveToHistory(order)
+            End If
+
+            ' UI 알림
+            Dim fm As New Msg(Topics.TRADE_ORDER_FILLED)
+            fm("orderId") = order.OrderId
+            fm("code") = order.Code
+            fm("side") = order.SideText
+            fm("filledQty") = order.FilledQty
+            fm("filledPrice") = order.FilledPrice
+            fm("status") = order.Status.ToString()
+            MessageBus.I.EmitOnUI(fm)
+        End If
+    End Sub
+
+    ''' <summary>잔고변경 이벤트 (sGubun=1)</summary>
+    Private Sub OnChejanBalance(m As Msg)
+        Dim code = SharedUtil.NormalizeCode(m.Str("종목코드"))
+        If String.IsNullOrEmpty(code) Then Return
+
+        Dim pos = _positions.GetOrAdd(code, Function(k)
+                                                  Dim p As New PositionItem()
+                                                  p.Code = k
+                                                  Return p
+                                              End Function)
+
+        pos.UpdateFromChejan(m)
+
+        ' 수량 0 → 제거
+        If pos.Quantity <= 0 Then
+            _positions.TryRemove(code, Nothing)
+            AppLogger.I.Trade($"포지션 청산: {code} {pos.Name}", "Trade")
+        Else
+            AppLogger.I.Trade($"잔고 변경: {pos}", "Trade")
+        End If
+
+        ' UI 알림
+        Dim pm As New Msg(Topics.TRADE_POSITION_UPDATED)
+        pm("code") = code
+        pm("name") = pos.Name
+        pm("qty") = pos.Quantity
+        pm("avgPrice") = pos.AvgPrice
+        pm("currentPrice") = pos.CurrentPrice
+        pm("profitRate") = pos.ProfitRate
+        MessageBus.I.EmitOnUI(pm)
+
+        ' 전체 잔고 알림
+        Dim bm As New Msg(Topics.TRADE_BALANCE_UPDATED)
+        bm("positionCount") = PositionCount
+        bm("totalEval") = TotalEvalAmount
+        bm("totalPnl") = TotalProfitLoss
+        bm("cash") = AvailableCash
+        MessageBus.I.EmitOnUI(bm)
+    End Sub
+
+    ' ═══════════════════════════════════════
+    ' 실시간 틱 → 보유종목 현재가 업데이트
+    ' ═══════════════════════════════════════
+
+    Private _lastStopLossCheck As DateTime = DateTime.MinValue
+
+    Private Sub OnTick(m As Msg)
+        Dim code = m.Str("code")
+        If String.IsNullOrEmpty(code) Then Return
+
+        Dim pos As PositionItem = Nothing
+        If Not _positions.TryGetValue(code, pos) Then Return
+        If pos.Quantity <= 0 Then Return
+
+        Dim price = CInt(m.Dbl("price"))
+        If price <= 0 Then Return
+
+        pos.UpdatePrice(price)
+
+        ' ── 손절/익절 체크 (500ms 간격) ──
+        Dim now = DateTime.Now
+        If (now - _lastStopLossCheck).TotalMilliseconds < 500 Then Return
+        _lastStopLossCheck = now
+
+        If AutoTradeEnabled Then
+            CheckStopLossTakeProfit(pos)
+        End If
+    End Sub
+
+    Private Sub CheckStopLossTakeProfit(pos As PositionItem)
+        If pos.ProfitRate <= StopLossRate Then
+            ' 손절
+            AppLogger.I.Trade($"★ 손절 발동: {pos.Code} {pos.Name} ({pos.ProfitRate:0.00}% ≤ {StopLossRate}%)", "Trade")
+            RequestOrder(pos.Code, OrderSide.Sell, pos.AvailableQty,
+                         priceType:=OrderPriceType.Market,
+                         strategyName:="StopLoss",
+                         reason:=$"손절 {pos.ProfitRate:0.00}%")
+
+            Dim rm As New Msg(Topics.TRADE_RISK_ALERT)
+            rm("type") = "STOPLOSS"
+            rm("code") = pos.Code
+            rm("rate") = pos.ProfitRate
+            MessageBus.I.EmitOnUI(rm)
+
+        ElseIf pos.ProfitRate >= TakeProfitRate Then
+            ' 익절
+            AppLogger.I.Trade($"★ 익절 발동: {pos.Code} {pos.Name} ({pos.ProfitRate:0.00}% ≥ {TakeProfitRate}%)", "Trade")
+            RequestOrder(pos.Code, OrderSide.Sell, pos.AvailableQty,
+                         priceType:=OrderPriceType.Market,
+                         strategyName:="TakeProfit",
+                         reason:=$"익절 {pos.ProfitRate:0.00}%")
+
+            Dim rm As New Msg(Topics.TRADE_RISK_ALERT)
+            rm("type") = "TAKEPROFIT"
+            rm("code") = pos.Code
+            rm("rate") = pos.ProfitRate
+            MessageBus.I.EmitOnUI(rm)
+        End If
+    End Sub
+
+    ' ═══════════════════════════════════════
+    ' 초기 동기화 (프로그램 시작 시 1회만)
+    ' ═══════════════════════════════════════
+
+    Private Sub OnLoginResult(m As Msg)
+        If m.Bool("success") Then
+            AccountNo = m.Str("accountNo", "")
+            If AccountNo <> "" Then
+                AppLogger.I.Info($"로그인 감지. 계좌: {AccountNo}. 초기 동기화 시작...", "Trade")
+                StartSync()
+            End If
+        End If
+    End Sub
+
+    Private Sub OnSyncRequest(m As Msg)
+        StartSync()
+    End Sub
+
+    Public Sub StartSync()
+        If String.IsNullOrEmpty(AccountNo) Then
+            AppLogger.I.Warn("동기화 불가: 계좌번호 없음", "Trade")
+            Return
+        End If
+
+        AppLogger.I.Info("═══ 초기 동기화 시작 ═══", "Trade")
+
+        ' 1) 잔고 조회 (OPW00018) — 1회만
+        MessageBus.I.On(Topics.ACCOUNT_BALANCE_RESULT, AddressOf OnSyncBalanceResult)
+        MessageBus.I.Emit(Topics.ACCOUNT_BALANCE_REQUEST,
+                          "accountNo", AccountNo, "pass", "", "media", "00", "query", "2")
+    End Sub
+
+    Private Sub OnSyncBalanceResult(m As Msg)
+        MessageBus.I.Off(Topics.ACCOUNT_BALANCE_RESULT, AddressOf OnSyncBalanceResult)
+
+        If Not m.Bool("success") Then
+            AppLogger.I.Error($"잔고 동기화 실패: {m.Str("message")}", "Trade")
+            Return
+        End If
+
+        ' Summary
+        Dim summary = TryCast(m("summary"), Dictionary(Of String, String))
+        If summary IsNot Nothing Then
+            Dim cash As Long = 0
+            If summary.ContainsKey("추정예탁자산") Then Long.TryParse(summary("추정예탁자산").Trim().Replace(",", ""), cash)
+            AvailableCash = Math.Abs(cash)
+            AppLogger.I.Info($"추정예탁자산: {AvailableCash:N0}원", "Trade")
+        End If
+
+        ' Holdings
+        Dim items = TryCast(m("items"), List(Of Dictionary(Of String, String)))
+        If items IsNot Nothing Then
+            For Each row In items
+                Dim code = SharedUtil.NormalizeCode(If(row.ContainsKey("종목코드"), row("종목코드"), ""))
+                If String.IsNullOrEmpty(code) Then Continue For
+
+                Dim pos = _positions.GetOrAdd(code, Function(k)
+                                                          Dim p As New PositionItem()
+                                                          p.Code = k
+                                                          Return p
+                                                      End Function)
+                pos.UpdateFromTrSync(row)
+
+                If pos.Quantity <= 0 Then
+                    _positions.TryRemove(code, Nothing)
+                Else
+                    AppLogger.I.Info($"  보유: {pos}", "Trade")
+                End If
+            Next
+        End If
+
+        AppLogger.I.Info($"잔고 동기화 완료: {PositionCount}종목 보유", "Trade")
+
+        ' 2) 미체결 조회 (OPT10075) — 1회만
+        MessageBus.I.On(Topics.ACCOUNT_OPEN_ORDERS_RESULT, AddressOf OnSyncOpenOrdersResult)
+        MessageBus.I.Emit(Topics.ACCOUNT_OPEN_ORDERS_REQUEST,
+                          "accountNo", AccountNo, "pass", "", "media", "00")
+    End Sub
+
+    Private Sub OnSyncOpenOrdersResult(m As Msg)
+        MessageBus.I.Off(Topics.ACCOUNT_OPEN_ORDERS_RESULT, AddressOf OnSyncOpenOrdersResult)
+
+        If Not m.Bool("success") Then
+            AppLogger.I.Error($"미체결 동기화 실패: {m.Str("message")}", "Trade")
+            ' 미체결 실패해도 동기화 완료 처리
+            FinishSync()
+            Return
+        End If
+
+        Dim items = TryCast(m("items"), List(Of Dictionary(Of String, String)))
+        If items IsNot Nothing Then
+            For Each row In items
+                Dim order As New OrderItem()
+                order.OrderId = $"SYNC_{Guid.NewGuid():N}"
+                order.UpdateFromTrSync(row)
+
+                If order.Code <> "" AndAlso order.UnfilledQty > 0 Then
+                    _activeOrders(order.OrderId) = order
+                    If order.KiwoomOrderNo <> "" Then
+                        _kiwoomToOrderId(order.KiwoomOrderNo) = order.OrderId
+                    End If
+                    AppLogger.I.Info($"  미체결: {order}", "Trade")
+                End If
+            Next
+        End If
+
+        AppLogger.I.Info($"미체결 동기화 완료: {_activeOrders.Count}건", "Trade")
+        FinishSync()
+    End Sub
+
+    Private Sub FinishSync()
+        IsSynced = True
+        AppLogger.I.Info("═══ 초기 동기화 완료 ═══", "Trade")
+        AppLogger.I.Info($"  보유종목: {PositionCount}개", "Trade")
+        AppLogger.I.Info($"  미체결: {_activeOrders.Count}건", "Trade")
+        AppLogger.I.Info($"  가용현금: {AvailableCash:N0}원", "Trade")
+        AppLogger.I.Info("  ▶ 이후 잔고/주문은 Chejan 이벤트로만 추적 (TR 조회 없음)", "Trade")
+
+        ' 보유종목 실시간 구독
+        If PositionCount > 0 Then
+            Dim codes = String.Join(";", _positions.Keys)
+            MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", codes)
+            AppLogger.I.Info($"  보유종목 실시간 구독: {codes}", "Trade")
+        End If
+
+        Dim sm As New Msg(Topics.TRADE_SYNC_COMPLETE)
+        sm("positionCount") = PositionCount
+        sm("orderCount") = _activeOrders.Count
+        sm("cash") = AvailableCash
+        MessageBus.I.EmitOnUI(sm)
+    End Sub
+
+    ' ═══════════════════════════════════════
+    ' 자동매매 토글
+    ' ═══════════════════════════════════════
+
+    Private Sub OnAutoTradeToggle(m As Msg)
+        AutoTradeEnabled = m.Bool("enabled")
+        AppLogger.I.Info($"자동매매 {If(AutoTradeEnabled, "ON", "OFF")}", "Trade")
+    End Sub
+
+    ' ═══════════════════════════════════════
+    ' 편의 메서드 (전략에서 직접 호출 가능)
+    ' ═══════════════════════════════════════
+
+    ''' <summary>시장가 매수</summary>
+    Public Function BuyMarket(code As String, qty As Integer,
+                               Optional strategy As String = "",
+                               Optional reason As String = "") As OrderItem
+        Return RequestOrder(code, OrderSide.Buy, qty, 0, OrderPriceType.Market, strategy, reason)
+    End Function
+
+    ''' <summary>지정가 매수</summary>
+    Public Function BuyLimit(code As String, qty As Integer, price As Integer,
+                              Optional strategy As String = "",
+                              Optional reason As String = "") As OrderItem
+        Return RequestOrder(code, OrderSide.Buy, qty, price, OrderPriceType.Limit, strategy, reason)
+    End Function
+
+    ''' <summary>시장가 매도</summary>
+    Public Function SellMarket(code As String, qty As Integer,
+                                Optional strategy As String = "",
+                                Optional reason As String = "") As OrderItem
+        Return RequestOrder(code, OrderSide.Sell, qty, 0, OrderPriceType.Market, strategy, reason)
+    End Function
+
+    ''' <summary>전량 시장가 매도</summary>
+    Public Function SellAll(code As String,
+                             Optional strategy As String = "",
+                             Optional reason As String = "") As OrderItem
+        Dim qty = GetAvailableQty(code)
+        If qty <= 0 Then Return Nothing
+        Return SellMarket(code, qty, strategy, reason)
+    End Function
+
+    ' ═══════════════════════════════════════
+    ' 내부 유틸
+    ' ═══════════════════════════════════════
+
+    Private Sub MoveToHistory(order As OrderItem)
+        _activeOrders.TryRemove(order.OrderId, Nothing)
+        _orderHistory.Enqueue(order)
+
+        ' 이력 크기 제한
+        While _orderHistory.Count > MAX_HISTORY
+            Dim dummy As OrderItem = Nothing
+            _orderHistory.TryDequeue(dummy)
+        End While
+    End Sub
+
+End Class
+Copy
+Program.vb — TradeManager 추가
+CopyModule Program
+    Sub Main()
+        Application.EnableVisualStyles()
+        Application.SetCompatibleTextRenderingDefault(False)
+
+        AppLogger.I.Info("═══════════════════════════════════════")
+        AppLogger.I.Info("  프로세스 시작")
+        AppLogger.I.Info("═══════════════════════════════════════")
+
+        ' ── 1) 브릿지 ──
+        Dim kiwoomBridge As New KiwoomBridge()
+        kiwoomBridge.Start()
+        AppLogger.I.Info("KiwoomBridge 시작됨", "Boot")
+
+        Dim cybosBridge As New CybosBridge()
+        cybosBridge.Start()
+        AppLogger.I.Info("CybosBridge 시작됨", "Boot")
+
+        ' ── 2) 중앙 관리자 (싱글톤) ──
+        Dim stockMgr = StockInfoManager.I
+        AppLogger.I.Info("StockInfoManager 준비", "Boot")
+
+        Dim tradeMgr = TradeManager.I
+        AppLogger.I.Info("TradeManager 준비", "Boot")
+
+        ' ── 3) 플러그인 (★3~5 단계) ──
+        ' Dim ma As New MA_Indicator()
+        ' Dim strategy As New GoldenCross_Strategy()
+
+        ' ── 4) 메인 셸 ──
+        AppLogger.I.Info("MainShell 실행...", "Boot")
+        Dim shell As New MainShell()
+        Application.Run(shell)
+    End Sub
+End Module
+Copy
+전략에서의 사용 예시
+전략 플러그인이 TradeManager를 사용하는 방법입니다. API를 직접 호출하는 코드가 단 한 줄도 없습니다:
+
+Copy' GoldenCross_Strategy.vb (★4 단계에서 구현)
+
+Public Class GoldenCross_Strategy
+
+    Sub New()
+        MessageBus.I.On(Topics.INDICATOR_RESULT, AddressOf OnIndicator)
+
+        ' DataReady일 때만 작동
+        MessageBus.I.On(Topics.STOCKINFO_DATA_READY, Sub(m)
+            AppLogger.I.Info("GoldenCross 전략 활성화", "Strategy")
+        End Sub)
+    End Sub
+
+    Private Sub OnIndicator(m As Msg)
+        Dim code = m.Str("code")
+        Dim name = m.Str("name")
+
+        ' ... MA5, MA20 교차 감지 로직 ...
+
+        If 골든크로스_감지 Then
+
+            ' ★ 잔고 확인 = 인메모리 (API 호출 0회)
+            If TradeManager.I.HasPosition(code) Then Return
+
+            ' ★ 매수 = TradeManager가 검증 + 큐잉 (API 호출은 TM이 제한 내에서)
+            TradeManager.I.BuyMarket(code, 10,
+                strategy:="GoldenCross",
+                reason:="MA5↑MA20")
+
+        ElseIf 데드크로스_감지 Then
+
+            ' ★ 전량 매도
+            TradeManager.I.SellAll(code,
+                strategy:="GoldenCross",
+                reason:="MA5↓MA20")
+        End If
+    End Sub
+End Class
+Copy
+데이터 흐름 전체
+[키움 서버]                       [TradeManager]                    [전략]
+    │                                  │                              │
+    │  Chejan(체결)                     │                              │
+    │ ─────────────────────────────→   │                              │
+    │                              주문상태 업데이트                    │
+    │                              _activeOrders 갱신                  │
+    │                              UI 알림 발행                        │
+    │                                  │                              │
+    │  Chejan(잔고)                     │                              │
+    │ ─────────────────────────────→   │                              │
+    │                              포지션 업데이트                      │
+    │                              _positions 갱신                     │
+    │                              손절/익절 체크                       │
+    │                              UI 알림 발행                        │
+    │                                  │                              │
+    │                                  │    indicator.result           │
+    │                                  │ ←─────────────────────────── │
+    │                                  │                              │
+    │                                  │  HasPosition? (인메모리 0ms)  │
+    │                                  │  ← 즉시 응답 ──────────────→ │
+    │                                  │                              │
+    │                                  │  BuyMarket() 요청             │
+    │                                  │ ←──────────────────────────  │
+    │                              리스크 검증                         │
+    │                              큐 등록                             │
+    │                                  │                              │
+    │  (300ms 후 큐에서 발송)            │                              │
+    │ ←────────────────────────────    │                              │
+    │  SendOrder                       │                              │
+
+★ 포인트: 전략→TradeManager 구간에서 API 호출 = 0회
+          잔고 확인 = 인메모리 Dictionary 조회 (나노초)
+          주문 = 큐에 넣기만 함 (마이크로초)
+          실제 API 호출은 TradeManager 큐 타이머가 초당 3회 이내로 제한
+파일 현황 업데이트
+이번에 추가된 파일 (3파일 + Topics 추가):
+
+  ✅ Models/PositionItem.vb         보유종목 모델
+  ✅ Models/OrderItem.vb            주문/미체결 모델
+  ✅ Managers/TradeManager.vb       중앙 매매관리자
+
+누적 총계: 37파일
+  불변 인프라:     21파일  (Shared + Server + ClientLib + Bridge)
+  셸/UI:           7파일  (AppLogger, DockFormBase, MainShell, LogForm, Program)
+  종목정보:        6파일  (StockInfoItem, StockInfoManager, StockInfoForm, 다이얼로그)
+  매매관리:        3파일  (PositionItem, OrderItem, TradeManager)    ← NEW
