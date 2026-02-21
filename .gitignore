@@ -13,6 +13,15 @@ packages/
 
 # 개선계획 파일 제외
 개선계획*.txt
+개선계획*.txt.bak
+
+# Build logs
+*.log
+
+# Backup files
+*.bak
+*.tmp
+*.Backup.tmp
 
 # OS files
 Thumbs.db
