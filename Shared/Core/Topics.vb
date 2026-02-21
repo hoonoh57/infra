@@ -149,5 +149,15 @@ Public Class Topics
     Public Const STOCKINFO_DATA_READY As String = "stockinfo.data.ready"
     Public Const STOCKINFO_CANDLE_PROGRESS As String = "stockinfo.candle.progress"
     Public Const STOCKINFO_FILTER_APPLIED As String = "stockinfo.filter.applied"
+    ' ═══ 매매관리자 ═══
+    Public Const TRADE_ORDER_REQUEST As String = "trade.order.request"
+    Public Const TRADE_ORDER_ACCEPTED As String = "trade.order.accepted"
+    Public Const TRADE_ORDER_REJECTED As String = "trade.order.rejected"
+    Public Const TRADE_ORDER_FILLED As String = "trade.order.filled"
+    Public Const TRADE_POSITION_UPDATED As String = "trade.position.updated"
+    Public Const TRADE_BALANCE_UPDATED As String = "trade.balance.updated"
+    Public Const TRADE_SYNC_REQUEST As String = "trade.sync.request"
+    Public Const TRADE_SYNC_COMPLETE As String = "trade.sync.complete"
+    Public Const TRADE_RISK_ALERT As String = "trade.risk.alert"
 
 End Class

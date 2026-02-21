@@ -235,6 +235,82 @@ Public Class MainShell
         AppLogger.I.Info($"자동매매 {If(enabled, "ON", "OFF")}", "Shell")
     End Sub
 
+    ' ════════════════════════════════════════
+    ' TradeManager 가혹 테스트 메뉴
+    ' ════════════════════════════════════════
+
+    Private Sub RunTestAsync(testAction As Action(Of TradeManagerTest))
+        Threading.ThreadPool.QueueUserWorkItem(Sub()
+                                                   Try
+                                                       Dim tester As New TradeManagerTest()
+                                                       testAction(tester)
+                                                   Catch ex As Exception
+                                                       AppLogger.I.Error($"테스트 예외: {ex.Message}", "TMTest")
+                                                   End Try
+                                               End Sub)
+    End Sub
+
+    Private Sub mnuTestAll_Click(sender As Object, e As EventArgs) Handles mnuTestAll.Click
+        RunTestAsync(Sub(t) t.RunAllTests())
+    End Sub
+
+    Private Sub mnuTestSync_Click(sender As Object, e As EventArgs) Handles mnuTestSync.Click
+        RunTestAsync(Sub(t)
+                         t.Test01_Initialization()
+                         t.Test02_SyncSimulation()
+                     End Sub)
+    End Sub
+
+    Private Sub mnuTestOrder_Click(sender As Object, e As EventArgs) Handles mnuTestOrder.Click
+        RunTestAsync(Sub(t)
+                         t.Test02_SyncSimulation()
+                         t.Test03_OrderValidation()
+                         t.Test04_OrderAndFill()
+                     End Sub)
+    End Sub
+
+    Private Sub mnuTestPartialFill_Click(sender As Object, e As EventArgs) Handles mnuTestPartialFill.Click
+        RunTestAsync(Sub(t)
+                         t.Test02_SyncSimulation()
+                         t.Test05_PartialFill()
+                     End Sub)
+    End Sub
+
+    Private Sub mnuTestBalance_Click(sender As Object, e As EventArgs) Handles mnuTestBalance.Click
+        RunTestAsync(Sub(t)
+                         t.Test02_SyncSimulation()
+                         t.Test06_BalanceChange()
+                     End Sub)
+    End Sub
+
+    Private Sub mnuTestMulti_Click(sender As Object, e As EventArgs) Handles mnuTestMulti.Click
+        RunTestAsync(Sub(t)
+                         t.Test02_SyncSimulation()
+                         t.Test07_MultiStockSimultaneous()
+                     End Sub)
+    End Sub
+
+    Private Sub mnuTestStopLoss_Click(sender As Object, e As EventArgs) Handles mnuTestStopLoss.Click
+        RunTestAsync(Sub(t)
+                         t.Test02_SyncSimulation()
+                         t.Test08_StopLossTakeProfit()
+                     End Sub)
+    End Sub
+
+    Private Sub mnuTestDuplicate_Click(sender As Object, e As EventArgs) Handles mnuTestDuplicate.Click
+        RunTestAsync(Sub(t)
+                         t.Test02_SyncSimulation()
+                         t.Test09_DuplicateOrderBlock()
+                     End Sub)
+    End Sub
+
+    Private Sub mnuTestExternal_Click(sender As Object, e As EventArgs) Handles mnuTestExternal.Click
+        RunTestAsync(Sub(t)
+                         t.Test02_SyncSimulation()
+                         t.Test10_ExternalOrderTracking()
+                     End Sub)
+    End Sub
+
     Private Sub mnuLogin_Click(sender As Object, e As EventArgs) Handles mnuLogin.Click
         AppLogger.I.Info("키움 로그인 요청...", "Shell")
         MessageBus.I.Emit(Topics.AUTH_LOGIN_REQUEST)

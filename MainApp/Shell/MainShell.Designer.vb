@@ -80,7 +80,50 @@ Partial Class MainShell
         Me.mnuAutoTradeToggle.Text = "자동매매 ON/OFF"
         Me.mnuAutoTradeToggle.CheckOnClick = True
 
-        Me.mnuTrade.DropDownItems.Add(Me.mnuAutoTradeToggle)
+        ' ── 가혹 테스트 하위 메뉴 ──
+        Me.mnuTradeTest = New ToolStripMenuItem()
+        Me.mnuTradeTest.Text = "★ 가혹 테스트"
+
+        Me.mnuTestAll = New ToolStripMenuItem()
+        Me.mnuTestAll.Text = "▶ 전체 일괄 테스트 (10종)"
+
+        Me.mnuTestSync = New ToolStripMenuItem()
+        Me.mnuTestSync.Text = "T01-02: 초기화 + 동기화"
+
+        Me.mnuTestOrder = New ToolStripMenuItem()
+        Me.mnuTestOrder.Text = "T03-04: 주문검증 + 체결"
+
+        Me.mnuTestPartialFill = New ToolStripMenuItem()
+        Me.mnuTestPartialFill.Text = "T05: 부분체결"
+
+        Me.mnuTestBalance = New ToolStripMenuItem()
+        Me.mnuTestBalance.Text = "T06: 잔고변경 (청산)"
+
+        Me.mnuTestMulti = New ToolStripMenuItem()
+        Me.mnuTestMulti.Text = "T07: 여러종목 동시매매"
+
+        Me.mnuTestStopLoss = New ToolStripMenuItem()
+        Me.mnuTestStopLoss.Text = "T08: 손절/익절"
+
+        Me.mnuTestDuplicate = New ToolStripMenuItem()
+        Me.mnuTestDuplicate.Text = "T09: 중복주문 차단"
+
+        Me.mnuTestExternal = New ToolStripMenuItem()
+        Me.mnuTestExternal.Text = "T10: 외부주문 추적"
+
+        Me.mnuTradeTest.DropDownItems.AddRange({
+            Me.mnuTestAll,
+            New ToolStripSeparator(),
+            Me.mnuTestSync, Me.mnuTestOrder, Me.mnuTestPartialFill,
+            Me.mnuTestBalance, Me.mnuTestMulti, Me.mnuTestStopLoss,
+            Me.mnuTestDuplicate, Me.mnuTestExternal
+        })
+
+        Me.mnuTrade.DropDownItems.AddRange({
+            Me.mnuAutoTradeToggle,
+            New ToolStripSeparator(),
+            Me.mnuTradeTest
+        })
 
         ' 데이터
         Me.mnuData = New System.Windows.Forms.ToolStripMenuItem()
@@ -186,6 +229,16 @@ Partial Class MainShell
     Friend WithEvents mnuSrcKosdaqFollow As ToolStripMenuItem
     Friend WithEvents mnuTrade As ToolStripMenuItem
     Friend WithEvents mnuAutoTradeToggle As ToolStripMenuItem
+    Friend WithEvents mnuTradeTest As ToolStripMenuItem
+    Friend WithEvents mnuTestAll As ToolStripMenuItem
+    Friend WithEvents mnuTestSync As ToolStripMenuItem
+    Friend WithEvents mnuTestOrder As ToolStripMenuItem
+    Friend WithEvents mnuTestPartialFill As ToolStripMenuItem
+    Friend WithEvents mnuTestBalance As ToolStripMenuItem
+    Friend WithEvents mnuTestMulti As ToolStripMenuItem
+    Friend WithEvents mnuTestStopLoss As ToolStripMenuItem
+    Friend WithEvents mnuTestDuplicate As ToolStripMenuItem
+    Friend WithEvents mnuTestExternal As ToolStripMenuItem
     Friend WithEvents mnuData As ToolStripMenuItem
     Friend WithEvents mnuLogin As ToolStripMenuItem
     Friend WithEvents mnuServerStatus As ToolStripMenuItem

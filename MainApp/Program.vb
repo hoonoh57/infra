@@ -48,6 +48,10 @@ Module Program
         Dim mgr = StockInfoManager.I
         AppLogger.I.Info($"StockInfoManager 준비 완료", "Boot")
 
+        ' ── 3-b) 중앙 매매관리자 (싱글톤) ──
+        Dim tradeMgr = TradeManager.I
+        AppLogger.I.Info("TradeManager 준비 완료", "Boot")
+
         ' ── 4) 지표 플러그인 ──
         ' (★3 단계에서 추가)
         AppLogger.I.Info("지표 플러그인: 미구현 (★3 단계)", "Boot")
