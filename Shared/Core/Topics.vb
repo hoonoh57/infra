@@ -130,6 +130,7 @@ Public Class Topics
     ' ═══ UI ═══
     Public Const UI_ORDER_UPDATE As String = "ui.order.update"
     Public Const UI_STATUS As String = "ui.status"
+    Public Const UI_CHART_OPEN As String = "ui.chart.open"
 
     ' ═══ 로깅 (추가) ═══
     Public Const LOG_INFO As String = "log.info"

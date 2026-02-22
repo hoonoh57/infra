@@ -89,11 +89,7 @@ Public Class Msg
 
     Public Function Dt(key As String) As DateTime
         If Not ContainsKey(key) OrElse Me(key) Is Nothing Then Return DateTime.MinValue
-        Dim v = Me(key)
-        If TypeOf v Is DateTime Then Return CDate(v)
-        Dim r As DateTime = DateTime.MinValue
-        DateTime.TryParse(CStr(v), r)
-        Return r
+        Return SharedUtil.ToDateTime(Me(key))
     End Function
 
     Public Function Arr(Of T)(key As String) As T()

@@ -35,6 +35,7 @@ Public Class MainShell
         ' Bus 구독 (상태바 업데이트)
         MessageBus.I.On(Topics.SYS_SERVER_STATUS, AddressOf OnServerStatus)
         MessageBus.I.On(Topics.SYS_AUTOTRADE, AddressOf OnAutoTradeStatus)
+        MessageBus.I.On(Topics.UI_CHART_OPEN, AddressOf OnChartOpen)
 
         ' ── 기본 폼 배치 ──
         ' 1) 로그 폼 (하단)
@@ -100,6 +101,28 @@ Public Class MainShell
         AppLogger.I.Info($"Document 폼 생성: {uniqueKey}", "Shell")
         Return frm
     End Function
+
+    Public Sub ShowDataView(stockCode As String, dataArrays As List(Of ChartDataArray))
+        Dim frm = ShowDockForm(Of frmDataView)(DockState.DockBottom)
+        frm.SetData(stockCode, dataArrays)
+
+        Try
+            Dim logForm As LogForm = Nothing
+            If _dockForms.ContainsKey(NameOf(LogForm)) Then
+                logForm = TryCast(_dockForms(NameOf(LogForm)), LogForm)
+            End If
+
+            If logForm IsNot Nothing AndAlso logForm.Pane IsNot Nothing Then
+                frm.Show(logForm.Pane, DockAlignment.Right, 0.45R)
+            Else
+                frm.Show(dockPanel, DockState.DockBottom)
+            End If
+        Catch
+            frm.Show(dockPanel, DockState.DockBottom)
+        End Try
+
+        frm.Activate()
+    End Sub
 
     ' ════════════════════════════════════════
     ' 데이터소스 메뉴 핸들러
@@ -174,7 +197,8 @@ Public Class MainShell
                                 End Function).Where(Function(c) c <> "").ToArray()
 
         AppLogger.I.Info($"섹터 종목: {codes.Length}종목", "DataSource")
-        StockInfoManager.I.AddStocks(codes, DataSourceType.주도섹터)
+        Dim sectorCode = m.Str("sectorCode", "")
+        StockInfoManager.I.AddStocks(codes, DataSourceType.주도섹터, sectorCode)
     End Sub
 
     Private Sub mnuSrcProgramBuy_Click(sender As Object, e As EventArgs) Handles mnuSrcProgramBuy.Click
@@ -224,9 +248,16 @@ Public Class MainShell
         code = code.Trim()
         AppLogger.I.Info($"새 차트 요청: {code}", "Shell")
 
-        ' TODO: ChartForm 구현 후 연결
-        ' ShowDocumentForm(Of ChartForm)($"Chart_{code}", Sub(f) f.SetStock(code))
-        AppLogger.I.Warn($"ChartForm 미구현 — 차트 폼은 ★2 단계에서 추가됩니다.", "Shell")
+        MessageBus.I.Emit(Topics.UI_CHART_OPEN, "code", code)
+    End Sub
+
+    Private Sub OnChartOpen(m As Msg)
+        Dim code = m.Str("code")
+        If String.IsNullOrEmpty(code) Then Return
+
+        SafeUI(Sub()
+                   ShowDocumentForm(Of ChartForm)($"Chart_{code}", Sub(f) f.SetStock(code))
+               End Sub)
     End Sub
 
     Private Sub mnuAutoTradeToggle_CheckedChanged(sender As Object, e As EventArgs) Handles mnuAutoTradeToggle.CheckedChanged
@@ -406,11 +437,42 @@ Public Class MainShell
 
         ' 캔들 로드 결과
         MessageBus.I.On(Topics.CANDLE_LOADED, Sub(m)
+                                                  If m.Has("provider") AndAlso Not RuntimeChartSettings.IsMarketDataProvider(m.Str("provider")) Then Return
                                                   Dim code = m.Str("code")
                                                   Dim rows = m.DictList("rows")
                                                   Dim cnt = If(rows IsNot Nothing, rows.Count, 0)
-                                                  AppLogger.I.Info($"캔들 수신: {code} → {cnt}건", "Data")
+                                                  Dim tf = m.Str("timeframe", "")
+                                                  Dim provider = m.Str("provider", "")
+                                                  If String.IsNullOrWhiteSpace(tf) Then tf = InferRowsTimeframe(rows)
+                                                  AppLogger.I.Info($"캔들 수신: {code} [{tf}] → {cnt}건 provider:{provider}", "Data")
                                               End Sub)
+
+        ' 틱캔들 로드 결과 (TickIntensity 동기화용)
+        MessageBus.I.On(Topics.TICK_CANDLE_REQUEST, Sub(m)
+                                                        Dim code = m.Str("code")
+                                                        Dim tickUnit = RuntimeChartSettings.NormalizeTickUnit(m.Int("tickUnit", RuntimeChartSettings.DefaultTickUnit))
+                                                        Dim reqCnt = m.Int("count", 0)
+                                                        Dim stopTime = m.Str("stopTime", "")
+                                                        If String.IsNullOrWhiteSpace(stopTime) Then
+                                                            AppLogger.I.Info($"틱캔들 요청: {code} [{RuntimeChartSettings.TickTimeframe(tickUnit)}] 요청:{reqCnt}", "Data")
+                                                        Else
+                                                            AppLogger.I.Info($"틱캔들 요청: {code} [{RuntimeChartSettings.TickTimeframe(tickUnit)}] stopTime:{stopTime} (count:{reqCnt})", "Data")
+                                                        End If
+                                                    End Sub)
+        MessageBus.I.On(Topics.TICK_CANDLE_LOADED, Sub(m)
+                                                       Dim code = m.Str("code")
+                                                       Dim rows = m.DictList("rows")
+                                                       Dim cnt = If(rows IsNot Nothing, rows.Count, 0)
+                                                       Dim tf = m.Str("timeframe", RuntimeChartSettings.TickTimeframe(RuntimeChartSettings.DefaultTickUnit))
+                                                       Dim reqCnt = m.Int("requestedCount", 0)
+                                                       Dim provider = m.Str("provider", "")
+                                                       Dim stopTime = m.Str("stopTime", "")
+                                                       If String.IsNullOrWhiteSpace(stopTime) Then
+                                                           AppLogger.I.Info($"틱캔들 수신: {code} [{tf}] → {cnt}건 (요청:{reqCnt}) provider:{provider}", "Data")
+                                                       Else
+                                                           AppLogger.I.Info($"틱캔들 수신: {code} [{tf}] → {cnt}건 (stopTime:{stopTime}) provider:{provider}", "Data")
+                                                       End If
+                                                   End Sub)
 
         ' 실시간 체결 로그 (샘플링: 100번째마다)
         Dim tickCounter As Integer = 0
@@ -446,6 +508,44 @@ Public Class MainShell
             action()
         End If
     End Sub
+
+    Private Shared Function InferRowsTimeframe(rows As List(Of Dictionary(Of String, String))) As String
+        If rows Is Nothing OrElse rows.Count < 2 Then Return "n/a"
+        Dim d0 = ParseRowDateTime(rows(0))
+        Dim d1 = ParseRowDateTime(rows(1))
+        If d0 = DateTime.MinValue OrElse d1 = DateTime.MinValue Then Return "n/a"
+
+        Dim diff = Math.Abs((d1 - d0).TotalMinutes)
+        If diff >= 1440 Then Return "d1"
+        If diff < 0.5 Then Return "m1"
+        Return $"m{Math.Max(1, CInt(Math.Round(diff)))}"
+    End Function
+
+    Private Shared Function ParseRowDateTime(row As Dictionary(Of String, String)) As DateTime
+        If row Is Nothing Then Return DateTime.MinValue
+        Dim d = ""
+        Dim t = ""
+        If row.ContainsKey("date") Then d = row("date")
+        If row.ContainsKey("time") Then t = row("time")
+        If d = "" AndAlso row.ContainsKey("dt") Then Return SharedUtil.ToDateTime(row("dt"))
+        If d = "" Then Return DateTime.MinValue
+        Dim baseDt = SharedUtil.ToDateTime(d)
+        If baseDt = DateTime.MinValue Then Return DateTime.MinValue
+        If String.IsNullOrWhiteSpace(t) Then Return baseDt
+        Dim digits = New String(t.Where(Function(ch) Char.IsDigit(ch)).ToArray())
+        If digits.Length > 0 Then digits = digits.PadLeft(6, "0"c)
+        If digits.Length < 6 Then Return baseDt
+        Dim hh As Integer
+        Dim mm As Integer
+        Dim ss As Integer
+        If Not Integer.TryParse(digits.Substring(0, 2), hh) Then Return baseDt
+        If Not Integer.TryParse(digits.Substring(2, 2), mm) Then Return baseDt
+        If Not Integer.TryParse(digits.Substring(4, 2), ss) Then Return baseDt
+        hh = Math.Max(0, Math.Min(23, hh))
+        mm = Math.Max(0, Math.Min(59, mm))
+        ss = Math.Max(0, Math.Min(59, ss))
+        Return New DateTime(baseDt.Year, baseDt.Month, baseDt.Day, hh, mm, ss)
+    End Function
 
     Protected Overrides Sub OnFormClosing(e As FormClosingEventArgs)
         _clockTimer?.Stop()

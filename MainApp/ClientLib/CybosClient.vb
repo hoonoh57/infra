@@ -57,6 +57,10 @@ Public Class CybosClient
         호출("분봉", cb, "code", code, "interval", interval, "count", count)
     End Sub
 
+    Public Sub 분봉기간(code As String, interval As Integer, stopTime As String, cb As Action(Of Msg))
+        호출("분봉기간", cb, "code", code, "interval", interval, "timeframe", $"m{Math.Max(1, interval)}", "stopTime", stopTime)
+    End Sub
+
     Public Sub 일봉(code As String, count As Integer, cb As Action(Of Msg))
         호출("일봉", cb, "code", code, "count", count)
     End Sub
@@ -69,8 +73,18 @@ Public Class CybosClient
         호출("월봉", cb, "code", code, "count", count)
     End Sub
 
-    Public Sub 틱차트(code As String, count As Integer, cb As Action(Of Msg))
-        호출("틱차트", cb, "code", code, "count", count)
+    Public Sub 틱차트(code As String, count As Integer, tickUnit As Integer, cb As Action(Of Msg))
+        Dim normalizedTickUnit = RuntimeChartSettings.NormalizeTickUnit(tickUnit)
+        호출("틱차트", cb, "code", code, "count", count, "tickUnit", normalizedTickUnit, "timeframe", RuntimeChartSettings.TickTimeframe(normalizedTickUnit))
+    End Sub
+
+    Public Sub 틱차트기간(code As String, tickUnit As Integer, stopTime As String, cb As Action(Of Msg))
+        Dim normalizedTickUnit = RuntimeChartSettings.NormalizeTickUnit(tickUnit)
+        호출("틱차트기간", cb,
+            "code", code,
+            "tickUnit", normalizedTickUnit,
+            "timeframe", RuntimeChartSettings.TickTimeframe(normalizedTickUnit),
+            "stopTime", stopTime)
     End Sub
 
     Public Sub 기간캔들(code As String, timeframe As String, from As String, [to] As String, cb As Action(Of Msg))

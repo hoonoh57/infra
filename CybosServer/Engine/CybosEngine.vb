@@ -44,6 +44,10 @@ Public Class CybosEngine
                     DoDailyChart(msg, callback)
                 Case "틱차트"
                     DoTickChart(msg, callback)
+                Case "틱차트기간"
+                    DoTickChartByStopTime(msg, callback)
+                Case "분봉기간"
+                    DoMinuteChartByStopTime(msg, callback)
                 Case "기간캔들"
                     DoPeriodChart(msg, callback)
 
@@ -204,6 +208,9 @@ Public Class CybosEngine
             allRows.Add(row)
         Next
 
+        If allRows.Count > count Then
+            allRows.RemoveRange(count, allRows.Count - count)
+        End If
         allRows.Reverse()
 
         Dim result = MakeOk($"{funcName} 다운로드 완료")
@@ -219,15 +226,102 @@ Public Class CybosEngine
 
     Private Sub DoTickChart(msg As Msg, callback As Action(Of Msg))
         Dim code = NormalizeCybosCode(msg.Str("code"))
-        Dim count = msg.Int("count", 2000)
+        Dim count = msg.Int("count", 500)
+        If count <= 0 Then count = 1
+        If count > 2000 Then count = 2000
+        Dim tickUnit = RuntimeChartSettings.NormalizeTickUnit(msg.Int("tickUnit", RuntimeChartSettings.DefaultTickUnit))
 
         Dim chart As New StockChart()
         chart.SetInputValue(0, code)
         chart.SetInputValue(1, CByte(AscW("2"c)))
-        chart.SetInputValue(4, Math.Min(count, 5000))
+        chart.SetInputValue(4, 2000)
         chart.SetInputValue(5, New Object() {0, 1, 2, 3, 4, 5, 8})
         chart.SetInputValue(6, CByte(AscW("T"c)))
-        chart.SetInputValue(7, 1)
+        chart.SetInputValue(7, tickUnit)
+        chart.SetInputValue(9, CByte(AscW("1"c)))
+
+        Dim allRows As New List(Of Dictionary(Of String, String))()
+        _limiter.WaitIfNeeded()
+        chart.BlockRequest()
+
+        Dim rows = CInt(chart.GetHeaderValue(3))
+        For i = 0 To rows - 1
+            Dim row As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+            row("date") = CStr(chart.GetDataValue(0, i))
+            row("time") = CInt(chart.GetDataValue(1, i)).ToString("0000")
+            row("open") = CStr(CInt(chart.GetDataValue(2, i)))
+            row("high") = CStr(CInt(chart.GetDataValue(3, i)))
+            row("low") = CStr(CInt(chart.GetDataValue(4, i)))
+            row("close") = CStr(CInt(chart.GetDataValue(5, i)))
+            row("volume") = CStr(CLng(chart.GetDataValue(6, i)))
+            allRows.Add(row)
+        Next
+
+        If allRows.Count > count Then
+            allRows.RemoveRange(count, allRows.Count - count)
+        End If
+        allRows.Reverse()
+
+        Dim result = MakeOk("틱차트 다운로드 완료")
+        result("code") = msg.Str("code")
+        result("timeframe") = RuntimeChartSettings.TickTimeframe(tickUnit)
+        result("tickUnit") = tickUnit
+        result("requestedCount") = count
+        result("rows") = allRows
+        callback(result)
+    End Sub
+
+    Private Sub DoTickChartByStopTime(msg As Msg, callback As Action(Of Msg))
+        Dim code = NormalizeCybosCode(msg.Str("code"))
+        Dim tickUnit = RuntimeChartSettings.NormalizeTickUnit(msg.Int("tickUnit", RuntimeChartSettings.DefaultTickUnit))
+        Dim stopTimeRaw = msg.Str("stopTime")
+        Dim stopDt = ParseStopDateTime(stopTimeRaw)
+        If stopDt = DateTime.MinValue Then
+            callback(MakeError("틱차트기간 오류: stopTime(yyyyMMddHHmmss) 필요"))
+            Return
+        End If
+
+        Dim allRows = DownloadChartRowsUntilStop(code, "T"c, tickUnit, stopDt)
+
+        Dim result = MakeOk("틱차트 기간 다운로드 완료")
+        result("code") = msg.Str("code")
+        result("timeframe") = RuntimeChartSettings.TickTimeframe(tickUnit)
+        result("tickUnit") = tickUnit
+        result("stopTime") = stopTimeRaw
+        result("rows") = allRows
+        callback(result)
+    End Sub
+
+    Private Sub DoMinuteChartByStopTime(msg As Msg, callback As Action(Of Msg))
+        Dim code = NormalizeCybosCode(msg.Str("code"))
+        Dim interval = msg.Int("interval", 1)
+        If interval <= 0 Then interval = 1
+        Dim stopTimeRaw = msg.Str("stopTime")
+        Dim stopDt = ParseStopDateTime(stopTimeRaw)
+        If stopDt = DateTime.MinValue Then
+            callback(MakeError("분봉기간 오류: stopTime(yyyyMMddHHmmss) 필요"))
+            Return
+        End If
+
+        Dim allRows = DownloadChartRowsUntilStop(code, "m"c, interval, stopDt)
+
+        Dim result = MakeOk("분봉 기간 다운로드 완료")
+        result("code") = msg.Str("code")
+        result("timeframe") = $"m{interval}"
+        result("interval") = interval
+        result("stopTime") = stopTimeRaw
+        result("rows") = allRows
+        callback(result)
+    End Sub
+
+    Private Function DownloadChartRowsUntilStop(code As String, tfChar As Char, interval As Integer, stopDt As DateTime) As List(Of Dictionary(Of String, String))
+        Dim chart As New StockChart()
+        chart.SetInputValue(0, code)
+        chart.SetInputValue(1, CByte(AscW("2"c)))
+        chart.SetInputValue(4, 2000)
+        chart.SetInputValue(5, New Object() {0, 1, 2, 3, 4, 5, 8})
+        chart.SetInputValue(6, CByte(AscW(tfChar)))
+        If tfChar = "m"c OrElse tfChar = "T"c Then chart.SetInputValue(7, interval)
         chart.SetInputValue(9, CByte(AscW("1"c)))
 
         Dim allRows As New List(Of Dictionary(Of String, String))()
@@ -240,10 +334,19 @@ Public Class CybosEngine
             Dim rows = CInt(chart.GetHeaderValue(3))
             If rows = 0 Then Exit Do
 
+            Dim reachedStop As Boolean = False
             For i = 0 To rows - 1
+                Dim d = CStr(chart.GetDataValue(0, i))
+                Dim t = CInt(chart.GetDataValue(1, i)).ToString("0000")
+                Dim dt = ParseDateTime(d, t)
+                If dt < stopDt Then
+                    reachedStop = True
+                    Exit For
+                End If
+
                 Dim row As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
-                row("date") = CStr(chart.GetDataValue(0, i))
-                row("time") = CInt(chart.GetDataValue(1, i)).ToString("0000")
+                row("date") = d
+                row("time") = t
                 row("open") = CStr(CInt(chart.GetDataValue(2, i)))
                 row("high") = CStr(CInt(chart.GetDataValue(3, i)))
                 row("low") = CStr(CInt(chart.GetDataValue(4, i)))
@@ -252,21 +355,17 @@ Public Class CybosEngine
                 allRows.Add(row)
             Next
 
-            If allRows.Count >= count Then Exit Do
+            If reachedStop Then Exit Do
             If Not CBool(chart.Continue) Then Exit Do
 
             loopCount += 1
-            If loopCount >= 200 Then Exit Do
+            If loopCount >= 500 Then Exit Do
             Thread.Sleep(200)
         Loop
 
         allRows.Reverse()
-
-        Dim result = MakeOk("틱차트 다운로드 완료")
-        result("code") = msg.Str("code")
-        result("rows") = allRows
-        callback(result)
-    End Sub
+        Return allRows
+    End Function
 
     ' ════════════════════════════════════════
     ' 기간별 캔들 (from~to 날짜 지정)
@@ -274,14 +373,22 @@ Public Class CybosEngine
 
     Private Sub DoPeriodChart(msg As Msg, callback As Action(Of Msg))
         Dim code = NormalizeCybosCode(msg.Str("code"))
-        Dim timeframe = msg.Str("timeframe", "m1")
+        Dim timeframe = msg.Str("timeframe", RuntimeChartSettings.DefaultCandleTimeframe)
+        If String.IsNullOrWhiteSpace(timeframe) Then timeframe = RuntimeChartSettings.DefaultCandleTimeframe
         Dim fromDate = msg.Str("from")
         Dim toDate = msg.Str("to")
 
         ' timeframe 파싱
-        Dim tfChar As Char = If(timeframe.Length > 0, timeframe(0), "m"c)
+        timeframe = timeframe.Trim()
+        Dim tfChar As Char = If(timeframe.Length > 0, Char.ToUpperInvariant(timeframe(0)), "M"c)
         Dim interval As Integer = 1
         If timeframe.Length > 1 Then Integer.TryParse(timeframe.Substring(1), interval)
+        If interval <= 0 Then interval = 1
+        If tfChar = "T"c Then
+            interval = RuntimeChartSettings.NormalizeTickUnit(interval)
+        ElseIf tfChar = "M"c Then
+            tfChar = "m"c
+        End If
 
         ' from/to → DateTime
         Dim fromDt = ParseDateString(fromDate, "0900")
@@ -343,7 +450,7 @@ Public Class CybosEngine
 
         Dim result = MakeOk("기간 캔들 다운로드 완료")
         result("code") = msg.Str("code")
-        result("timeframe") = timeframe
+        result("timeframe") = If(tfChar = "T"c, RuntimeChartSettings.TickTimeframe(interval), timeframe.ToLowerInvariant())
         result("from") = fromDate
         result("to") = toDate
         result("rows") = allRows
@@ -752,6 +859,26 @@ Public Class CybosEngine
         Dim ymd = s.Substring(0, 8)
         Dim hhmm = If(s.Length >= 12, s.Substring(8, 4), defaultTime)
         Return ParseDateTime(ymd, hhmm)
+    End Function
+
+    Private Function ParseStopDateTime(s As String) As DateTime
+        If String.IsNullOrWhiteSpace(s) Then Return DateTime.MinValue
+        Dim digits = New String(s.Where(Function(ch) Char.IsDigit(ch)).ToArray())
+        If digits.Length < 12 Then Return DateTime.MinValue
+        If digits.Length > 14 Then digits = digits.Substring(0, 14)
+        If digits.Length = 12 Then digits &= "00"
+        If digits.Length <> 14 Then Return DateTime.MinValue
+        Try
+            Dim yyyy = Integer.Parse(digits.Substring(0, 4))
+            Dim MM = Integer.Parse(digits.Substring(4, 2))
+            Dim dd = Integer.Parse(digits.Substring(6, 2))
+            Dim hh = Integer.Parse(digits.Substring(8, 2))
+            Dim min = Integer.Parse(digits.Substring(10, 2))
+            Dim ss = Integer.Parse(digits.Substring(12, 2))
+            Return New DateTime(yyyy, MM, dd, hh, min, 0)
+        Catch
+            Return DateTime.MinValue
+        End Try
     End Function
 
     Private Function MakeOk(message As String, ParamArray pairs() As Object) As Msg

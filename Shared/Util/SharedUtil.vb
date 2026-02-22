@@ -81,4 +81,57 @@ Public Class SharedUtil
         Return d
     End Function
 
+    ''' <summary>다양한 형식의 문자열/객체를 DateTime으로 변환</summary>
+    Public Shared Function ToDateTime(obj As Object) As DateTime
+        If obj Is Nothing OrElse IsDBNull(obj) Then Return DateTime.MinValue
+        If TypeOf obj Is DateTime Then Return DirectCast(obj, DateTime)
+
+        ' 숫자인 경우 (Double/Long) 과학적 표기법 방지
+        Dim rawStr As String
+        If TypeOf obj Is Double OrElse TypeOf obj Is Single OrElse TypeOf obj Is Decimal Then
+            rawStr = CDbl(obj).ToString("F0", CultureInfo.InvariantCulture)
+        Else
+            rawStr = obj.ToString()
+        End If
+
+        Dim s = rawStr.Trim().Replace("-", "").Replace(":", "").Replace(" ", "").Replace("/", "").Replace(".", "")
+        If String.IsNullOrWhiteSpace(s) Then Return DateTime.MinValue
+
+        Try
+            ' yyyyMMddHHmmssfff (17자리)
+            If s.Length >= 17 Then
+                Return DateTime.ParseExact(s.Substring(0, 17), "yyyyMMddHHmmssfff", CultureInfo.InvariantCulture)
+            End If
+            ' yyyyMMddHHmmss (14자리)
+            If s.Length = 14 Then
+                Return DateTime.ParseExact(s, "yyyyMMddHHmmss", CultureInfo.InvariantCulture)
+            End If
+            ' yyyyMMddHHmm (12자리)
+            If s.Length = 12 Then
+                Return DateTime.ParseExact(s, "yyyyMMddHHmm", CultureInfo.InvariantCulture)
+            End If
+            ' yyMMddHHmm (10자리 - 키움/사이보스 일부 데이터용)
+            If s.Length = 10 Then
+                Return DateTime.ParseExact(s, "yyMMddHHmm", CultureInfo.InvariantCulture)
+            End If
+            ' yyyyMMdd (8자리)
+            If s.Length = 8 Then
+                Return DateTime.ParseExact(s, "yyyyMMdd", CultureInfo.InvariantCulture)
+            End If
+            ' HHmmss (6자리)
+            If s.Length = 6 Then
+                Return TimeToTimestamp(s)
+            End If
+
+            ' 최후의 수단으로 일반 파싱 시도 (단, 예외 방지)
+            Dim res As DateTime
+            If DateTime.TryParse(rawStr, CultureInfo.InvariantCulture, DateTimeStyles.None, res) Then
+                Return res
+            End If
+            Return DateTime.MinValue
+        Catch
+            Return DateTime.MinValue
+        End Try
+    End Function
+
 End Class

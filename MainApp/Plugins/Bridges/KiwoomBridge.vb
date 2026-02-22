@@ -5,6 +5,7 @@
 ' ═══════════════════════════════════════════════════════════════
 
 Imports [Shared]
+Imports System.Collections.Generic
 
 Public Class KiwoomBridge
 
@@ -20,6 +21,50 @@ Public Class KiwoomBridge
 
         MessageBus.I.On(Topics.STOCK_BASIC_REQUEST, Sub(m) _client.주식기본정보(m.Str("code"), Sub(r) BusResult(r, Topics.STOCK_BASIC_RESULT, m)))
         MessageBus.I.On(Topics.HOGA_REQUEST, Sub(m) _client.호가요청(m.Str("code"), Sub(r) BusResult(r, Topics.HOGA_RESULT, m)))
+
+        ' ─── 캔들 요청 ───
+        MessageBus.I.On(Topics.CANDLE_REQUEST, Sub(m)
+                                                   If Not RuntimeChartSettings.IsMarketDataProvider("kiwoom") Then Return
+                                                   Dim code = m.Str("code")
+                                                   Dim tf = m.Str("timeframe", RuntimeChartSettings.DefaultCandleTimeframe).ToLower()
+                                                   Dim count = m.Int("count", RuntimeChartSettings.DefaultCandleRequestCount)
+                                                   If tf.StartsWith("m") Then
+                                                       Dim interval = 1
+                                                       If tf.Length > 1 Then Integer.TryParse(tf.Substring(1), interval)
+                                                       _client.분봉조회(code, interval, Sub(r) EmitCandle(r, code))
+                                                   ElseIf tf = "d" OrElse tf = "daily" Then
+                                                       _client.일봉조회(code, DateTime.Now.ToString("yyyyMMdd"), Sub(r) EmitCandle(r, code))
+                                                   Else
+                                                       _client.분봉조회(code, 1, Sub(r) EmitCandle(r, code))
+                                                   End If
+                                               End Sub)
+
+        MessageBus.I.On(Topics.DAILY_REQUEST, Sub(m)
+                                                  If Not RuntimeChartSettings.IsMarketDataProvider("kiwoom") Then Return
+                                                  _client.일봉조회(m.Str("code"), DateTime.Now.ToString("yyyyMMdd"), Sub(r) EmitCandle(r, m.Str("code")))
+                                              End Sub)
+        MessageBus.I.On(Topics.WEEKLY_REQUEST, Sub(m)
+                                                   If Not RuntimeChartSettings.IsMarketDataProvider("kiwoom") Then Return
+                                                   _client.주봉조회(m.Str("code"), DateTime.Now.ToString("yyyyMMdd"), Sub(r) EmitCandle(r, m.Str("code")))
+                                               End Sub)
+        MessageBus.I.On(Topics.MONTHLY_REQUEST, Sub(m)
+                                                    If Not RuntimeChartSettings.IsMarketDataProvider("kiwoom") Then Return
+                                                    _client.월봉조회(m.Str("code"), DateTime.Now.ToString("yyyyMMdd"), Sub(r) EmitCandle(r, m.Str("code")))
+                                                End Sub)
+        MessageBus.I.On(Topics.TICK_CANDLE_REQUEST, Sub(m)
+                                                        If Not RuntimeChartSettings.IsMarketDataProvider("kiwoom") Then Return
+                                                        Dim tickUnit = RuntimeChartSettings.NormalizeTickUnit(m.Int("tickUnit", RuntimeChartSettings.DefaultTickUnit))
+                                                        Dim r As New Msg(Topics.TICK_CANDLE_LOADED)
+                                                        r("code") = m.Str("code")
+                                                        r("rows") = New List(Of Dictionary(Of String, String))()
+                                                        r("timeframe") = RuntimeChartSettings.TickTimeframe(tickUnit)
+                                                        r("requestedCount") = m.Int("count", 0)
+                                                        r("stopTime") = m.Str("stopTime", "")
+                                                        r("success") = False
+                                                        r("provider") = "kiwoom"
+                                                        r("message") = "tick candle not supported on kiwoom bridge"
+                                                        MessageBus.I.EmitOnUI(r)
+                                                    End Sub)
 
         MessageBus.I.On(Topics.ACCOUNT_BALANCE_REQUEST, Sub(m) _client.계좌평가(m.Str("accountNo"), m.Str("pass"), Sub(r) BusResult(r, Topics.ACCOUNT_BALANCE_RESULT, m)))
         MessageBus.I.On(Topics.ACCOUNT_OPEN_ORDERS_REQUEST, Sub(m) _client.미체결조회(m.Str("accountNo"), Sub(r) BusResult(r, Topics.ACCOUNT_OPEN_ORDERS_RESULT, m)))
@@ -48,7 +93,18 @@ Public Class KiwoomBridge
         MessageBus.I.On(Topics.RANK_CHANGE_REQUEST, Sub(m) _client.등락률상위(m.Str("market"), Sub(r) BusResult(r, Topics.RANK_CHANGE_RESULT, m)))
 
         MessageBus.I.On(Topics.FINANCE_REQUEST, Sub(m) _client.재무정보(m.Str("code"), Sub(r) BusResult(r, Topics.FINANCE_RESULT, m)))
-        MessageBus.I.On(Topics.STOCK_MULTI_INFO_REQUEST, Sub(m) _client.관심종목정보(m.Str("codes"), Sub(r) BusResult(r, Topics.STOCK_MULTI_INFO_RESULT, m)))
+        MessageBus.I.On(Topics.STOCK_MULTI_INFO_REQUEST, Sub(m)
+                                                              If Not RuntimeChartSettings.IsMarketDataProvider("kiwoom") Then Return
+                                                              _client.관심종목정보(m.Str("codes"), Sub(r)
+                                                                                              r("provider") = "kiwoom"
+                                                                                              BusResult(r, Topics.STOCK_MULTI_INFO_RESULT, m)
+                                                                                          End Sub)
+                                                          End Sub)
+        MessageBus.I.On(Topics.SECTOR_STOCKS_REQUEST, Sub(m) _client.업종별종목(m.Str("sectorCode"), Sub(r)
+                                                                                                    r.Topic = Topics.SECTOR_STOCKS_RESULT
+                                                                                                    If Not r.Has("sectorCode") Then r("sectorCode") = m.Str("sectorCode")
+                                                                                                    MessageBus.I.EmitOnUI(r)
+                                                                                                End Sub))
 
         ' ─── 서버 → Bus ───
 
@@ -77,5 +133,12 @@ Public Class KiwoomBridge
         m.Topic = topic
         Return m
     End Function
+
+    Private Sub EmitCandle(r As Msg, code As String)
+        r.Topic = Topics.CANDLE_LOADED
+        If Not r.Has("code") Then r("code") = code
+        r("provider") = "kiwoom"
+        MessageBus.I.EmitOnUI(r)
+    End Sub
 
 End Class

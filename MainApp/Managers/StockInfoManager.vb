@@ -27,6 +27,9 @@ Public Class StockInfoManager
 
     ' ─── 저장소 ───
     Private ReadOnly _items As New ConcurrentDictionary(Of String, StockInfoItem)(StringComparer.OrdinalIgnoreCase)
+    Private ReadOnly _candleRowsCache As New ConcurrentDictionary(Of String, List(Of Dictionary(Of String, String)))(StringComparer.OrdinalIgnoreCase)
+    Private ReadOnly _candleRequested As New ConcurrentDictionary(Of String, Boolean)(StringComparer.OrdinalIgnoreCase)
+    Private ReadOnly _realtimeRequested As New ConcurrentDictionary(Of String, Boolean)(StringComparer.OrdinalIgnoreCase)
     Private _isInitialized As Boolean = False
 
     Private Sub New()
@@ -114,6 +117,9 @@ Public Class StockInfoManager
         MessageBus.I.Emit(Topics.REALTIME_UNSUBSCRIBE_ALL)
 
         _items.Clear()
+        _candleRowsCache.Clear()
+        _candleRequested.Clear()
+        _realtimeRequested.Clear()
         MessageBus.I.EmitOnUI(New Msg(Topics.STOCKINFO_CLEAR))
         AppLogger.I.Info("종목 전체 초기화", "Manager")
     End Sub
@@ -177,6 +183,9 @@ Public Class StockInfoManager
     End Sub
 
     Private Sub OnMultiInfoResult(m As Msg)
+        If m.Has("provider") Then
+            If Not RuntimeChartSettings.IsMarketDataProvider(m.Str("provider")) Then Return
+        End If
         Dim rows = m.DictList("rows")
         If rows Is Nothing Then Return
 
@@ -220,18 +229,27 @@ Public Class StockInfoManager
     ' ════════════════════════════════════════
 
     Private Sub RequestCandles(codes As String())
-        Dim total = codes.Length
-        Dim completed = 0
+        Dim requested As Integer = 0
 
         For Each code In codes
+            If _candleRowsCache.ContainsKey(code) Then Continue For
+            If Not _candleRequested.TryAdd(code, True) Then Continue For
             MessageBus.I.Emit(Topics.CANDLE_REQUEST,
-                              "code", code, "timeframe", "m1", "count", 500)
+                              "code", code,
+                              "timeframe", RuntimeChartSettings.DefaultCandleTimeframe,
+                              "count", RuntimeChartSettings.DefaultCandleRequestCount)
+            requested += 1
         Next
 
-        AppLogger.I.Info($"캔들 다운로드 요청: {total}종목", "Manager")
+        If requested > 0 Then
+            AppLogger.I.Info($"캔들 다운로드 요청: {requested}종목", "Manager")
+        End If
     End Sub
 
     Private Sub OnCandleLoaded(m As Msg)
+        If m.Has("provider") Then
+            If Not RuntimeChartSettings.IsMarketDataProvider(m.Str("provider")) Then Return
+        End If
         Dim code = m.Str("code")
         If String.IsNullOrEmpty(code) Then Return
 
@@ -241,6 +259,17 @@ Public Class StockInfoManager
         Dim rows = m.DictList("rows")
         Dim cnt = If(rows IsNot Nothing, rows.Count, 0)
         item.CandleCount = cnt
+
+        If rows IsNot Nothing AndAlso rows.Count > 0 Then
+            _candleRowsCache.AddOrUpdate(code,
+                                         Function(k) CloneRows(rows),
+                                         Function(k, oldRows)
+                                             If oldRows Is Nothing OrElse rows.Count >= oldRows.Count Then
+                                                 Return CloneRows(rows)
+                                             End If
+                                             Return oldRows
+                                         End Function)
+        End If
 
         If item.State < DataReadyState.CandleLoaded Then
             item.State = DataReadyState.CandleLoaded
@@ -265,10 +294,18 @@ Public Class StockInfoManager
     ' ════════════════════════════════════════
 
     Private Sub RequestRealtime(codes As String())
-        Dim joined = String.Join(";", codes)
+        Dim onceCodes As New List(Of String)
+        For Each code In codes
+            If _realtimeRequested.TryAdd(code, True) Then
+                onceCodes.Add(code)
+            End If
+        Next
+        If onceCodes.Count = 0 Then Return
+
+        Dim joined = String.Join(";", onceCodes)
         MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", joined)
 
-        For Each code In codes
+        For Each code In onceCodes
             Dim item As StockInfoItem = Nothing
             If _items.TryGetValue(code, item) Then
                 item.IsRealtimeSubscribed = True
@@ -278,8 +315,33 @@ Public Class StockInfoManager
             End If
         Next
 
-        AppLogger.I.Info($"실시간 구독: {codes.Length}종목", "Manager")
+        AppLogger.I.Info($"실시간 구독: {onceCodes.Count}종목", "Manager")
     End Sub
+
+    Public Function TryEmitCachedCandles(code As String, Optional count As Integer = 300) As Boolean
+        If String.IsNullOrWhiteSpace(code) Then Return False
+
+        Dim rows As List(Of Dictionary(Of String, String)) = Nothing
+        If Not _candleRowsCache.TryGetValue(code, rows) Then Return False
+        If rows Is Nothing OrElse rows.Count = 0 Then Return False
+
+        Dim emitRows As List(Of Dictionary(Of String, String))
+        If count > 0 AndAlso rows.Count > count Then
+            emitRows = rows.Skip(rows.Count - count).Select(Function(r) CloneRow(r)).ToList()
+        Else
+            emitRows = rows.Select(Function(r) CloneRow(r)).ToList()
+        End If
+
+        Dim m As New Msg(Topics.CANDLE_LOADED)
+        m("code") = code
+        m("rows") = emitRows
+        Dim item = GetItem(code)
+        If item IsNot Nothing AndAlso item.PrevClose > 0 Then
+            m("prevClose") = CSng(item.PrevClose)
+        End If
+        MessageBus.I.EmitOnUI(m)
+        Return True
+    End Function
 
     Private Sub OnTick(m As Msg)
         Dim code = m.Str("code")
@@ -396,6 +458,20 @@ Public Class StockInfoManager
             i += take
         End While
         Return result
+    End Function
+
+    Private Shared Function CloneRows(rows As List(Of Dictionary(Of String, String))) As List(Of Dictionary(Of String, String))
+        If rows Is Nothing Then Return New List(Of Dictionary(Of String, String))()
+        Return rows.Select(Function(r) CloneRow(r)).ToList()
+    End Function
+
+    Private Shared Function CloneRow(row As Dictionary(Of String, String)) As Dictionary(Of String, String)
+        If row Is Nothing Then Return New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+        Dim copy As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+        For Each kv In row
+            copy(kv.Key) = kv.Value
+        Next
+        Return copy
     End Function
 
 End Class

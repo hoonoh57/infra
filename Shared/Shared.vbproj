@@ -3,4 +3,7 @@
     <TargetFramework>net481</TargetFramework>
     <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp.Views.WindowsForms" Version="3.119.2" />
+  </ItemGroup>
 </Project>
