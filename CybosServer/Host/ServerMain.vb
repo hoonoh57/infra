@@ -22,6 +22,13 @@ Public Class CybosServerMain
 
         Try
             _engine = New CybosEngine()
+            AddHandler _engine.RealtimePublished,
+                Sub(pushMsg)
+                    Try
+                        _pipe?.Send(pushMsg)
+                    Catch
+                    End Try
+                End Sub
         Catch ex As Exception
             MessageBox.Show($"CybosPlus 연결 실패!{vbCrLf}{ex.Message}{vbCrLf}CybosPlus를 먼저 실행하세요.",
                             "Cybos 오류", MessageBoxButtons.OK, MessageBoxIcon.Error)

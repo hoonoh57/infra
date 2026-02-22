@@ -166,15 +166,17 @@ Public Class KiwoomCatalog
         })
 
         _all.Add(New FuncDef With {
-            .Name = "프로그램매매", .TrCode = "OPT10060", .Category = FuncCategory.TrRequest,
+            .Name = "프로그램매매", .TrCode = "OPT90008", .Category = FuncCategory.TrRequest,
             .SupportsContinuation = True,
             .Inputs = New List(Of FieldDef) From {
-                New FieldDef("code", "종목코드"), New FieldDef("시작일자", "시작일자"),
-                New FieldDef("종료일자", "종료일자")
+                New FieldDef("code", "종목코드"),
+                New FieldDef("시작일자", "날짜"),
+                New FieldDef("종료일자", "금액수량구분")
             },
             .MultiOutputs = New List(Of FieldDef) From {
-                New FieldDef("일자", "일자"), New FieldDef("매수", "프로그램매수"),
-                New FieldDef("매도", "프로그램매도"), New FieldDef("순매수", "프로그램순매수")
+                New FieldDef("time", "시간"),
+                New FieldDef("netBuy", "프로그램순매수수량"),
+                New FieldDef("delta", "프로그램순매수수량증감")
             }
         })
 

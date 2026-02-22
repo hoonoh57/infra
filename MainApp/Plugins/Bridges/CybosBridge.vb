@@ -11,10 +11,19 @@ Public Class CybosBridge
     Private ReadOnly _client As New CybosClient()
     Public Sub Start()
         _client.연결()
+        AddHandler _client.ProgramTradeRealtime,
+            Sub(r)
+                If r Is Nothing Then Return
+                r.Topic = Topics.PROGRAM_TRADE
+                r("provider") = "cybos"
+                MessageBus.I.EmitOnUI(r)
+            End Sub
 
         ' ─── 캔들 요청 분기 ───
 
         MessageBus.I.On(Topics.CANDLE_REQUEST, Sub(m)
+                                                   Dim reqProvider = m.Str("provider", "")
+                                                   If reqProvider <> "" AndAlso Not String.Equals(reqProvider, "cybos", StringComparison.OrdinalIgnoreCase) Then Return
                                                    If Not RuntimeChartSettings.IsMarketDataProvider("cybos") Then Return
                                                    Dim code = m.Str("code")
                                                    Dim tf = m.Str("timeframe", RuntimeChartSettings.DefaultCandleTimeframe).ToLower()
@@ -58,6 +67,8 @@ Public Class CybosBridge
                                                End Sub)
 
         MessageBus.I.On(Topics.CANDLE_PERIOD_REQUEST, Sub(m)
+                                                          Dim reqProvider = m.Str("provider", "")
+                                                          If reqProvider <> "" AndAlso Not String.Equals(reqProvider, "cybos", StringComparison.OrdinalIgnoreCase) Then Return
                                                           If Not RuntimeChartSettings.IsMarketDataProvider("cybos") Then Return
                                                           _client.기간캔들(m.Str("code"), m.Str("timeframe"), m.Str("from"), m.Str("to"),
                                                               Sub(r)
@@ -69,6 +80,8 @@ Public Class CybosBridge
                                                       End Sub)
 
         MessageBus.I.On(Topics.TICK_CANDLE_REQUEST, Sub(m)
+                                                        Dim reqProvider = m.Str("provider", "")
+                                                        If reqProvider <> "" AndAlso Not String.Equals(reqProvider, "cybos", StringComparison.OrdinalIgnoreCase) Then Return
                                                         If Not RuntimeChartSettings.IsMarketDataProvider("cybos") Then Return
                                                         Dim code = m.Str("code")
                                                         Dim tickUnit = RuntimeChartSettings.NormalizeTickUnit(m.Int("tickUnit", RuntimeChartSettings.DefaultTickUnit))
@@ -107,10 +120,47 @@ Public Class CybosBridge
 
         ' ─── 기타 데이터 ───
 
-        MessageBus.I.On(Topics.PROGRAM_TRADE_REQUEST, Sub(m) _client.프로그램순매수(m.Str("code"), m.Int("count", 100), Sub(r)
-                                                                                                                     r.Topic = Topics.PROGRAM_TRADE_RESULT
-                                                                                                                     MessageBus.I.EmitOnUI(r)
-                                                                                                                 End Sub))
+        MessageBus.I.On(Topics.PROGRAM_TRADE_REQUEST, Sub(m)
+                                                          Dim reqProvider = m.Str("provider", "")
+                                                          If reqProvider <> "" AndAlso Not String.Equals(reqProvider, "cybos", StringComparison.OrdinalIgnoreCase) Then Return
+                                                          _client.프로그램순매수(m.Str("code"), m.Int("count", 100), Sub(r)
+                                                                                                                   Dim rows = r.DictList("rows")
+                                                                                                                   Dim rowCount = If(rows Is Nothing, 0, rows.Count)
+                                                                                                                   Dim fallbackTried = m.Bool("fallbackTried", False)
+                                                                                                                   If rowCount <= 0 AndAlso Not fallbackTried Then
+                                                                                                                       MessageBus.I.Emit(Topics.SYS_LOG, "text", $"[Data] 프로그램순매수 fallback: cybos -> kiwoom ({m.Str("code")})")
+                                                                                                                       MessageBus.I.Emit(Topics.PROGRAM_TRADE_REQUEST,
+                                                                                                                                         "code", m.Str("code"),
+                                                                                                                                         "count", m.Int("count", 100),
+                                                                                                                                         "stopTime", m.Str("stopTime", ""),
+                                                                                                                                         "baseDate", m.Str("baseDate", ""),
+                                                                                                                                         "provider", "kiwoom",
+                                                                                                                                         "fallbackTried", True)
+                                                                                                                       Return
+                                                                                                                   End If
+                                                                                                                   r.Topic = Topics.PROGRAM_TRADE_RESULT
+                                                                                                                   r("provider") = "cybos"
+                                                                                                                   MessageBus.I.EmitOnUI(r)
+                                                                                                               End Sub, m.Str("stopTime", ""))
+                                                      End Sub)
+        MessageBus.I.On("program.trade.rt.subscribe", Sub(m)
+                                                                Dim reqProvider = m.Str("provider", "")
+                                                                If reqProvider <> "" AndAlso Not String.Equals(reqProvider, "cybos", StringComparison.OrdinalIgnoreCase) Then Return
+                                                                _client.프로그램순매수실시간등록(m.Str("code"), Sub(r)
+                                                                                                              r.Topic = Topics.SYS_LOG
+                                                                                                              r("text") = $"[Data] 프로그램순매수 실시간 등록: {m.Str("code")} success:{r.Bool("success", False)} msg:{r.Str("message", "")}"
+                                                                                                              MessageBus.I.EmitOnUI(r)
+                                                                                                          End Sub)
+                                                            End Sub)
+        MessageBus.I.On("program.trade.rt.unsubscribe", Sub(m)
+                                                                  Dim reqProvider = m.Str("provider", "")
+                                                                  If reqProvider <> "" AndAlso Not String.Equals(reqProvider, "cybos", StringComparison.OrdinalIgnoreCase) Then Return
+                                                                  _client.프로그램순매수실시간해지(m.Str("code"), Sub(r)
+                                                                                                            r.Topic = Topics.SYS_LOG
+                                                                                                            r("text") = $"[Data] 프로그램순매수 실시간 해지: {m.Str("code")} success:{r.Bool("success", False)} msg:{r.Str("message", "")}"
+                                                                                                            MessageBus.I.EmitOnUI(r)
+                                                                                                        End Sub)
+                                                              End Sub)
         MessageBus.I.On(Topics.INVESTOR_REQUEST, Sub(m) _client.투자자매매(m.Str("code"), m.Int("count", 20), Sub(r)
                                                                                                              r.Topic = Topics.INVESTOR_RESULT
                                                                                                              MessageBus.I.EmitOnUI(r)

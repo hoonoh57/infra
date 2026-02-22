@@ -11,6 +11,7 @@ Public Class CybosClient
     Private ReadOnly _pipe As PipeClient
     Private ReadOnly _callbacks As New ConcurrentDictionary(Of Integer, Action(Of Msg))()
     Private _seq As Integer = 0
+    Public Event ProgramTradeRealtime(msg As Msg)
 
     Public Event 연결됨()
     Public Event 연결끊김()
@@ -95,8 +96,20 @@ Public Class CybosClient
     ' 프로그램매매
     ' ════════════════════════════════════════
 
-    Public Sub 프로그램순매수(code As String, count As Integer, cb As Action(Of Msg))
-        호출("프로그램순매수", cb, "code", code, "count", count)
+    Public Sub 프로그램순매수(code As String, count As Integer, cb As Action(Of Msg), Optional stopTime As String = "")
+        If String.IsNullOrWhiteSpace(stopTime) Then
+            호출("프로그램순매수", cb, "code", code, "count", count)
+        Else
+            호출("프로그램순매수", cb, "code", code, "count", count, "stopTime", stopTime)
+        End If
+    End Sub
+
+    Public Sub 프로그램순매수실시간등록(code As String, cb As Action(Of Msg))
+        호출("프로그램순매수실시간등록", cb, "code", code)
+    End Sub
+
+    Public Sub 프로그램순매수실시간해지(code As String, cb As Action(Of Msg))
+        호출("프로그램순매수실시간해지", cb, "code", code)
     End Sub
 
     ' ════════════════════════════════════════
@@ -185,8 +198,14 @@ Public Class CybosClient
             Dim cb As Action(Of Msg) = Nothing
             If _callbacks.TryRemove(s, cb) AndAlso cb IsNot Nothing Then
                 cb(msg)
+                Return
             End If
         End If
+
+        Select Case msg.Topic
+            Case Topics.PROGRAM_TRADE
+                RaiseEvent ProgramTradeRealtime(msg)
+        End Select
     End Sub
 
 End Class

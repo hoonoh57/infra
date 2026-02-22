@@ -1,4 +1,4 @@
-' ProgramTrade_Indicator.vb — 프로그램 순매수 (외부 데이터)
+﻿' ProgramTrade_Indicator.vb ???꾨줈洹몃옩 ?쒕ℓ??(?몃? ?곗씠??
 
 Public Class ProgramTrade_Indicator
     Implements IIndicator
@@ -16,10 +16,10 @@ Public Class ProgramTrade_Indicator
         End Get
     End Property
     Public ReadOnly Property DisplayName As String Implements IIndicator.DisplayName
-        Get
-            Return "프로그램순매수"
-        End Get
-    End Property
+    Get
+        Return String.Concat(ChrW(&HD504), ChrW(&HB85C), ChrW(&HADF8), ChrW(&HB7A8), ChrW(&HC21C), ChrW(&HB9E4), ChrW(&HC218))
+    End Get
+End Property
     Public ReadOnly Property PanelIndex As Integer Implements IIndicator.PanelIndex
         Get
             Return 7
@@ -54,31 +54,89 @@ Public Class ProgramTrade_Indicator
         Dim count = candles.Count
         Dim results As New List(Of IndicatorResult)(count)
         SyncLock _dataLock
+            Dim isDateMode As Boolean = False
+            If _rawData.Count > 0 Then
+                Dim timeKeySet As New HashSet(Of Integer)
+                For Each d In _rawData
+                    timeKeySet.Add(d.Dt.Hour * 10000 + d.Dt.Minute * 100 + d.Dt.Second)
+                    If timeKeySet.Count > 3 Then Exit For
+                Next
+                isDateMode = (timeKeySet.Count <= 3)
+            End If
+
+            If isDateMode Then
+                Dim byDate As New Dictionary(Of Date, Single)
+                For Each d In _rawData
+                    byDate(d.Dt.Date) = d.NetBuy
+                Next
+
+                Dim firstIndexByDate As New Dictionary(Of Date, Integer)
+                For i = 0 To count - 1
+                    Dim cd = candles(i).Dt.Date
+                    If Not firstIndexByDate.ContainsKey(cd) Then
+                        firstIndexByDate(cd) = i
+                    End If
+                Next
+
+                Dim prevDayNet As Single = Single.NaN
+                For i = 0 To count - 1
+                    Dim v As Single = Single.NaN
+                    Dim cd = candles(i).Dt.Date
+                    If byDate.ContainsKey(cd) Then
+                        v = byDate(cd)
+                    End If
+                    Dim r As New IndicatorResult With {.Name = Name, .Index = i, .PanelIndex = PanelIndex,
+                        .Values = New Dictionary(Of String, Single)}
+                    r.Values("NetBuy") = v
+                    If Not Single.IsNaN(v) Then
+                        Dim isDayOpen = (firstIndexByDate.ContainsKey(cd) AndAlso firstIndexByDate(cd) = i)
+                        If isDayOpen Then
+                            If Single.IsNaN(prevDayNet) Then
+                                r.Values("DeltaBar") = Single.NaN
+                            Else
+                                r.Values("DeltaBar") = v - prevDayNet
+                            End If
+                            prevDayNet = v
+                        Else
+                            r.Values("DeltaBar") = Single.NaN
+                        End If
+                    Else
+                        r.Values("DeltaBar") = Single.NaN
+                    End If
+                    results.Add(r)
+                Next
+                Return results
+            End If
+
             Dim dIdx = 0
+            Dim currentNet As Single = Single.NaN
+            Dim prevNet As Single = Single.NaN
+            Dim currentDataDate As Date = Date.MinValue
+            Dim prevNetDate As Date = Date.MinValue
             For i = 0 To count - 1
                 Dim cDt = candles(i).Dt
-                Dim sum As Single = 0
-                Dim matched = False
-                Dim nextDt = If(i < count - 1, candles(i + 1).Dt, DateTime.MaxValue)
-                While dIdx < _rawData.Count AndAlso _rawData(dIdx).Dt < nextDt
-                    If _rawData(dIdx).Dt >= cDt Then
-                        sum += _rawData(dIdx).NetBuy
-                        matched = True
-                    End If
+                While dIdx < _rawData.Count AndAlso _rawData(dIdx).Dt <= cDt
+                    currentNet = _rawData(dIdx).NetBuy
+                    currentDataDate = _rawData(dIdx).Dt.Date
                     dIdx += 1
                 End While
+
                 Dim r As New IndicatorResult With {.Name = Name, .Index = i, .PanelIndex = PanelIndex,
                     .Values = New Dictionary(Of String, Single)}
-                If matched Then
-                    r.Values("NetBuy") = sum
-                    If sum >= 0 Then
-                        r.Values("Direction") = 1.0F
-                    Else
-                        r.Values("Direction") = -1.0F
-                    End If
-                Else
+
+                Dim sameDay As Boolean = (currentDataDate <> Date.MinValue AndAlso cDt.Date = currentDataDate)
+                If Single.IsNaN(currentNet) OrElse Not sameDay Then
                     r.Values("NetBuy") = Single.NaN
-                    r.Values("Direction") = Single.NaN
+                    r.Values("DeltaBar") = Single.NaN
+                Else
+                    r.Values("NetBuy") = currentNet
+                    If Single.IsNaN(prevNet) OrElse prevNetDate <> cDt.Date Then
+                        r.Values("DeltaBar") = Single.NaN
+                    Else
+                        r.Values("DeltaBar") = currentNet - prevNet
+                    End If
+                    prevNet = currentNet
+                    prevNetDate = cDt.Date
                 End If
                 results.Add(r)
             Next
@@ -109,3 +167,4 @@ Public Class ProgramTrade_Indicator
         End If
     End Sub
 End Class
+

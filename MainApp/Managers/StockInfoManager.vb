@@ -236,6 +236,7 @@ Public Class StockInfoManager
             If Not _candleRequested.TryAdd(code, True) Then Continue For
             MessageBus.I.Emit(Topics.CANDLE_REQUEST,
                               "code", code,
+                              "provider", RuntimeChartSettings.MarketDataProvider,
                               "timeframe", RuntimeChartSettings.DefaultCandleTimeframe,
                               "count", RuntimeChartSettings.DefaultCandleRequestCount)
             requested += 1
@@ -342,6 +343,16 @@ Public Class StockInfoManager
         MessageBus.I.EmitOnUI(m)
         Return True
     End Function
+
+    Public Function IsCandleRequested(code As String) As Boolean
+        If String.IsNullOrWhiteSpace(code) Then Return False
+        Return _candleRequested.ContainsKey(code)
+    End Function
+
+    Public Sub MarkCandleRequested(code As String)
+        If String.IsNullOrWhiteSpace(code) Then Return
+        _candleRequested.TryAdd(code, True)
+    End Sub
 
     Private Sub OnTick(m As Msg)
         Dim code = m.Str("code")

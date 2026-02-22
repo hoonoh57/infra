@@ -82,6 +82,8 @@ Public Class Topics
     Public Const INVESTOR_RESULT As String = "investor.result"
     Public Const PROGRAM_TRADE_REQUEST As String = "program.trade.request"
     Public Const PROGRAM_TRADE_RESULT As String = "program.trade.result"
+    Public Const PROGRAM_TRADE_RT_SUBSCRIBE As String = "program.trade.rt.subscribe"
+    Public Const PROGRAM_TRADE_RT_UNSUBSCRIBE As String = "program.trade.rt.unsubscribe"
 
     ' ═══ 재무 ═══
     Public Const FINANCE_REQUEST As String = "finance.request"

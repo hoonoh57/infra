@@ -185,10 +185,13 @@ Public Class KiwoomEngine
 
         _trQueue.Enqueue(Sub()
                              UiInvoke(Sub()
-                                          For Each field In def.Inputs
-                                              Dim val = msg.Str(field.Name, "")
-                                              If val <> "" Then _api.SetInputValue(field.KiwoomName, val)
-                                          Next
+                                         If String.Equals(def.TrCode, "OPT90008", StringComparison.OrdinalIgnoreCase) Then
+                                             _api.SetInputValue("시간일자구분", "1")
+                                         End If
+                                         For Each field In def.Inputs
+                                             Dim val = msg.Str(field.Name, "")
+                                             If val <> "" Then _api.SetInputValue(field.KiwoomName, val)
+                                         Next
                                           Dim ret = _api.CommRqData(rqName, def.TrCode, 0, scrNo)
                                           If ret <> 0 Then
                                               _pendingTr.TryRemove(rqName, Nothing)
@@ -236,10 +239,13 @@ Public Class KiwoomEngine
                 If def.SupportsContinuation AndAlso e.sPrevNext = "2" Then
                     _trQueue.Enqueue(Sub()
                                          UiInvoke(Sub()
-                                                      For Each field In def.Inputs
-                                                          Dim val = pending.InputMsg.Str(field.Name, "")
-                                                          If val <> "" Then _api.SetInputValue(field.KiwoomName, val)
-                                                      Next
+                                                     If String.Equals(def.TrCode, "OPT90008", StringComparison.OrdinalIgnoreCase) Then
+                                                         _api.SetInputValue("시간일자구분", "1")
+                                                     End If
+                                                     For Each field In def.Inputs
+                                                         Dim val = pending.InputMsg.Str(field.Name, "")
+                                                         If val <> "" Then _api.SetInputValue(field.KiwoomName, val)
+                                                     Next
                                                       _api.CommRqData(e.sRQName, def.TrCode, 2, pending.ScreenNo)
                                                   End Sub)
                                      End Sub, e.sRQName & "_cont")

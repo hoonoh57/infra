@@ -91,6 +91,8 @@ Public Class ChartForm
 
     Public Sub RequestCandles(stockCode As String, chartType As String, count As Integer) Implements IChartHost.RequestCandles
         If StockInfoManager.I.TryEmitCachedCandles(stockCode, count) Then Return
+        If StockInfoManager.I.IsCandleRequested(stockCode) Then Return
+        StockInfoManager.I.MarkCandleRequested(stockCode)
 
         ' 차트 타입에 따른 캔들 요청 토픽 결정
         Dim topic = Topics.CANDLE_REQUEST
@@ -99,6 +101,7 @@ Public Class ChartForm
         MessageBus.I.Emit(topic,
                           "code", stockCode,
                           "stockCode", stockCode, ' FastChartControl handles "stockCode" or "code"
+                          "provider", RuntimeChartSettings.MarketDataProvider,
                           "timeframe", RuntimeChartSettings.DefaultCandleTimeframe,
                           "count", count)
     End Sub

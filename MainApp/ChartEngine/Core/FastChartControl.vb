@@ -82,6 +82,10 @@ Public Class FastChartControl
     Private _requestedCount As Integer = RuntimeChartSettings.DefaultChartOpenCount
     Private _lastTickCandleRequestCount As Integer = 0
     Private _tickCandleRetryCount As Integer = 0
+    Private _tickAuxRequested As Boolean = False
+    Private _programAuxRequested As Boolean = False
+    Private _programRtSubscribed As Boolean = False
+    Private _sectorAuxRequested As Boolean = False
 
     ' ──────────────────── 엔진 ────────────────────
     Private ReadOnly _indicatorEngine As New IndicatorEngine()
@@ -130,6 +134,7 @@ Public Class FastChartControl
     Private _showCurrentPriceLine As Boolean = True
     Private _showPrevCloseLine As Boolean = True
     Private _showViLine As Boolean = False
+    Private _showDayChangeLines As Boolean = True
 
     ' ──────────────────── 프레임 쓰로틀 ────────────────────
     Private _frameTimer As Timer
@@ -140,6 +145,8 @@ Public Class FastChartControl
 
     ' ──────────────────── 패널 정보 ────────────────────
     Private _panelIndicators As New List(Of List(Of String))
+    Private _panelRanges As New List(Of Tuple(Of Single, Single))
+    Private _panelLeftRanges As New List(Of Tuple(Of Single, Single))
 
     Public Sub New()
         SetStyle(ControlStyles.Selectable, True)
@@ -182,10 +189,22 @@ Public Class FastChartControl
     End Sub
 
     Public Sub SetStock(stockCode As String, Optional chartType As String = "minute", Optional count As Integer = 0)
+        Dim prevCode = _stockCode
+        If Not String.IsNullOrWhiteSpace(prevCode) AndAlso
+           Not String.Equals(prevCode, stockCode, StringComparison.OrdinalIgnoreCase) Then
+            MessageBus.I.Emit("program.trade.rt.unsubscribe",
+                              "code", prevCode,
+                              "provider", RuntimeChartSettings.MarketDataProvider)
+        End If
+
         _stockCode = stockCode
         _chartType = chartType
         _requestedCount = If(count > 0, count, RuntimeChartSettings.DefaultChartOpenCount)
         _tickCandleRetryCount = 0
+        _tickAuxRequested = False
+        _programAuxRequested = False
+        _programRtSubscribed = False
+        _sectorAuxRequested = False
         If _chartHost IsNot Nothing Then
             _stockName = _chartHost.GetStockName(stockCode)
         Else
@@ -423,6 +442,7 @@ Public Class FastChartControl
                                                                   Dim stopTime = GetTickStopTime()
                                                                   MessageBus.I.Emit(Topics.TICK_CANDLE_REQUEST,
                                                                                     "code", _stockCode,
+                                                                                    "provider", RuntimeChartSettings.MarketDataProvider,
                                                                                     "count", reqCnt,
                                                                                     "tickUnit", tickUnit,
                                                                                     "timeframe", RuntimeChartSettings.TickTimeframe(tickUnit),
@@ -431,6 +451,7 @@ Public Class FastChartControl
             End If
             Return
         End If
+        _tickAuxRequested = True
         _tickCandleRetryCount = 0
 
         Dim tickBars As New List(Of DateTime)
@@ -513,7 +534,30 @@ Public Class FastChartControl
         Dim code = If(m.Has("stockCode"), m.Str("stockCode"), m.Str("code"))
         If code <> _stockCode Then Return
 
+        Dim rawCnt = m.Int("rawRowCount", -1)
+        Dim rawFirstDt = m.Str("rawFirstDt", "")
+        Dim rawFirstNet = m.Str("rawFirstNet", "")
+        Dim rawLastDt = m.Str("rawLastDt", "")
+        Dim rawLastNet = m.Str("rawLastNet", "")
+        Dim providerObject = m.Str("providerObject", "")
+        Dim isIntraday = m.Str("isIntraday", "")
+        Dim rawFirstToken = m.Str("rawFirstToken", "")
+        Dim rawLastToken = m.Str("rawLastToken", "")
+        Dim probeError = m.Str("probeError", "")
+        Dim probeTrace = m.Str("probeTrace", "")
+        If rawCnt >= 0 Then
+            AppLogger.I.Info($"ProgramTrade source-range: {code} rows:{rawCnt} first[{rawFirstDt},{rawFirstNet}] last[{rawLastDt},{rawLastNet}] obj:{providerObject} intraday:{isIntraday} raw[{rawFirstToken}..{rawLastToken}] probeErr:{probeError}", "Data")
+            If Not String.IsNullOrWhiteSpace(probeTrace) Then
+                AppLogger.I.Info($"ProgramTrade probe-trace: {code} {probeTrace}", "Data")
+            End If
+        End If
+
         Dim hasAdded As Boolean = False
+        Dim addedCount As Integer = 0
+        Dim firstAddedDt As DateTime = DateTime.MinValue
+        Dim firstAddedNet As Single = Single.NaN
+        Dim lastAddedDt As DateTime = DateTime.MinValue
+        Dim lastAddedNet As Single = Single.NaN
         If m.Has("rows") Then
             Dim rows = m.DictList("rows")
             If rows IsNot Nothing Then
@@ -523,12 +567,33 @@ Public Class FastChartControl
                     Dim netBuyRow As Single = Single.NaN
                     If row.ContainsKey("netBuy") Then netBuyRow = CSng(SharedUtil.SafeDouble(row("netBuy"), True))
                     If Single.IsNaN(netBuyRow) AndAlso row.ContainsKey("value") Then netBuyRow = CSng(SharedUtil.SafeDouble(row("value"), True))
+                    If Single.IsNaN(netBuyRow) AndAlso row.ContainsKey("net") Then netBuyRow = CSng(SharedUtil.SafeDouble(row("net"), True))
                     If Single.IsNaN(netBuyRow) AndAlso row.ContainsKey("순매수") Then netBuyRow = CSng(SharedUtil.SafeDouble(row("순매수"), True))
                     If Single.IsNaN(netBuyRow) Then Continue For
 
                     Dim dtRow = ParseCandleDateTime(row)
-                    If Not RowHasDatePart(row) Then dtRow = DateTime.MinValue
+                    If Not RowHasDatePart(row) Then
+                        dtRow = NormalizeTimeOnlyDate(dtRow, fallbackDtRows)
+                    End If
                     If dtRow = DateTime.MinValue Then dtRow = fallbackDtRows
+                    dtRow = AlignToCandleRangeDate(dtRow)
+
+                    If addedCount = 0 Then
+                        firstAddedDt = dtRow
+                        firstAddedNet = netBuyRow
+                        lastAddedDt = dtRow
+                        lastAddedNet = netBuyRow
+                    Else
+                        If dtRow < firstAddedDt Then
+                            firstAddedDt = dtRow
+                            firstAddedNet = netBuyRow
+                        End If
+                        If dtRow > lastAddedDt Then
+                            lastAddedDt = dtRow
+                            lastAddedNet = netBuyRow
+                        End If
+                    End If
+                    addedCount += 1
 
                     For Each ind In _indicatorEngine.GetAll()
                         Dim progInd = TryCast(ind, ProgramTrade_Indicator)
@@ -540,15 +605,20 @@ Public Class FastChartControl
                 Next
             End If
         End If
+        If addedCount > 0 Then
+            AppLogger.I.Info($"ProgramTrade parsed-range: {code} rows:{addedCount} first[{FormatDebugDateTime(firstAddedDt)},{FormatDebugSingle(firstAddedNet)}] last[{FormatDebugDateTime(lastAddedDt)},{FormatDebugSingle(lastAddedNet)}]", "Data")
+        End If
 
         Dim netBuy As Single = Single.NaN
         If m.Has("netBuy") Then netBuy = m.Sng("netBuy")
         If Single.IsNaN(netBuy) AndAlso m.Has("value") Then netBuy = m.Sng("value")
+        If Single.IsNaN(netBuy) AndAlso m.Has("net") Then netBuy = m.Sng("net")
         If Single.IsNaN(netBuy) AndAlso m.Has("순매수") Then netBuy = CSng(SharedUtil.SafeDouble(m.Str("순매수"), True))
         If Single.IsNaN(netBuy) AndAlso Not hasAdded Then Return
 
         Dim fallbackDt = If(_candles IsNot Nothing AndAlso _candles.Count > 0, _candles(_candles.Count - 1).Dt, DateTime.Now)
         Dim dt As DateTime = ParseMsgDateTime(m, fallbackDt)
+        dt = AlignToCandleRangeDate(dt)
 
         If Not Single.IsNaN(netBuy) Then
             For Each ind In _indicatorEngine.GetAll()
@@ -562,11 +632,21 @@ Public Class FastChartControl
         If _candles Is Nothing OrElse _candles.Count = 0 Then Return
         If InvokeRequired Then
             BeginInvoke(Sub()
-                            _indicatorEngine.UpdateLast(_candles)
+                            If hasAdded Then
+                                _indicatorEngine.CalculateAll(_candles)
+                            Else
+                                _indicatorEngine.UpdateLast(_candles)
+                            End If
+                            LogProgramTradeSyncState(code, addedCount, firstAddedDt, firstAddedNet, lastAddedDt, lastAddedNet)
                             _needsRepaint = True
                         End Sub)
         Else
-            _indicatorEngine.UpdateLast(_candles)
+            If hasAdded Then
+                _indicatorEngine.CalculateAll(_candles)
+            Else
+                _indicatorEngine.UpdateLast(_candles)
+            End If
+            LogProgramTradeSyncState(code, addedCount, firstAddedDt, firstAddedNet, lastAddedDt, lastAddedNet)
             _needsRepaint = True
         End If
     End Sub
@@ -589,7 +669,9 @@ Public Class FastChartControl
                     If Single.IsNaN(strengthRow) Then Continue For
 
                     Dim dtRow = ParseCandleDateTime(row)
-                    If Not RowHasDatePart(row) Then dtRow = DateTime.MinValue
+                    If Not RowHasDatePart(row) Then
+                        dtRow = NormalizeTimeOnlyDate(dtRow, fallbackDtRows)
+                    End If
                     If dtRow = DateTime.MinValue Then dtRow = fallbackDtRows
 
                     For Each ind In _indicatorEngine.GetAll()
@@ -624,11 +706,19 @@ Public Class FastChartControl
         If _candles Is Nothing OrElse _candles.Count = 0 Then Return
         If InvokeRequired Then
             BeginInvoke(Sub()
-                            _indicatorEngine.UpdateLast(_candles)
+                            If hasAdded Then
+                                _indicatorEngine.CalculateAll(_candles)
+                            Else
+                                _indicatorEngine.UpdateLast(_candles)
+                            End If
                             _needsRepaint = True
                         End Sub)
         Else
-            _indicatorEngine.UpdateLast(_candles)
+            If hasAdded Then
+                _indicatorEngine.CalculateAll(_candles)
+            Else
+                _indicatorEngine.UpdateLast(_candles)
+            End If
             _needsRepaint = True
         End If
     End Sub
@@ -688,7 +778,7 @@ Public Class FastChartControl
         Dim needProgram = _indicatorEngine.GetAll().Any(Function(i) TypeOf i Is ProgramTrade_Indicator)
         Dim needSector = _indicatorEngine.GetAll().Any(Function(i) TypeOf i Is SectorLeader_Indicator)
 
-        If needTickIntensity Then
+        If needTickIntensity AndAlso Not _tickAuxRequested Then
             Dim tickUnit = RuntimeChartSettings.DefaultTickUnit
             Dim firstDt = _candles(0).Dt
             Dim lastDt = _candles(_candles.Count - 1).Dt
@@ -698,22 +788,38 @@ Public Class FastChartControl
             Dim tickCount = estCount
             _lastTickCandleRequestCount = tickCount
             _tickCandleRetryCount = 0
+            _tickAuxRequested = True
             MessageBus.I.Emit(Topics.TICK_CANDLE_REQUEST,
                               "code", _stockCode,
+                              "provider", RuntimeChartSettings.MarketDataProvider,
                               "count", tickCount,
                               "tickUnit", tickUnit,
                               "timeframe", RuntimeChartSettings.TickTimeframe(tickUnit),
                               "stopTime", GetTickStopTime())
         End If
 
-        If needProgram Then
+        If needProgram AndAlso Not _programAuxRequested Then
             Dim reqCount = Math.Max(20, Math.Min(RuntimeChartSettings.ProgramTradeRequestCount, candleCount * 2))
-            MessageBus.I.Emit(Topics.PROGRAM_TRADE_REQUEST, "code", _stockCode, "count", reqCount)
+            _programAuxRequested = True
+            Dim baseDate = _candles(_candles.Count - 1).Dt.ToString("yyyyMMdd")
+            MessageBus.I.Emit(Topics.PROGRAM_TRADE_REQUEST,
+                              "code", _stockCode,
+                              "provider", RuntimeChartSettings.MarketDataProvider,
+                              "count", reqCount,
+                              "stopTime", GetTickStopTime(),
+                              "baseDate", baseDate)
+            If Not _programRtSubscribed Then
+                _programRtSubscribed = True
+                MessageBus.I.Emit("program.trade.rt.subscribe",
+                                  "code", _stockCode,
+                                  "provider", RuntimeChartSettings.MarketDataProvider)
+            End If
         End If
 
-        If needSector Then
+        If needSector AndAlso Not _sectorAuxRequested Then
             Dim sectorCode = GuessSectorCode()
             If sectorCode <> "" Then
+                _sectorAuxRequested = True
                 MessageBus.I.Emit(Topics.SECTOR_STOCKS_REQUEST, "sectorCode", sectorCode)
             End If
         End If
@@ -754,9 +860,97 @@ Public Class FastChartControl
         Return normalized.ToString("yyyyMMddHHmmss")
     End Function
 
+    Private Shared Function NormalizeTimeOnlyDate(parsed As DateTime, fallback As DateTime) As DateTime
+        If parsed = DateTime.MinValue Then Return DateTime.MinValue
+        Dim isTodayOnly = (parsed.Date = DateTime.Today)
+        If Not isTodayOnly Then Return parsed
+        Dim baseDate = If(fallback = DateTime.MinValue, DateTime.Today, fallback.Date)
+        Return New DateTime(baseDate.Year, baseDate.Month, baseDate.Day, parsed.Hour, parsed.Minute, parsed.Second)
+    End Function
+
+    Private Function AlignToCandleRangeDate(dt As DateTime) As DateTime
+        If dt = DateTime.MinValue Then Return dt
+        If _candles Is Nothing OrElse _candles.Count = 0 Then Return dt
+
+        Dim firstDt = _candles(0).Dt
+        Dim lastDt = _candles(_candles.Count - 1).Dt
+        If firstDt = DateTime.MinValue OrElse lastDt = DateTime.MinValue Then Return dt
+
+        If dt.Date < firstDt.Date OrElse dt.Date > lastDt.Date Then
+            Return New DateTime(lastDt.Year, lastDt.Month, lastDt.Day, dt.Hour, dt.Minute, dt.Second)
+        End If
+        Return dt
+    End Function
+
+    Private Sub LogProgramTradeSyncState(code As String,
+                                         addedCount As Integer,
+                                         firstAddedDt As DateTime,
+                                         firstAddedNet As Single,
+                                         lastAddedDt As DateTime,
+                                         lastAddedNet As Single)
+        Dim progResults As List(Of IndicatorResult) = Nothing
+        If Not _indicatorEngine.Results.TryGetValue("PROG_TRADE", progResults) OrElse progResults Is Nothing Then
+            AppLogger.I.Info($"ProgramTrade sync-range: {code} results:0 sourceRows:{addedCount}", "Data")
+            Return
+        End If
+
+        Dim resultCount = progResults.Count
+        Dim firstVal As Single = Single.NaN
+        Dim lastVal As Single = Single.NaN
+        Dim firstDt As DateTime = DateTime.MinValue
+        Dim lastDt As DateTime = DateTime.MinValue
+        If resultCount > 0 Then
+            firstVal = progResults(0).Val("NetBuy")
+            lastVal = progResults(resultCount - 1).Val("NetBuy")
+            If _candles IsNot Nothing AndAlso _candles.Count > 0 Then
+                firstDt = _candles(0).Dt
+                lastDt = _candles(_candles.Count - 1).Dt
+            End If
+        End If
+
+        Dim firstValidIdx As Integer = -1
+        Dim lastValidIdx As Integer = -1
+        Dim validCount As Integer = 0
+        For i As Integer = 0 To resultCount - 1
+            Dim v = progResults(i).Val("NetBuy")
+            If Single.IsNaN(v) Then Continue For
+            validCount += 1
+            If firstValidIdx < 0 Then firstValidIdx = i
+            lastValidIdx = i
+        Next
+
+        Dim firstValidText As String = "n/a"
+        Dim lastValidText As String = "n/a"
+        If firstValidIdx >= 0 AndAlso firstValidIdx < resultCount Then
+            Dim dtText = If(_candles IsNot Nothing AndAlso firstValidIdx < _candles.Count, FormatDebugDateTime(_candles(firstValidIdx).Dt), $"idx:{firstValidIdx}")
+            firstValidText = $"{dtText},{FormatDebugSingle(progResults(firstValidIdx).Val("NetBuy"))}"
+        End If
+        If lastValidIdx >= 0 AndAlso lastValidIdx < resultCount Then
+            Dim dtText = If(_candles IsNot Nothing AndAlso lastValidIdx < _candles.Count, FormatDebugDateTime(_candles(lastValidIdx).Dt), $"idx:{lastValidIdx}")
+            lastValidText = $"{dtText},{FormatDebugSingle(progResults(lastValidIdx).Val("NetBuy"))}"
+        End If
+
+        AppLogger.I.Info($"ProgramTrade sync-range: {code} sourceRows:{addedCount} sourceFirst[{FormatDebugDateTime(firstAddedDt)},{FormatDebugSingle(firstAddedNet)}] sourceLast[{FormatDebugDateTime(lastAddedDt)},{FormatDebugSingle(lastAddedNet)}] arrFirst[{FormatDebugDateTime(firstDt)},{FormatDebugSingle(firstVal)}] arrLast[{FormatDebugDateTime(lastDt)},{FormatDebugSingle(lastVal)}] valid:{validCount}/{resultCount} firstValid[{firstValidText}] lastValid[{lastValidText}]", "Data")
+    End Sub
+
+    Private Shared Function FormatDebugDateTime(dt As DateTime) As String
+        If dt = DateTime.MinValue Then Return "MinValue"
+        Return dt.ToString("yyyy-MM-dd HH:mm:ss")
+    End Function
+
+    Private Shared Function FormatDebugSingle(v As Single) As String
+        If Single.IsNaN(v) Then Return "NaN"
+        If Single.IsInfinity(v) Then Return "INF"
+        Return v.ToString("0.######")
+    End Function
+
     Public Sub RefreshChartData()
         If String.IsNullOrWhiteSpace(_stockCode) Then Return
 
+        _tickAuxRequested = False
+        _programAuxRequested = False
+        _programRtSubscribed = False
+        _sectorAuxRequested = False
         If _chartHost IsNot Nothing Then
             _chartHost.RequestCandles(_stockCode, _chartType, _requestedCount)
         End If
@@ -930,9 +1124,7 @@ Public Class FastChartControl
         If dt <> DateTime.MinValue AndAlso dt.TimeOfDay.TotalSeconds > 0 Then Return dt
         If String.IsNullOrWhiteSpace(tm) Then Return dt
 
-        Dim digits = New String(tm.Where(Function(ch) Char.IsDigit(ch)).ToArray())
-        If digits.Length > 0 AndAlso digits.Length <= 6 Then digits = digits.PadLeft(6, "0"c)
-        If digits.Length = 4 Then digits &= "00"
+        Dim digits = NormalizeHHmmssDigits(tm)
         If digits.Length < 6 Then Return dt
 
         Dim hh As Integer
@@ -973,9 +1165,8 @@ Public Class FastChartControl
                 Return parsed
             End If
 
-            Dim digits = New String(raw.Where(Function(ch) Char.IsDigit(ch)).ToArray())
-            If digits.Length = 4 OrElse digits.Length = 5 OrElse digits.Length = 6 Then
-                digits = digits.PadLeft(6, "0"c)
+            Dim digits = NormalizeHHmmssDigits(raw)
+            If digits.Length = 6 Then
                 Dim hh As Integer
                 Dim mm As Integer
                 Dim ss As Integer
@@ -992,6 +1183,21 @@ Public Class FastChartControl
         Next
 
         Return fallback
+    End Function
+
+    Private Shared Function NormalizeHHmmssDigits(raw As String) As String
+        Dim digits = New String(If(raw, "").Where(Function(ch) Char.IsDigit(ch)).ToArray())
+        If digits.Length = 0 Then Return ""
+        If digits.Length <= 2 Then
+            Return digits.PadLeft(2, "0"c) & "0000"
+        End If
+        If digits.Length = 3 OrElse digits.Length = 4 Then
+            Return digits.PadLeft(4, "0"c) & "00"
+        End If
+        If digits.Length = 5 Then
+            Return digits.PadLeft(6, "0"c)
+        End If
+        Return digits.Substring(0, 6)
     End Function
 
     Friend Function IndexToX(candleIndex As Integer) As Single
@@ -1093,14 +1299,41 @@ Public Class FastChartControl
             p += CSng(gridStep)
         End While
 
-        Dim step2 = Math.Max(1, _vs.VisibleCount \ 6)
+        Dim s = Math.Max(0, _vs.StartIndex)
         Dim endI = Math.Min(_candles.Count - 1, _vs.EndIndex)
-        For i As Integer = _vs.StartIndex To endI Step step2
-            Dim x = IndexToX(i)
-            If x >= _mainRect.Left AndAlso x <= _mainRect.Right Then
-                canvas.DrawLine(x, _mainRect.Top, x, _totalHeight - MARGIN_BOTTOM, _paintGrid)
-            End If
-        Next
+        If endI >= s Then
+            Dim minuteStep = GetAxisMinuteStep(s, endI)
+            For i As Integer = s To endI
+                If i < 0 OrElse i >= _candles.Count Then Continue For
+                Dim dt = _candles(i).Dt
+                If dt = DateTime.MinValue Then Continue For
+                If Not ShouldDrawAxisTick(i, dt, minuteStep, s) Then Continue For
+                Dim x = IndexToX(i)
+                If x >= _mainRect.Left AndAlso x <= _mainRect.Right Then
+                    canvas.DrawLine(x, _mainRect.Top, x, _totalHeight - MARGIN_BOTTOM, _paintGrid)
+                End If
+            Next
+        End If
+
+        If _showDayChangeLines AndAlso endI > s Then
+            Using dayPaint As New SKPaint()
+                dayPaint.Style = SKPaintStyle.Stroke
+                dayPaint.Color = New SKColor(120, 130, 155, 150)
+                dayPaint.StrokeWidth = 1
+                dayPaint.PathEffect = SKPathEffect.CreateDash({3, 3}, 0)
+                For i As Integer = Math.Max(1, s) To endI
+                    If i >= _candles.Count Then Exit For
+                    Dim prevDt = _candles(i - 1).Dt
+                    Dim curDt = _candles(i).Dt
+                    If prevDt = DateTime.MinValue OrElse curDt = DateTime.MinValue Then Continue For
+                    If prevDt.Date = curDt.Date Then Continue For
+                    Dim x = IndexToX(i)
+                    If x >= _mainRect.Left AndAlso x <= _mainRect.Right Then
+                        canvas.DrawLine(x, _mainRect.Top, x, _totalHeight - MARGIN_BOTTOM, dayPaint)
+                    End If
+                Next
+            End Using
+        End If
     End Sub
 
     Private Shared Function CalculateNiceStep(range As Single, targetLines As Integer) As Double
@@ -1228,6 +1461,8 @@ Public Class FastChartControl
     End Function
 
     Private Sub DrawPanels(canvas As SKCanvas)
+        _panelRanges.Clear()
+        _panelLeftRanges.Clear()
         For panelIdx As Integer = 0 To _panelIndicators.Count - 1
             If panelIdx >= _panelRects.Count Then Exit For
             Dim rect = _panelRects(panelIdx)
@@ -1236,6 +1471,9 @@ Public Class FastChartControl
 
             Dim pMin As Single = Single.MaxValue
             Dim pMax As Single = Single.MinValue
+            Dim leftMin As Single = Single.MaxValue
+            Dim leftMax As Single = Single.MinValue
+            Dim hasLeftAxis As Boolean = False
             Dim s = Math.Max(0, _vs.StartIndex)
             Dim en = Math.Min(_candles.Count - 1, _vs.EndIndex)
 
@@ -1246,8 +1484,15 @@ Public Class FastChartControl
                 For i As Integer = s To maxI
                     Dim r = results(i)
                     If r Is Nothing OrElse r.Values Is Nothing Then Continue For
-                    For Each v In r.Values.Values
+                    For Each kv In r.Values
+                        Dim v = kv.Value
                         If Single.IsNaN(v) Then Continue For
+                        If IsPanelLeftAxisKey(indName, kv.Key) Then
+                            hasLeftAxis = True
+                            If v < leftMin Then leftMin = v
+                            If v > leftMax Then leftMax = v
+                            Continue For
+                        End If
                         If v < pMin Then pMin = v
                         If v > pMax Then pMax = v
                     Next
@@ -1262,6 +1507,17 @@ Public Class FastChartControl
             If mg < 0.01F Then mg = 1
             pMin -= mg
             pMax += mg
+            _panelRanges.Add(Tuple.Create(pMin, pMax))
+
+            If hasLeftAxis AndAlso leftMin <> Single.MaxValue AndAlso leftMax <> Single.MinValue Then
+                Dim lmg = (leftMax - leftMin) * 0.1F
+                If lmg < 0.01F Then lmg = 1
+                leftMin -= lmg
+                leftMax += lmg
+                _panelLeftRanges.Add(Tuple.Create(leftMin, leftMax))
+            Else
+                _panelLeftRanges.Add(Tuple.Create(Single.NaN, Single.NaN))
+            End If
 
             DrawPanelReferenceLine(canvas, rect, pMin, pMax, 0, panelIdx)
 
@@ -1272,10 +1528,6 @@ Public Class FastChartControl
                 Dim sr = results.FirstOrDefault(Function(r) r IsNot Nothing AndAlso r.Values IsNot Nothing AndAlso r.Values.Count > 0)
                 If sr Is Nothing Then Continue For
                 For Each vk In sr.Values.Keys
-                    If indName.StartsWith("TICKINT_", StringComparison.OrdinalIgnoreCase) AndAlso
-                       vk.Equals("Ratio", StringComparison.OrdinalIgnoreCase) Then
-                        Continue For
-                    End If
                     Dim paint = GetIndicatorPaint(indName & "_P_" & vk, cIdx)
                     cIdx += 1
                     Dim isHist = (vk.ToUpper().Contains("HIST") OrElse vk.ToUpper().Contains("BAR"))
@@ -1283,10 +1535,20 @@ Public Class FastChartControl
                        vk.Equals("TickSum", StringComparison.OrdinalIgnoreCase) Then
                         isHist = True
                     End If
+                    Dim isLeftAxis = IsPanelLeftAxisKey(indName, vk)
                     If isHist Then
                         DrawPanelHistogram(canvas, results, s, en, vk, rect, pMin, pMax, panelIdx)
                     Else
-                        DrawPanelLine(canvas, results, s, en, vk, paint, pMin, pMax, panelIdx)
+                        If isLeftAxis AndAlso panelIdx < _panelLeftRanges.Count Then
+                            Dim lr = _panelLeftRanges(panelIdx)
+                            If Not Single.IsNaN(lr.Item1) AndAlso Not Single.IsNaN(lr.Item2) Then
+                                DrawPanelLine(canvas, results, s, en, vk, paint, lr.Item1, lr.Item2, panelIdx)
+                            Else
+                                DrawPanelLine(canvas, results, s, en, vk, paint, pMin, pMax, panelIdx)
+                            End If
+                        Else
+                            DrawPanelLine(canvas, results, s, en, vk, paint, pMin, pMax, panelIdx)
+                        End If
                     End If
                 Next
             Next
@@ -1298,6 +1560,12 @@ Public Class FastChartControl
                 canvas.DrawText(String.Join(", ", indNames), rect.Left + 4, rect.Top + 14, lp)
             End Using
             DrawPanelAxisY(canvas, rect, pMin, pMax)
+            If panelIdx < _panelLeftRanges.Count Then
+                Dim lr = _panelLeftRanges(panelIdx)
+                If Not Single.IsNaN(lr.Item1) AndAlso Not Single.IsNaN(lr.Item2) Then
+                    DrawPanelAxisYLeft(canvas, rect, lr.Item1, lr.Item2)
+                End If
+            End If
         Next
     End Sub
 
@@ -1423,6 +1691,32 @@ Public Class FastChartControl
         canvas.DrawText(FormatAxisPrice(pMin), x, rect.Bottom - 2, _paintAxisText)
         _paintAxisText.TextSize = AXIS_FONT_SIZE
     End Sub
+
+    Private Sub DrawPanelAxisYLeft(canvas As SKCanvas, rect As SKRect, pMin As Single, pMax As Single)
+        Dim x = rect.Left + 4
+        _paintAxisText.TextSize = 9
+        canvas.DrawText(FormatAxisPrice(pMax), x, rect.Top + 10, _paintAxisText)
+        canvas.DrawText(FormatAxisPrice((pMin + pMax) / 2), x, rect.MidY + 4, _paintAxisText)
+        canvas.DrawText(FormatAxisPrice(pMin), x, rect.Bottom - 2, _paintAxisText)
+        _paintAxisText.TextSize = AXIS_FONT_SIZE
+    End Sub
+
+    Private Shared Function IsTickIntensityRatioKey(indName As String, valueKey As String) As Boolean
+        If String.IsNullOrWhiteSpace(indName) OrElse String.IsNullOrWhiteSpace(valueKey) Then Return False
+        Return indName.StartsWith("TICKINT_", StringComparison.OrdinalIgnoreCase) AndAlso
+               valueKey.Equals("Ratio", StringComparison.OrdinalIgnoreCase)
+    End Function
+
+    Private Shared Function IsProgramNetBuyLeftAxisKey(indName As String, valueKey As String) As Boolean
+        If String.IsNullOrWhiteSpace(indName) OrElse String.IsNullOrWhiteSpace(valueKey) Then Return False
+        Return indName.Equals("PROG_TRADE", StringComparison.OrdinalIgnoreCase) AndAlso
+               valueKey.Equals("NetBuy", StringComparison.OrdinalIgnoreCase)
+    End Function
+
+    Private Shared Function IsPanelLeftAxisKey(indName As String, valueKey As String) As Boolean
+        Return IsTickIntensityRatioKey(indName, valueKey) OrElse
+               IsProgramNetBuyLeftAxisKey(indName, valueKey)
+    End Function
 
     Private Sub DrawCurrentPriceLine(canvas As SKCanvas)
         If _candles.Count = 0 Then Return
@@ -1570,18 +1864,26 @@ Public Class FastChartControl
     Private Sub DrawAxisX(canvas As SKCanvas)
         _paintAxisText.TextAlign = SKTextAlign.Center
         Dim y = _totalHeight - MARGIN_BOTTOM + 14
-        Dim step2 = Math.Max(1, _vs.VisibleCount \ 6)
+        Dim s = Math.Max(0, _vs.StartIndex)
         Dim endI = Math.Min(_candles.Count - 1, _vs.EndIndex)
+        If endI < s Then
+            _paintAxisText.TextAlign = SKTextAlign.Left
+            Return
+        End If
 
+        Dim minuteStep = GetAxisMinuteStep(s, endI)
+        Dim minPixelGap As Single = 56.0F
+        Dim lastDrawX As Single = Single.MinValue
         Dim lastDate As DateTime = DateTime.MinValue
 
-        For i As Integer = _vs.StartIndex To endI Step step2
+        For i As Integer = s To endI
             If i < 0 OrElse i >= _candles.Count Then Continue For
-            Dim x = IndexToX(i)
-            If x < _mainRect.Left OrElse x > _mainRect.Right Then Continue For
-
             Dim c = _candles(i)
             If c.Dt = DateTime.MinValue Then Continue For
+            If Not ShouldDrawAxisTick(i, c.Dt, minuteStep, s) Then Continue For
+            Dim x = IndexToX(i)
+            If x < _mainRect.Left OrElse x > _mainRect.Right Then Continue For
+            If lastDrawX <> Single.MinValue AndAlso (x - lastDrawX) < minPixelGap Then Continue For
             Dim label As String
 
             ' 시간 부분이 00:00:00인 경우(일봉 등) 날짜 우선 표시
@@ -1589,8 +1891,8 @@ Public Class FastChartControl
                 label = c.Dt.ToString("MM/dd")
             Else
                 ' 이전 표시된 레이블과 날짜가 달라졌거나 첫 번째 레이블인 경우 날짜 포함
-                If c.Dt.Date <> lastDate.Date Then
-                    label = c.Dt.ToString("MM/dd HH:mm")
+                If lastDate = DateTime.MinValue OrElse c.Dt.Date <> lastDate.Date Then
+                    label = c.Dt.ToString("MM-dd HH:mm")
                 Else
                     label = c.Dt.ToString("HH:mm")
                 End If
@@ -1598,9 +1900,35 @@ Public Class FastChartControl
 
             canvas.DrawText(label, x, y, _paintAxisText)
             lastDate = c.Dt
+            lastDrawX = x
         Next
         _paintAxisText.TextAlign = SKTextAlign.Left
     End Sub
+
+    Private Function GetAxisMinuteStep(startIdx As Integer, endIdx As Integer) As Integer
+        Dim visibleCount = Math.Max(1, endIdx - startIdx + 1)
+        Dim targetLabels = 8
+        Dim rough = Math.Max(1, CInt(Math.Ceiling(visibleCount / CDbl(targetLabels))))
+        Dim steps As Integer() = {1, 2, 3, 5, 10, 15, 30, 60, 120, 180, 240}
+        For Each st In steps
+            If rough <= st Then Return st
+        Next
+        Return 240
+    End Function
+
+    Private Function ShouldDrawAxisTick(idx As Integer, dt As DateTime, minuteStep As Integer, startIdx As Integer) As Boolean
+        If idx = startIdx Then Return True
+        If idx > 0 AndAlso idx < _candles.Count Then
+            Dim prev = _candles(idx - 1).Dt
+            If prev <> DateTime.MinValue AndAlso prev.Date <> dt.Date Then Return True
+        End If
+        If dt.Second <> 0 Then Return False
+        If minuteStep <= 60 Then
+            Return (dt.Minute Mod minuteStep) = 0
+        End If
+        Dim totalMinutes = dt.Hour * 60 + dt.Minute
+        Return (totalMinutes Mod minuteStep) = 0
+    End Function
 
     Private Sub DrawCrosshair(canvas As SKCanvas)
         Dim mx = _vs.CrosshairX
@@ -1611,11 +1939,22 @@ Public Class FastChartControl
         canvas.DrawLine(mx, _mainRect.Top, mx, _totalHeight - MARGIN_BOTTOM, _paintCrosshair)
         If my <= _mainRect.Bottom Then
             canvas.DrawLine(_mainRect.Left, my, _mainRect.Right, my, _paintCrosshair)
-            Dim price = YToPrice(my)
-            Dim txt = FormatAxisPrice(price)
-            Dim tw = _paintCrosshairText.MeasureText(txt)
-            canvas.DrawRect(_mainRect.Right, my - CROSSHAIR_LABEL_H / 2, tw + 10, CROSSHAIR_LABEL_H, _paintCrosshairLabel)
-            canvas.DrawText(txt, _mainRect.Right + 5, my + 4, _paintCrosshairText)
+            DrawCrosshairYLabel(canvas, my, FormatAxisPrice(YToPrice(my)))
+        ElseIf my <= _volumeRect.Bottom Then
+            canvas.DrawLine(_volumeRect.Left, my, _volumeRect.Right, my, _paintCrosshair)
+            DrawCrosshairYLabel(canvas, my, FormatAxisPrice(YToVolume(my)))
+        Else
+            For pIdx As Integer = 0 To _panelRects.Count - 1
+                Dim rect = _panelRects(pIdx)
+                If my < rect.Top OrElse my > rect.Bottom Then Continue For
+                canvas.DrawLine(rect.Left, my, rect.Right, my, _paintCrosshair)
+                If pIdx < _panelRanges.Count Then
+                    Dim pMin = _panelRanges(pIdx).Item1
+                    Dim pMax = _panelRanges(pIdx).Item2
+                    DrawCrosshairYLabel(canvas, my, FormatAxisPrice(PanelYToValue(my, pMin, pMax, rect)))
+                End If
+                Exit For
+            Next
         End If
 
         Dim idx = XToIndex(mx)
@@ -1629,6 +1968,26 @@ Public Class FastChartControl
             DrawCandleInfo(canvas, idx)
         End If
     End Sub
+
+    Private Sub DrawCrosshairYLabel(canvas As SKCanvas, y As Single, text As String)
+        Dim tw = _paintCrosshairText.MeasureText(text)
+        canvas.DrawRect(_mainRect.Right, y - CROSSHAIR_LABEL_H / 2, tw + 10, CROSSHAIR_LABEL_H, _paintCrosshairLabel)
+        canvas.DrawText(text, _mainRect.Right + 5, y + 4, _paintCrosshairText)
+    End Sub
+
+    Private Function YToVolume(y As Single) As Single
+        If _volumeRect.Height <= 0 Then Return 0
+        Dim ratio = (_volumeRect.Bottom - y) / _volumeRect.Height
+        ratio = Math.Max(0, Math.Min(1, ratio))
+        Return CSng(_volumeMax * ratio)
+    End Function
+
+    Private Shared Function PanelYToValue(y As Single, pMin As Single, pMax As Single, rect As SKRect) As Single
+        If rect.Height <= 0 Then Return pMin
+        Dim ratio = (y - rect.Top) / rect.Height
+        ratio = Math.Max(0, Math.Min(1, ratio))
+        Return pMax - ratio * (pMax - pMin)
+    End Function
 
     Private Sub DrawCandleInfo(canvas As SKCanvas, idx As Integer)
         If idx < 0 OrElse idx >= _candles.Count Then Return
@@ -1963,6 +2322,13 @@ Public Class FastChartControl
                                                                 End Sub)
         miViLine.Checked = _showViLine
         miOpt.DropDownItems.Add(miViLine)
+
+        Dim miDayLine = New ToolStripMenuItem("Day Change Line", Nothing, Sub()
+                                                                              _showDayChangeLines = Not _showDayChangeLines
+                                                                              _needsRepaint = True
+                                                                          End Sub)
+        miDayLine.Checked = _showDayChangeLines
+        miOpt.DropDownItems.Add(miDayLine)
         menu.Items.Add(miOpt)
 
         menu.Items.Add(New ToolStripSeparator())
@@ -2188,6 +2554,11 @@ Public Class FastChartControl
             MessageBus.I.Off(Topics.TRADE_STRENGTH, AddressOf OnTradeStrength)
             MessageBus.I.Off(Topics.SECTOR_STOCKS_RESULT, AddressOf OnSectorStocksResult)
             MessageBus.I.Off(Topics.STRATEGY_SIGNAL, AddressOf OnStrategySignal)
+            If Not String.IsNullOrWhiteSpace(_stockCode) Then
+                MessageBus.I.Emit("program.trade.rt.unsubscribe",
+                                  "code", _stockCode,
+                                  "provider", RuntimeChartSettings.MarketDataProvider)
+            End If
             If _frameTimer IsNot Nothing Then
                 _frameTimer.Stop()
                 _frameTimer.Dispose()

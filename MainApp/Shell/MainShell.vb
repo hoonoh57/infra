@@ -474,6 +474,21 @@ Public Class MainShell
                                                        End If
                                                    End Sub)
 
+        MessageBus.I.On(Topics.PROGRAM_TRADE_REQUEST, Sub(m)
+                                                          Dim code = m.Str("code")
+                                                          Dim reqCnt = m.Int("count", 0)
+                                                          Dim stopTime = m.Str("stopTime", "")
+                                                          AppLogger.I.Info($"프로그램순매수 요청: {code} count:{reqCnt} stopTime:{stopTime}", "Data")
+                                                      End Sub)
+
+        MessageBus.I.On(Topics.PROGRAM_TRADE_RESULT, Sub(m)
+                                                         Dim code = m.Str("code")
+                                                         Dim rows = m.DictList("rows")
+                                                         Dim cnt = If(rows IsNot Nothing, rows.Count, 0)
+                                                         Dim provider = m.Str("provider", "")
+                                                         AppLogger.I.Info($"프로그램순매수 수신: {code} → {cnt}건 provider:{provider}", "Data")
+                                                     End Sub)
+
         ' 실시간 체결 로그 (샘플링: 100번째마다)
         Dim tickCounter As Integer = 0
         MessageBus.I.On(Topics.TICK, Sub(m)
