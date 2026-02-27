@@ -52,7 +52,10 @@ Namespace Services
                 ' Historical Evaluation 실행
                 Dim results = _evaluator.RunHistorical(stockCode, strat, candles, indicatorResults, prevClose)
                 ' 결과를 Marker(신호)로 변환
+                Dim buyCnt As Integer = results.Where(Function(r) r IsNot Nothing AndAlso r.IsBuySignal).Count()
+                Dim sellCnt As Integer = results.Where(Function(r) r IsNot Nothing AndAlso r.IsSellSignal).Count()
                 Dim markers = _evaluator.GenerateMarkers(results, candles)
+                AppLogger.I.Info($"[Strategy] {strat.Name}: eval={results.Count}, buy={buyCnt}, sell={sellCnt}, markers={markers.Count}")
 
                 ' 각 신호에 전략 정보 보강
                 For Each m In markers
@@ -162,17 +165,27 @@ Namespace Services
             Dim activeConditions = gate.Conditions.Where(Function(c) c.IsActive).ToList()
             If activeConditions.Count = 0 Then Return False
 
-            If gate.Operator = LogicalOperator.AND Then
-                Return activeConditions.All(Function(c)
-                                                Dim res As Boolean
-                                                Return states.TryGetValue(c.Id, res) AndAlso res
-                                            End Function)
-            Else
-                Return activeConditions.Any(Function(c)
-                                                Dim res As Boolean
-                                                Return states.TryGetValue(c.Id, res) AndAlso res
-                                            End Function)
-            End If
+            Select Case gate.Operator
+                Case LogicalOperator.AND
+                    Return activeConditions.All(Function(c)
+                                                    Dim res As Boolean
+                                                    Return states.TryGetValue(c.Id, res) AndAlso res
+                                                End Function)
+                Case LogicalOperator.OR
+                    Return activeConditions.Any(Function(c)
+                                                    Dim res As Boolean
+                                                    Return states.TryGetValue(c.Id, res) AndAlso res
+                                                End Function)
+                Case LogicalOperator.XOR
+                    Dim trueCount As Integer = 0
+                    For Each c In activeConditions
+                        Dim res As Boolean
+                        If states.TryGetValue(c.Id, res) AndAlso res Then trueCount += 1
+                    Next
+                    Return trueCount = 1
+                Case Else
+                    Return False
+            End Select
         End Function
     End Class
 End Namespace

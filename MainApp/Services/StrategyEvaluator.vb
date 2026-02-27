@@ -22,6 +22,7 @@ Namespace Services
 
             Dim snapshots = SnapshotService.CreateSnapshots(stockCode, candles, indicatorResults, prevClose)
             Dim results As New List(Of EvaluationResult)
+            LogStrategyInputs(strategy, snapshots)
 
             ' 가상 포지션 상태 추적 (수익률 기반 매도를 위해)
             Dim entryPrice As Double = 0
@@ -68,6 +69,27 @@ Namespace Services
 
             Return results
         End Function
+
+        Private Shared Sub LogStrategyInputs(strategy As StrategyDefinition, snapshots As List(Of MarketSnapshot))
+            If strategy Is Nothing OrElse snapshots Is Nothing OrElse snapshots.Count = 0 Then Return
+            Dim keys As New List(Of String) From {"Price", "SuperTrend"}
+            Dim allConds = strategy.BuyRules.SelectMany(Function(g) g.Conditions).
+                Concat(strategy.SellRules.SelectMany(Function(g) g.Conditions))
+            For Each c In allConds
+                If c Is Nothing Then Continue For
+                If Not String.IsNullOrWhiteSpace(c.IndicatorA) AndAlso Not keys.Contains(c.IndicatorA) Then keys.Add(c.IndicatorA)
+                If Not String.IsNullOrWhiteSpace(c.IndicatorB) AndAlso Not keys.Contains(c.IndicatorB) Then keys.Add(c.IndicatorB)
+            Next
+
+            For Each k In keys
+                Dim valid As Integer = 0
+                For i = 0 To snapshots.Count - 1
+                    Dim v = snapshots(i).GetValue(k)
+                    If Not Double.IsNaN(v) Then valid += 1
+                Next
+                AppLogger.I.Info($"[StrategyDiag] {strategy.Name} key={k} valid={valid}/{snapshots.Count}")
+            Next
+        End Sub
 
         ''' <summary>
         ''' 평가 결과를 바탕으로 차트에 표시할 마커 리스트 생성

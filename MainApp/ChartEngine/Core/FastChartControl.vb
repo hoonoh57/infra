@@ -2382,10 +2382,11 @@ Public Class FastChartControl
         If strat Is Nothing Then Return
         AppLogger.I.Info($"[Strategy] Apply Strategy: {strat.Name}")
 
-        ' 기존 동일 이름 전략 제거 후 재등록
-        _appliedStrategies.RemoveAll(Function(s) s.Name = strat.Name)
+        ' 단일 전략 모드: 새 전략 적용 시 이전 전략/신호는 자동 제거
+        _appliedStrategies.Clear()
+        _signals.Clear()
+        _strategyEngine.Clear()
         _appliedStrategies.Add(strat)
-
         _strategyEngine.Register(strat)
         EvaluateStrategies()
         _needsRepaint = True
@@ -2415,7 +2416,9 @@ Public Class FastChartControl
         ' 기존 신호 초기화 (중복 방지)
         _signals.Clear()
 
-        Dim sigList = _strategyEngine.EvaluateAll(_stockCode, _candles, _indicatorEngine.Results, _prevClose)
+        Dim evalResults = BuildStrategyEvaluationResults()
+        Dim sigList = _strategyEngine.EvaluateAll(_stockCode, _candles, evalResults, _prevClose)
+        AppLogger.I.Info($"[Strategy] 평가 완료: code={_stockCode}, strategies={_appliedStrategies.Count}, signals={sigList.Count}")
         For Each sig In sigList
             _signals.Add(sig)
             Dim m As New Msg(Topics.STRATEGY_SIGNAL)
@@ -2429,6 +2432,65 @@ Public Class FastChartControl
             MessageBus.I.Emit(m)
         Next
     End Sub
+
+    Private Function BuildStrategyEvaluationResults() As Dictionary(Of String, List(Of IndicatorResult))
+        Dim merged As New Dictionary(Of String, List(Of IndicatorResult))(StringComparer.OrdinalIgnoreCase)
+
+        For Each kv In _indicatorEngine.Results
+            merged(kv.Key) = kv.Value
+        Next
+
+        If NeedSuperTrendForStrategies() AndAlso Not HasSuperTrendResults(merged) Then
+            Dim st As New SuperTrend_Indicator()
+            merged(st.Name) = st.Calculate(_candles)
+            AppLogger.I.Info($"[Strategy] 런타임 지표 보강: SuperTrend 자동 계산 ({st.Name})")
+        End If
+
+        Return merged
+    End Function
+
+    Private Function NeedSuperTrendForStrategies() As Boolean
+        For Each strat In _appliedStrategies
+            If strat Is Nothing Then Continue For
+
+            Dim buyConds = If(strat.BuyRules, New List(Of LogicGate)()).
+                SelectMany(Function(g) If(g Is Nothing OrElse g.Conditions Is Nothing, New List(Of ConditionCell)(), g.Conditions))
+            Dim sellConds = If(strat.SellRules, New List(Of LogicGate)()).
+                SelectMany(Function(g) If(g Is Nothing OrElse g.Conditions Is Nothing, New List(Of ConditionCell)(), g.Conditions))
+
+            For Each c In buyConds.Concat(sellConds)
+                If c Is Nothing Then Continue For
+                If String.Equals(c.IndicatorA, "SuperTrend", StringComparison.OrdinalIgnoreCase) OrElse
+                   String.Equals(c.IndicatorB, "SuperTrend", StringComparison.OrdinalIgnoreCase) Then
+                    Return True
+                End If
+            Next
+        Next
+
+        Return False
+    End Function
+
+    Private Function HasSuperTrendResults(results As Dictionary(Of String, List(Of IndicatorResult))) As Boolean
+        If results Is Nothing Then Return False
+
+        For Each kv In results
+            Dim k = If(kv.Key, "")
+            If Not (k.StartsWith("ST_", StringComparison.OrdinalIgnoreCase) OrElse
+                    k.IndexOf("SUPERTREND", StringComparison.OrdinalIgnoreCase) >= 0) Then
+                Continue For
+            End If
+
+            Dim rows = kv.Value
+            If rows Is Nothing Then Continue For
+            For Each r In rows
+                If r Is Nothing Then Continue For
+                Dim v = r.Val("Value")
+                If Not Single.IsNaN(v) Then Return True
+            Next
+        Next
+
+        Return False
+    End Function
 
     Private Shared Function FormatAxisPrice(price As Single) As String
         If price >= 1000 Then Return price.ToString("N0")

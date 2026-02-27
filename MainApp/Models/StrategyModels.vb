@@ -8,6 +8,7 @@ Namespace Models
     Public Enum LogicalOperator
         [AND]
         [OR]
+        [XOR]
     End Enum
 
     Public Enum ComparisonOperator
@@ -63,6 +64,11 @@ Namespace Models
     End Class
 
     Public Class StrategyDefinition
+        Public Property StrategyId As String = Guid.NewGuid().ToString("N")
+        Public Property GroupId As String = ""
+        Public Property BaseStrategyId As String = ""
+        Public Property Version As Integer = 1
+        Public Property DisplayOrder As Integer = 0
         Public Property Name As String
         Public Property Description As String
         Public Property NaturalLanguagePrompt As String
@@ -82,6 +88,19 @@ Namespace Models
             Me.SellRules = sell
             Me.NaturalLanguagePrompt = nlPrompt
         End Sub
+    End Class
+
+    Public Class StrategyGroup
+        Public Property GroupId As String = Guid.NewGuid().ToString("N")
+        Public Property GroupName As String = "Default"
+        Public Property Description As String = ""
+        Public Property DisplayOrder As Integer = 0
+        Public Property IsActive As Boolean = True
+    End Class
+
+    Public Class StrategyStore
+        Public Property Groups As New List(Of StrategyGroup)
+        Public Property Strategies As New List(Of StrategyDefinition)
     End Class
 
     Public Class EvaluationResult
@@ -117,13 +136,46 @@ Namespace Models
         End Sub
 
         Public Function GetValue(key As String) As Double
-            If key = "Price" OrElse key = "Close" Then Return Close
-            If key = "Open" Then Return Open
-            If key = "High" Then Return High
-            If key = "Low" Then Return Low
+            Dim normalizedKey As String = If(key, "").Trim()
+            If normalizedKey.Length = 0 Then Return Double.NaN
+
+            If String.Equals(normalizedKey, "Price", System.StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(normalizedKey, "Close", System.StringComparison.OrdinalIgnoreCase) Then Return Close
+            If String.Equals(normalizedKey, "Open", System.StringComparison.OrdinalIgnoreCase) Then Return Open
+            If String.Equals(normalizedKey, "High", System.StringComparison.OrdinalIgnoreCase) Then Return High
+            If String.Equals(normalizedKey, "Low", System.StringComparison.OrdinalIgnoreCase) Then Return Low
             
             Dim val As Double = 0
-            If Indicators.TryGetValue(key, val) Then Return val
+            If Indicators.TryGetValue(normalizedKey, val) Then Return val
+            For Each kv In Indicators
+                If String.Equals(kv.Key, normalizedKey, System.StringComparison.OrdinalIgnoreCase) Then
+                    Return kv.Value
+                End If
+            Next
+
+            ' 지표명.값 형태(ST_10_3.0.Value 등)까지 fallback 검색
+            Dim suffix As String = "." & normalizedKey
+            For Each kv In Indicators
+                If kv.Key Is Nothing Then Continue For
+                If kv.Key.EndsWith(suffix, System.StringComparison.OrdinalIgnoreCase) Then
+                    Return kv.Value
+                End If
+            Next
+
+            ' SuperTrend 별칭 fallback
+            If String.Equals(normalizedKey, "SuperTrend", System.StringComparison.OrdinalIgnoreCase) Then
+                For Each kv In Indicators
+                    Dim k = If(kv.Key, "")
+                    If k.IndexOf("SUPERTREND", System.StringComparison.OrdinalIgnoreCase) >= 0 Then
+                        Return kv.Value
+                    End If
+                    If k.StartsWith("ST_", System.StringComparison.OrdinalIgnoreCase) AndAlso
+                       k.EndsWith(".Value", System.StringComparison.OrdinalIgnoreCase) Then
+                        Return kv.Value
+                    End If
+                Next
+            End If
+
             Return Double.NaN
         End Function
 

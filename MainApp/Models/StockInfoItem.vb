@@ -91,6 +91,11 @@ Public Class StockInfoItem
         Dim p = CInt(m.Dbl("price"))
         If p > 0 Then
             Price = p
+
+            ' ★ 추가: 틱에서 prevClose가 제공되면 설정
+            Dim pc = CInt(m.Dbl("prevClose"))
+            If pc > 0 AndAlso PrevClose = 0 Then PrevClose = pc
+
             If PrevClose > 0 Then
                 Change = Price - PrevClose
                 ChangeRate = (Change / CDbl(PrevClose)) * 100
@@ -121,18 +126,66 @@ Public Class StockInfoItem
 
         Dim p = SafeInt(row, "현재가", "price") : If p > 0 Then Price = p
         Dim v = SafeLong(row, "거래량", "volume") : If v > 0 Then Volume = v
-        Dim cr = SafeDbl(row, "등락율", "changeRate") : ChangeRate = cr
-        Dim ch = SafeInt(row, "전일대비", "change") : Change = ch
         Dim hi = SafeInt(row, "고가", "high") : If hi > 0 Then High = hi
         Dim lo = SafeInt(row, "저가", "low") : If lo > 0 Then Low = lo
         Dim op = SafeInt(row, "시가", "open") : If op > 0 Then Open = op
 
-        If Price > 0 AndAlso Change <> 0 Then
+        ' ★ 수정1: 전일대비는 부호를 보존해야 함 (SafeInt의 Abs 제거 버전)
+        Dim ch = SafeIntSigned(row, "전일대비", "change", "대비")
+        Change = ch
+
+        ' ★ 수정2: PrevClose 역산 (Change로부터) 또는 직접 수신
+        Dim pc = SafeInt(row, "기준가", "prevClose", "전일종가")
+        If pc > 0 Then
+            PrevClose = pc
+        ElseIf Price > 0 AndAlso Change <> 0 Then
             PrevClose = Price - Change
+        End If
+
+        ' ★ 수정3: 등락률 - 키움 API 스케일 보정
+        Dim cr = SafeDblSigned(row, "등락율", "changeRate", "등락률")
+        ' 키움 OPTKWFID는 등락률을 100배 스케일로 보내므로 보정
+        If Math.Abs(cr) > 30 AndAlso PrevClose > 0 Then
+            ' 실제 등락률 재계산 (API 값이 의심스러울 때)
+            ChangeRate = If(PrevClose > 0, (CDbl(Change) / PrevClose) * 100, 0)
+        Else
+            ChangeRate = cr
         End If
 
         State = DataReadyState.InfoLoaded
     End Sub
+    ''' <summary>부호를 보존하는 SafeInt (전일대비 등에 사용)</summary>
+    Private Shared Function SafeIntSigned(d As Dictionary(Of String, Object), ParamArray keys() As String) As Integer
+        For Each k In keys
+            If d.ContainsKey(k) Then
+                Dim valStr = d(k)?.ToString()
+                If Not String.IsNullOrEmpty(valStr) Then
+                    Dim v As Integer = 0
+                    If Integer.TryParse(valStr.Trim().Replace("+", "").Replace(",", ""), v) Then
+                        Return v     ' ★ Math.Abs 제거! 부호 보존
+                    End If
+                End If
+            End If
+        Next
+        Return 0
+    End Function
+
+    ''' <summary>부호를 보존하는 SafeDbl</summary>
+    Private Shared Function SafeDblSigned(d As Dictionary(Of String, Object), ParamArray keys() As String) As Double
+        For Each k In keys
+            If d.ContainsKey(k) Then
+                Dim valStr = d(k)?.ToString()
+                If Not String.IsNullOrEmpty(valStr) Then
+                    Dim v As Double = 0
+                    If Double.TryParse(valStr.Trim().Replace("+", "").Replace(",", ""), v) Then
+                        Return v     ' ★ 부호 보존
+                    End If
+                End If
+            End If
+        Next
+        Return 0
+    End Function
+
 
     Private Shared Function SafeInt(d As Dictionary(Of String, Object), ParamArray keys() As String) As Integer
         For Each k In keys
