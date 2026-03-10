@@ -177,6 +177,14 @@ Public Class CybosBridge
                                                                                             MessageBus.I.EmitOnUI(r)
                                                                                         End Sub)
                                                           End Sub)
+        MessageBus.I.On(Topics.SECTOR_LIST_REQUEST, Sub(m)
+                                                        _client.호출("theme.top.rise", Sub(r)
+                                                                                         r.Topic = Topics.SECTOR_LIST_RESULT
+                                                                                         r("provider") = "cybos"
+                                                                                         MessageBus.I.EmitOnUI(r)
+                                                                                     End Sub,
+                                                                                     "riseType", m.Str("riseType", "1"))
+                                                    End Sub)
         MessageBus.I.On(Topics.SECTOR_STOCKS_REQUEST, Sub(m) _client.업종별종목(m.Str("sectorCode"), Sub(r)
                                                                                                     r.Topic = Topics.SECTOR_STOCKS_RESULT
                                                                                                     If Not r.Has("sectorCode") Then r("sectorCode") = m.Str("sectorCode")

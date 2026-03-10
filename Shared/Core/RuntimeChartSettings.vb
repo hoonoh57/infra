@@ -66,6 +66,36 @@ Public NotInheritable Class RuntimeChartSettings
         End Get
     End Property
 
+    Public Shared ReadOnly Property WatchlistFile As String
+        Get
+            Return GetStr("watchlist.file", "watchlist.json")
+        End Get
+    End Property
+
+    Public Shared ReadOnly Property ProgramTopCount As Integer
+        Get
+            Return GetInt("program_top.count", 30, 1, 100000)
+        End Get
+    End Property
+
+    Public Shared ReadOnly Property ProgramTopRefreshIntervalSeconds As Integer
+        Get
+            Return GetInt("program_top.refresh_interval_sec", 60, 1, 86400)
+        End Get
+    End Property
+
+    Public Shared ReadOnly Property MarketFollowKospiCount As Integer
+        Get
+            Return GetInt("market_follow.kospi_count", 30, 1, 100000)
+        End Get
+    End Property
+
+    Public Shared ReadOnly Property MarketFollowKosdaqCount As Integer
+        Get
+            Return GetInt("market_follow.kosdaq_count", 20, 1, 100000)
+        End Get
+    End Property
+
     Public Shared ReadOnly Property MarketDataProvider As String
         Get
             Dim p = GetStr("marketdata.provider", "cybos").Trim().ToLowerInvariant()
@@ -73,6 +103,18 @@ Public NotInheritable Class RuntimeChartSettings
             Return p
         End Get
     End Property
+
+    Public Shared Function GetString(section As String, key As String, defaultValue As String) As String
+        Return GetStr(BuildSectionKey(section, key), defaultValue)
+    End Function
+
+    Public Shared Function GetInt(section As String, key As String, defaultValue As Integer, minValue As Integer, maxValue As Integer) As Integer
+        Return GetInt(BuildSectionKey(section, key), defaultValue, minValue, maxValue)
+    End Function
+
+    Public Shared Function GetInt(section As String, key As String, defaultValue As Integer) As Integer
+        Return GetInt(BuildSectionKey(section, key), defaultValue, Integer.MinValue, Integer.MaxValue)
+    End Function
 
     Public Shared Function IsMarketDataProvider(providerName As String) As Boolean
         If String.IsNullOrWhiteSpace(providerName) Then Return False
@@ -111,16 +153,25 @@ Public NotInheritable Class RuntimeChartSettings
         If String.IsNullOrWhiteSpace(path) Then Return result
 
         Try
+            Dim currentSection As String = ""
             For Each raw In File.ReadAllLines(path)
                 If raw Is Nothing Then Continue For
                 Dim line = raw.Trim()
                 If line = "" Then Continue For
                 If line.StartsWith("#") OrElse line.StartsWith(";") Then Continue For
+                If line.StartsWith("[") AndAlso line.EndsWith("]") AndAlso line.Length > 2 Then
+                    currentSection = line.Substring(1, line.Length - 2).Trim()
+                    Continue For
+                End If
                 Dim p = line.IndexOf("="c)
                 If p <= 0 Then Continue For
                 Dim key = line.Substring(0, p).Trim()
                 Dim value = line.Substring(p + 1).Trim()
-                If key <> "" Then result(key) = value
+                If key = "" Then Continue For
+                If currentSection <> "" AndAlso key.IndexOf("."c) < 0 Then
+                    result($"{currentSection}.{key}") = value
+                End If
+                result(key) = value
             Next
         Catch
         End Try
@@ -156,6 +207,14 @@ Public NotInheritable Class RuntimeChartSettings
             If Not String.IsNullOrWhiteSpace(v) Then Return v.Trim()
         End If
         Return defaultValue
+    End Function
+
+    Private Shared Function BuildSectionKey(section As String, key As String) As String
+        Dim sectionName = If(section, "").Trim()
+        Dim keyName = If(key, "").Trim()
+        If sectionName = "" Then Return keyName
+        If keyName = "" Then Return sectionName
+        Return $"{sectionName}.{keyName}"
     End Function
 
     Private Shared Function GetInt(key As String, defaultValue As Integer, minValue As Integer, maxValue As Integer) As Integer

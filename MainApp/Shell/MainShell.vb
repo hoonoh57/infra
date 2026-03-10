@@ -174,10 +174,14 @@ Public Class MainShell
 
         Using dlg As New SectorSelectDialog(SectorSelectDialog.SectorMode.주도섹터)
             If dlg.ShowDialog(Me) = DialogResult.OK Then
-                AppLogger.I.Info($"주도섹터 선택: [{dlg.SelectedCode}] {dlg.SelectedName}", "DataSource")
+                Dim codes = dlg.SelectedCodes
+                If codes Is Nothing OrElse codes.Length = 0 Then
+                    AppLogger.I.Warn($"주도섹터 종목 없음: [{dlg.SelectedCode}] {dlg.SelectedName}", "DataSource")
+                    Return
+                End If
 
-                MessageBus.I.On(Topics.SECTOR_STOCKS_RESULT, AddressOf OnSectorStocksResult)
-                MessageBus.I.Emit(Topics.SECTOR_STOCKS_REQUEST, "sectorCode", dlg.SelectedCode)
+                AppLogger.I.Info($"주도섹터 선택: [{dlg.SelectedCode}] {dlg.SelectedName} / {codes.Length}종목", "DataSource")
+                StockInfoManager.I.AddStocks(codes, DataSourceType.주도섹터, dlg.SelectedName)
             End If
         End Using
     End Sub
@@ -210,6 +214,16 @@ Public Class MainShell
 
     Private Sub mnuSrcFavorite_Click(sender As Object, e As EventArgs) Handles mnuSrcFavorite.Click
         ShowDockForm(Of StockInfoForm)(DockState.DockLeft)
+        Using dlg As New WatchlistSelectDialog()
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                Dim codesRet = dlg.SelectedCodes
+                If codesRet IsNot Nothing AndAlso codesRet.Length > 0 Then
+                    AppLogger.I.Info($"관심종목 추가: {codesRet.Length}종목 [{dlg.SelectedGroupName}]", "DataSource")
+                    StockInfoManager.I.AddStocks(codesRet, DataSourceType.관심종목, dlg.SelectedGroupName)
+                End If
+            End If
+        End Using
+        Return
 
         Dim input = InputBox("관심종목 코드 입력 (세미콜론 구분):", "관심종목", "005930;035720;000660")
         If String.IsNullOrWhiteSpace(input) Then Return

@@ -5,6 +5,7 @@
 Imports CPSYSDIBLib
 Imports CPUTILLib
 Imports DSCBO1Lib
+Imports System.Linq
 Imports System.Runtime.InteropServices
 Imports System.Threading
 Imports [Shared]
@@ -74,6 +75,8 @@ Public Class CybosEngine
                     DoMarketEye(msg, callback)
 
                 ' ── 섹터 ──
+                Case "theme.top.rise"
+                    DoTopRiseThemes(msg, callback)
                 Case "업종별종목"
                     DoSectorStocks(msg, callback)
                 Case "테마별종목"
@@ -916,7 +919,7 @@ Public Class CybosEngine
     End Sub
 
     ' ════════════════════════════════════════
-    ' MarketEye (복수 종목 일괄 조회)
+    ' MarketEye (복수 종목 일괄 조회) — 공식 문서 기반 전면 수정
     ' ════════════════════════════════════════
 
     Private Sub DoMarketEye(msg As Msg, callback As Action(Of Msg))
@@ -931,8 +934,36 @@ Public Class CybosEngine
 
         Try
             Dim mEye As New MarketEye()
-            ' 필드: 0=종목코드, 4=현재가, 10=거래량, 12=등락률, 17=종목명
-            mEye.SetInputValue(0, New Object() {0, 4, 10, 12, 17})
+
+            ' ──────────────────────────────────────────────────────────
+            ' 공식 문서 필드 번호 (오름차순 정렬 필수!)
+            '  0: 종목코드(string)           idx=0
+            '  2: 대비부호(char)             idx=1  ← 전일대비와 반드시 같이 요청
+            '  3: 전일대비(long)             idx=2
+            '  4: 현재가(long)               idx=3
+            '  5: 시가(long)                 idx=4
+            '  6: 고가(long)                 idx=5
+            '  7: 저가(long)                 idx=6
+            '  8: 매도호가(long)             idx=7
+            '  9: 매수호가(long)             idx=8
+            ' 10: 거래량(ulong)              idx=9
+            ' 11: 거래대금(ulonglong,원)     idx=10
+            ' 17: 종목명(string)             idx=11
+            ' 20: 총상장주식수(ulonglong)    idx=12
+            ' 21: 외국인보유비율(float)      idx=13
+            ' 22: 전일거래량(ulong)          idx=14
+            ' 23: 전일종가(long)             idx=15
+            ' 24: 체결강도(float)            idx=16
+            ' 62: 외국인순매매(long,주)      idx=17
+            ' 67: PER(float)                 idx=18
+            '116: 프로그램순매수(long)        idx=19
+            '118: 당일외국인순매수(long)      idx=20
+            '120: 당일기관순매수(long)        idx=21
+            ' ──────────────────────────────────────────────────────────
+            Dim fields() As Object = {0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+                                   17, 20, 21, 22, 23, 24,
+                                   62, 67, 116, 118, 120}
+            mEye.SetInputValue(0, fields)
             mEye.SetInputValue(1, cybCodes)
 
             _limiter.WaitIfNeeded()
@@ -943,13 +974,106 @@ Public Class CybosEngine
 
             For i = 0 To cnt - 1
                 Dim row As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+
+                ' idx 0 → 필드0: 종목코드
                 Dim c = CStr(mEye.GetDataValue(0, i)).Trim()
                 If c.StartsWith("A") AndAlso c.Length = 7 Then c = c.Substring(1)
                 row("code") = c
-                row("name") = CStr(mEye.GetDataValue(4, i)).Trim()
-                row("price") = CStr(CInt(Math.Abs(CDbl(mEye.GetDataValue(1, i)))))
-                row("volume") = CStr(CLng(mEye.GetDataValue(2, i)))
-                row("changeRate") = CStr(CDbl(mEye.GetDataValue(3, i)))
+
+                ' idx 1 → 필드2: 대비부호 (char: '1'상한,'2'상승,'3'보합,'4'하한,'5'하락)
+                Dim signCode = CStr(mEye.GetDataValue(1, i)).Trim()
+                row("대비부호") = signCode
+                Dim signMul As Integer = 1
+                If signCode = "4" OrElse signCode = "5" Then signMul = -1
+
+                ' idx 2 → 필드3: 전일대비 (long, 절대값) — 부호는 대비부호로 판단
+                Dim changeAbs = CInt(Math.Abs(CDbl(mEye.GetDataValue(2, i))))
+                Dim changeVal = changeAbs * signMul
+                row("전일대비") = CStr(changeVal)
+                row("change") = row("전일대비")
+
+                ' idx 3 → 필드4: 현재가
+                Dim price = CInt(Math.Abs(CDbl(mEye.GetDataValue(3, i))))
+                row("현재가") = CStr(price)
+                row("price") = row("현재가")
+
+                ' idx 4 → 필드5: 시가
+                row("시가") = CStr(CInt(Math.Abs(CDbl(mEye.GetDataValue(4, i)))))
+                row("open") = row("시가")
+
+                ' idx 5 → 필드6: 고가
+                row("고가") = CStr(CInt(Math.Abs(CDbl(mEye.GetDataValue(5, i)))))
+                row("high") = row("고가")
+
+                ' idx 6 → 필드7: 저가
+                row("저가") = CStr(CInt(Math.Abs(CDbl(mEye.GetDataValue(6, i)))))
+                row("low") = row("저가")
+
+                ' idx 7 → 필드8: 매도호가
+                row("매도호가") = CStr(CInt(Math.Abs(CDbl(mEye.GetDataValue(7, i)))))
+                row("ask1") = row("매도호가")
+
+                ' idx 8 → 필드9: 매수호가
+                row("매수호가") = CStr(CInt(Math.Abs(CDbl(mEye.GetDataValue(8, i)))))
+                row("bid1") = row("매수호가")
+
+                ' idx 9 → 필드10: 거래량
+                row("거래량") = CStr(CLng(mEye.GetDataValue(9, i)))
+                row("volume") = row("거래량")
+
+                ' idx 10 → 필드11: 거래대금 (원)
+                row("거래대금") = CStr(CLng(mEye.GetDataValue(10, i)))
+
+                ' idx 11 → 필드17: 종목명
+                row("종목명") = CStr(mEye.GetDataValue(11, i)).Trim()
+                row("name") = row("종목명")
+
+                ' idx 12 → 필드20: 총상장주식수
+                row("상장주식수") = CStr(CLng(mEye.GetDataValue(12, i)))
+                row("listedShares") = row("상장주식수")
+
+                ' idx 13 → 필드21: 외국인보유비율
+                row("외국인보유비율") = CStr(CDbl(mEye.GetDataValue(13, i)))
+                row("foreignRate") = row("외국인보유비율")
+
+                ' idx 14 → 필드22: 전일거래량
+                row("전일거래량") = CStr(CLng(mEye.GetDataValue(14, i)))
+                row("prevVolume") = row("전일거래량")
+
+                ' idx 15 → 필드23: 전일종가
+                Dim prevClose = CInt(Math.Abs(CDbl(mEye.GetDataValue(15, i))))
+                row("전일종가") = CStr(prevClose)
+                row("prevClose") = row("전일종가")
+
+                ' idx 16 → 필드24: 체결강도
+                row("체결강도") = CStr(CDbl(mEye.GetDataValue(16, i)))
+                row("strength") = row("체결강도")
+
+                ' ★ 등락률은 직접 계산 (MarketEye에 등락률 필드 없음!)
+                If prevClose > 0 Then
+                    row("등락율") = (CDbl(changeVal) / prevClose * 100).ToString("F2")
+                Else
+                    row("등락율") = "0.00"
+                End If
+                row("changeRate") = row("등락율")
+
+                ' idx 17 → 필드62: 외국인순매매 (주)
+                row("외국인순매매") = CStr(CLng(mEye.GetDataValue(17, i)))
+                row("foreignNetBuy") = row("외국인순매매")
+
+                ' idx 18 → 필드67: PER
+                row("PER") = CStr(CDbl(mEye.GetDataValue(18, i)))
+
+                ' idx 19 → 필드116: 프로그램순매수
+                row("프로그램순매수") = CStr(CLng(mEye.GetDataValue(19, i)))
+                row("programNetBuy") = row("프로그램순매수")
+
+                ' idx 20 → 필드118: 당일외국인순매수
+                row("당일외국인순매수") = CStr(CLng(mEye.GetDataValue(20, i)))
+
+                ' idx 21 → 필드120: 당일기관순매수
+                row("당일기관순매수") = CStr(CLng(mEye.GetDataValue(21, i)))
+
                 allRows.Add(row)
             Next
 
@@ -962,9 +1086,47 @@ Public Class CybosEngine
         End Try
     End Sub
 
+
     ' ════════════════════════════════════════
     ' 섹터/테마
     ' ════════════════════════════════════════
+
+    Private Sub DoTopRiseThemes(msg As Msg, callback As Action(Of Msg))
+        Try
+            Dim riseType = msg.Str("riseType", "1")
+            If String.IsNullOrWhiteSpace(riseType) Then riseType = "1"
+
+            Dim obj = CreateObject("Dscbo1.CpSvr8563")
+            obj.SetInputValue(0, CChar(riseType.Substring(0, 1)))
+
+            _limiter.WaitIfNeeded()
+            obj.BlockRequest()
+
+            Dim cnt As Integer = CInt(obj.GetHeaderValue(0))
+            Dim allRows As New List(Of Dictionary(Of String, String))()
+
+            For i = 0 To cnt - 1
+                Dim row As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+                row("code") = CStr(obj.GetDataValue(0, i)).Trim()
+                row("name") = CStr(obj.GetDataValue(1, i)).Trim()
+                row("stockCount") = CStr(CInt(obj.GetDataValue(2, i)))
+                row("changeRate") = CStr(CDbl(obj.GetDataValue(3, i)))
+                row("changeRate5d") = CStr(CDbl(obj.GetDataValue(4, i)))
+                row("upCount") = CStr(CLng(obj.GetDataValue(5, i)))
+                row("downCount") = CStr(CLng(obj.GetDataValue(6, i)))
+                row("upRatio") = CStr(CLng(obj.GetDataValue(7, i)))
+                allRows.Add(row)
+            Next
+
+            Dim result = MakeOk("상승률 상위 테마 완료")
+            result("rows") = allRows
+            result("riseType") = riseType
+            callback(result)
+
+        Catch ex As Exception
+            callback(MakeError($"상승률 상위 테마 오류: {ex.Message}"))
+        End Try
+    End Sub
 
     Private Sub DoSectorStocks(msg As Msg, callback As Action(Of Msg))
         Try
@@ -997,24 +1159,41 @@ Public Class CybosEngine
     Private Sub DoThemeStocks(msg As Msg, callback As Action(Of Msg))
         Try
             Dim themeCode = msg.Str("themeCode")
-            Dim obj = CreateObject("CpSysDib.CpSvr8081")
-            obj.SetInputValue(0, themeCode)
-
-            _limiter.WaitIfNeeded()
-            obj.BlockRequest()
-
-            Dim cnt As Integer = CInt(obj.GetHeaderValue(0))
             Dim allRows As New List(Of Dictionary(Of String, String))()
+            Dim obj = CreateObject("Dscbo1.CpSvr8561T")
+            Dim themeCodeValue As Short = 0
+            Short.TryParse(themeCode, themeCodeValue)
+            obj.SetInputValue(0, themeCodeValue)
 
-            For i = 0 To cnt - 1
-                Dim row As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
-                row("code") = SharedUtil.NormalizeCode(CStr(obj.GetDataValue(0, i)))
-                row("name") = CStr(obj.GetDataValue(1, i)).Trim()
-                allRows.Add(row)
-            Next
+            Do
+                _limiter.WaitIfNeeded()
+                obj.BlockRequest()
+
+                Dim cnt As Integer = CInt(obj.GetHeaderValue(1))
+                For i = 0 To cnt - 1
+                    Dim row As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+                    row("code") = SharedUtil.NormalizeCode(CStr(obj.GetDataValue(0, i)))
+                    row("name") = CStr(obj.GetDataValue(1, i)).Trim()
+                    row("price") = CStr(CLng(obj.GetDataValue(2, i)))
+                    row("change") = CStr(CLng(obj.GetDataValue(3, i)))
+                    row("changeRate") = CStr(CDbl(obj.GetDataValue(4, i)))
+                    row("volume") = CStr(CLng(obj.GetDataValue(5, i)))
+                    row("changeRateVsPrevTime") = CStr(CDbl(obj.GetDataValue(6, i)))
+                    allRows.Add(row)
+                Next
+
+                If Not CBool(obj.Continue) Then Exit Do
+            Loop
+
+            allRows = allRows.
+                OrderByDescending(Function(r) ParseDoubleValue(r, "changeRate")).
+                ThenByDescending(Function(r) ParseDoubleValue(r, "volume")).
+                ThenBy(Function(r) If(r.ContainsKey("name"), r("name"), "")).
+                ToList()
 
             Dim result = MakeOk("테마별종목 완료")
             result("rows") = allRows
+            result("themeCode") = themeCode
             callback(result)
 
         Catch ex As Exception
@@ -1353,6 +1532,17 @@ Public Class CybosEngine
         mm = Math.Max(0, Math.Min(59, mm))
         ss = Math.Max(0, Math.Min(59, ss))
         Return New DateTime(baseDate.Year, baseDate.Month, baseDate.Day, hh, mm, ss)
+    End Function
+
+    Private Shared Function ParseDoubleValue(row As Dictionary(Of String, String), key As String) As Double
+        If row Is Nothing OrElse String.IsNullOrWhiteSpace(key) OrElse Not row.ContainsKey(key) Then Return 0
+
+        Dim text = If(row(key), "").Trim()
+        If text = "" Then Return 0
+
+        Dim value As Double
+        If Double.TryParse(text, value) Then Return value
+        Return 0
     End Function
 
     Private Function MakeOk(message As String, ParamArray pairs() As Object) As Msg

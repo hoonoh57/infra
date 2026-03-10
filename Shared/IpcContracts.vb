@@ -9,6 +9,7 @@ Public Enum MessageType As Byte
     RequestFinancial = 5          ' 재무정보 요청
     RequestNews = 6               ' 뉴스 요청
     RequestSectorLeader = 7       ' 주도섹터 요청
+    RequestMarketCapTop = 8       ' 시총 상위 종목 요청
     SubscribeRealtime = 10        ' 실시간 구독 요청
     UnsubscribeRealtime = 11      ' 실시간 구독 해제
     RequestConditionSearch = 12   ' 조건검색 요청

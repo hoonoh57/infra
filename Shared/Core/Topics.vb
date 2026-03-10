@@ -96,6 +96,13 @@ Public Class Topics
     Public Const SECTOR_STOCKS_RESULT As String = "sector.stocks.result"
     Public Const THEME_STOCKS_REQUEST As String = "theme.stocks.request"
     Public Const THEME_STOCKS_RESULT As String = "theme.stocks.result"
+    Public Const PROGRAM_TOP_BUY_REQUEST As String = "program.top.buy.request"
+    Public Const PROGRAM_TOP_BUY_RESULT As String = "program.top.buy.result"
+    Public Const WATCHLIST_LOAD As String = "watchlist.load"
+    Public Const WATCHLIST_SAVE As String = "watchlist.save"
+    Public Const WATCHLIST_LOADED As String = "watchlist.loaded"
+    Public Const MARKETCAP_TOP_REQUEST As String = "marketcap.top.request"
+    Public Const MARKETCAP_TOP_RESULT As String = "marketcap.top.result"
 
     ' ═══ 뉴스 ═══
     Public Const NEWS_LIST_REQUEST As String = "news.list.request"
