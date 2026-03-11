@@ -26,6 +26,9 @@ Public Class FastChartControl
     Private Const CROSSHAIR_LABEL_H As Single = 18
     Private Const SIGNAL_ARROW_SIZE As Single = 10
     Private Const RIGHT_DRAG_PADDING_BARS As Integer = 12
+    Private Const DEFAULT_INITIAL_VISIBLE_BARS As Integer = 100
+    Private Const DEFAULT_INITIAL_CANDLE_WIDTH As Single = 8
+    Private Const DEFAULT_INITIAL_GAP As Single = 2
 
     ' ──────────────────── 색상 팔레트 ────────────────────
     Private Shared ReadOnly ColBackground As New SKColor(24, 26, 32)
@@ -217,7 +220,7 @@ Public Class FastChartControl
 
         _candles.Clear()
         _signals.Clear()
-        _vs.StartIndex = 0
+        ResetInitialViewportState()
         _needsRepaint = True
 
         If _chartHost IsNot Nothing Then
@@ -297,7 +300,7 @@ Public Class FastChartControl
     End Sub
 
     Private Sub MoveToLatestVisible()
-        _vs.StartIndex = GetLatestStartIndex()
+        _vs.StartIndex = GetLatestStartIndex() + GetDefaultRightPaddingBars()
     End Sub
 
     Private Function GetLatestStartIndex() As Integer
@@ -308,6 +311,32 @@ Public Class FastChartControl
         Dim safeVisibleCount = Math.Max(1, visibleCount)
         Return Math.Max(0, _candles.Count - safeVisibleCount)
     End Function
+
+    Private Function GetDefaultRightPaddingBars() As Integer
+        Dim safeVisibleCount = Math.Max(1, _vs.VisibleCount)
+        Dim preferredPadding = Math.Max(3, CInt(Math.Round(safeVisibleCount * 0.08R)))
+        Return Math.Max(0, Math.Min(RIGHT_DRAG_PADDING_BARS, preferredPadding))
+    End Function
+
+    Private Function GetInitialVisibleCount() As Integer
+        Dim denom As Double = DEFAULT_INITIAL_CANDLE_WIDTH + DEFAULT_INITIAL_GAP
+        If denom <= 0 Then Return DEFAULT_INITIAL_VISIBLE_BARS
+
+        Dim chartWidth = CDbl(_skControl.Width) - MARGIN_LEFT - MARGIN_RIGHT
+        If chartWidth <= 0 Then Return DEFAULT_INITIAL_VISIBLE_BARS
+
+        Return Math.Max(10, CInt(Math.Truncate(chartWidth / denom)))
+    End Function
+
+    Private Sub ResetInitialViewportState()
+        _vs.StartIndex = 0
+        _vs.CandleWidth = DEFAULT_INITIAL_CANDLE_WIDTH
+        _vs.Gap = DEFAULT_INITIAL_GAP
+        _vs.VisibleCount = GetInitialVisibleCount()
+        _isAutoScaleY = True
+        _manualMaxP = 0
+        _manualMinP = 0
+    End Sub
 
     Private Function GetMaxDragStartIndex() As Integer
         Return Math.Max(0, GetLatestStartIndex() + RIGHT_DRAG_PADDING_BARS)
@@ -379,12 +408,12 @@ Public Class FastChartControl
             .ShowViLine = _showViLine,
             .ShowDayChangeLines = _showDayChangeLines,
             .ShowCrosshair = _vs.ShowCrosshair,
-            .IsAutoScaleY = _isAutoScaleY,
-            .ManualMaxPrice = _manualMaxP,
-            .ManualMinPrice = _manualMinP,
-            .CandleWidth = _vs.CandleWidth,
-            .Gap = _vs.Gap,
-            .VisibleCount = _vs.VisibleCount,
+            .IsAutoScaleY = True,
+            .ManualMaxPrice = 0,
+            .ManualMinPrice = 0,
+            .CandleWidth = DEFAULT_INITIAL_CANDLE_WIDTH,
+            .Gap = DEFAULT_INITIAL_GAP,
+            .VisibleCount = DEFAULT_INITIAL_VISIBLE_BARS,
             .PanelHeightRatio = _vs.PanelHeightRatio
         }
 
@@ -2457,14 +2486,12 @@ Public Class FastChartControl
         _showDayChangeLines = ctx.ShowDayChangeLines
 
         _vs.ShowCrosshair = ctx.ShowCrosshair
-        _vs.CandleWidth = Math.Max(1.0F, ctx.CandleWidth)
-        _vs.Gap = Math.Max(0.0F, ctx.Gap)
-        _vs.VisibleCount = Math.Max(1, ctx.VisibleCount)
+        ResetInitialViewportState()
+        _vs.ShowCrosshair = ctx.ShowCrosshair
         _vs.PanelHeightRatio = If(ctx.PanelHeightRatio > 0, ctx.PanelHeightRatio, _vs.PanelHeightRatio)
-
-        _isAutoScaleY = ctx.IsAutoScaleY
-        _manualMaxP = Math.Max(0.0F, ctx.ManualMaxPrice)
-        _manualMinP = Math.Max(0.0F, ctx.ManualMinPrice)
+        _isAutoScaleY = True
+        _manualMaxP = 0
+        _manualMinP = 0
     End Sub
 
     Private Sub ShowContextMenu(pt As Point)
