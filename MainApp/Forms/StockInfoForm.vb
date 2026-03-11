@@ -137,7 +137,7 @@ Public Class StockInfoForm
         ' 더블클릭 → 차트 열기
         AddHandler _grid.CellDoubleClick, Sub(s, e)
                                               If e.RowIndex < 0 Then Return
-                                              Dim code = CStr(_grid.Rows(e.RowIndex).Cells(0).Value)
+                                              Dim code = SharedUtil.NormalizeChartCode(CStr(_grid.Rows(e.RowIndex).Cells(0).Value))
                                               Dim name = CStr(_grid.Rows(e.RowIndex).Cells(1).Value)
                                               AppLogger.I.Info($"차트 열기 요청: {code} {name}", "StockInfo")
                                               MessageBus.I.Emit(Topics.UI_CHART_OPEN, "code", code)

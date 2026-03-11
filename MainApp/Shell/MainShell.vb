@@ -223,14 +223,6 @@ Public Class MainShell
                 End If
             End If
         End Using
-        Return
-
-        Dim input = InputBox("관심종목 코드 입력 (세미콜론 구분):", "관심종목", "005930;035720;000660")
-        If String.IsNullOrWhiteSpace(input) Then Return
-
-        Dim codes = input.Split(";"c).Select(Function(c) c.Trim()).Where(Function(c) c <> "").ToArray()
-        AppLogger.I.Info($"관심종목 추가: {codes.Length}종목", "DataSource")
-        StockInfoManager.I.AddStocks(codes, DataSourceType.관심종목, "수동입력")
     End Sub
 
     Private Sub mnuSrcKospiFollow_Click(sender As Object, e As EventArgs) Handles mnuSrcKospiFollow.Click
@@ -259,7 +251,7 @@ Public Class MainShell
         Dim code = InputBox("종목코드 입력:", "새 차트", "005930")
         If String.IsNullOrWhiteSpace(code) Then Return
 
-        code = code.Trim()
+        code = SharedUtil.NormalizeChartCode(code)
         AppLogger.I.Info($"새 차트 요청: {code}", "Shell")
 
         MessageBus.I.Emit(Topics.UI_CHART_OPEN, "code", code)

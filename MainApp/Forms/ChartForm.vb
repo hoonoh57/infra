@@ -73,10 +73,10 @@ Public Class ChartForm
     End Sub
 
     Public Sub SetStock(stockCode As String)
-        _stockCode = stockCode
-        Dim name = GetStockName(stockCode)
-        Me.Text = $"[{stockCode}] {name}"
-        _chart.SetStock(stockCode)
+        _stockCode = SharedUtil.NormalizeChartCode(stockCode)
+        Dim name = GetStockName(_stockCode)
+        Me.Text = $"[{_stockCode}] {name}"
+        _chart.SetStock(_stockCode)
     End Sub
 
     ' ════════════════════════════════════════
@@ -90,17 +90,17 @@ Public Class ChartForm
     End Function
 
     Public Sub RequestCandles(stockCode As String, chartType As String, count As Integer) Implements IChartHost.RequestCandles
-        If StockInfoManager.I.TryEmitCachedCandles(stockCode, count) Then Return
-        If StockInfoManager.I.IsCandleRequested(stockCode) Then Return
-        StockInfoManager.I.MarkCandleRequested(stockCode)
+        Dim requestCode = SharedUtil.NormalizeChartCode(stockCode)
+        If StockInfoManager.I.TryEmitCachedCandles(requestCode, count) Then Return
+        StockInfoManager.I.MarkCandleRequested(requestCode)
 
         ' 차트 타입에 따른 캔들 요청 토픽 결정
         Dim topic = Topics.CANDLE_REQUEST
         If chartType = "day" Then topic = Topics.DAILY_REQUEST
 
         MessageBus.I.Emit(topic,
-                          "code", stockCode,
-                          "stockCode", stockCode, ' FastChartControl handles "stockCode" or "code"
+                          "code", requestCode,
+                          "stockCode", requestCode, ' FastChartControl handles "stockCode" or "code"
                           "provider", RuntimeChartSettings.MarketDataProvider,
                           "timeframe", RuntimeChartSettings.DefaultCandleTimeframe,
                           "count", count)

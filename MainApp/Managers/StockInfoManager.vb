@@ -52,14 +52,21 @@ Public Class StockInfoManager
 
     ''' <summary>종목 추가 (이미 있으면 소스만 추가)</summary>
     Public Function AddStock(code As String, source As DataSourceType, Optional sourceDetail As String = "") As StockInfoItem
-        code = code.Trim()
+        code = SharedUtil.NormalizeChartCode(code.Trim())
         If String.IsNullOrEmpty(code) Then Return Nothing
 
         Dim item = _items.GetOrAdd(code, Function(k)
                                              Dim newItem As New StockInfoItem()
                                              newItem.Code = k
+                                             Dim knownName = SharedUtil.GetKnownIndexName(k)
+                                             If knownName <> "" Then newItem.Name = knownName
                                              Return newItem
                                          End Function)
+
+        If String.IsNullOrWhiteSpace(item.Name) Then
+            Dim knownName = SharedUtil.GetKnownIndexName(code)
+            If knownName <> "" Then item.Name = knownName
+        End If
 
         item.AddSource(source, sourceDetail)
         AppLogger.I.Debug($"종목 추가/업데이트: {code} [{source}] {sourceDetail}", "Manager")
@@ -262,6 +269,21 @@ Public Class StockInfoManager
         item.CandleCount = cnt
 
         If rows IsNot Nothing AndAlso rows.Count > 0 Then
+            Dim lastRow = rows(rows.Count - 1)
+            Dim closePrice = SharedUtil.SafeInt(If(If(lastRow.ContainsKey("close"), lastRow("close"), ""), ""))
+            If closePrice > 0 Then item.Price = closePrice
+            Dim openPrice = SharedUtil.SafeInt(If(If(lastRow.ContainsKey("open"), lastRow("open"), ""), ""))
+            If openPrice > 0 Then item.Open = openPrice
+            Dim highPrice = SharedUtil.SafeInt(If(If(lastRow.ContainsKey("high"), lastRow("high"), ""), ""))
+            If highPrice > 0 Then item.High = highPrice
+            Dim lowPrice = SharedUtil.SafeInt(If(If(lastRow.ContainsKey("low"), lastRow("low"), ""), ""))
+            If lowPrice > 0 Then item.Low = lowPrice
+            If item.PrevClose = 0 AndAlso rows.Count >= 2 Then
+                Dim prevRow = rows(rows.Count - 2)
+                Dim prevClose = SharedUtil.SafeInt(If(If(prevRow.ContainsKey("close"), prevRow("close"), ""), ""))
+                If prevClose > 0 Then item.PrevClose = prevClose
+            End If
+
             _candleRowsCache.AddOrUpdate(code,
                                          Function(k) CloneRows(rows),
                                          Function(k, oldRows)

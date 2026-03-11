@@ -367,10 +367,10 @@ Public Class KiwoomEngine
             m("code") = code
             m("sell") = SharedUtil.SafeDouble(_api.GetCommRealData(sType, Fid.프매도))
             m("buy") = SharedUtil.SafeDouble(_api.GetCommRealData(sType, Fid.프매수))
-            m("net") = SharedUtil.SafeDouble(_api.GetCommRealData(sType, Fid.프순매수))
+            m("net") = SharedUtil.SafeDouble(_api.GetCommRealData(sType, Fid.프순매수), True)
             m("sellCum") = SharedUtil.SafeDouble(_api.GetCommRealData(sType, Fid.프매도누적))
             m("buyCum") = SharedUtil.SafeDouble(_api.GetCommRealData(sType, Fid.프매수누적))
-            m("netCum") = SharedUtil.SafeDouble(_api.GetCommRealData(sType, Fid.프순매수누적))
+            m("netCum") = SharedUtil.SafeDouble(_api.GetCommRealData(sType, Fid.프순매수누적), True)
             RaiseEvent RealtimeReceived(m)
 
         ElseIf sType = "장시작시간" Then

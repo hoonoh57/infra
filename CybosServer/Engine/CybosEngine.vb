@@ -1364,6 +1364,9 @@ Public Class CybosEngine
     Private Function NormalizeCybosCode(code As String) As String
         If String.IsNullOrWhiteSpace(code) Then Return ""
         code = code.Trim()
+        If code.Length = 3 AndAlso code.All(Function(ch) Char.IsDigit(ch)) Then
+            Return "U" & code
+        End If
         If Not code.StartsWith("A") AndAlso Not code.StartsWith("U") AndAlso Not code.StartsWith("J") Then
             code = "A" & code
         End If
@@ -1591,10 +1594,10 @@ Friend Class ProgramTradeRtSubscription
             Dim price = CLng(SharedUtil.SafeLong(CStr(_sb.GetHeaderValue(2))))
             Dim buyQty = CLng(SharedUtil.SafeLong(CStr(_sb.GetHeaderValue(7))))
             Dim sellQty = CLng(SharedUtil.SafeLong(CStr(_sb.GetHeaderValue(8))))
-            Dim netQty = CLng(SharedUtil.SafeLong(CStr(_sb.GetHeaderValue(9))))
+            Dim netQty = CLng(SharedUtil.SafeLongSigned(CStr(_sb.GetHeaderValue(9))))
             Dim buyAmt = CLng(SharedUtil.SafeLong(CStr(_sb.GetHeaderValue(10))))
             Dim sellAmt = CLng(SharedUtil.SafeLong(CStr(_sb.GetHeaderValue(11))))
-            Dim netAmt = CLng(SharedUtil.SafeLong(CStr(_sb.GetHeaderValue(12))))
+            Dim netAmt = CLng(SharedUtil.SafeLongSigned(CStr(_sb.GetHeaderValue(12))))
             _sink?.Invoke(code, tm, price, buyQty, sellQty, netQty, buyAmt, sellAmt, netAmt)
         Catch
         End Try

@@ -42,6 +42,7 @@ Public Class WatchlistService
     Public Sub Save()
         Try
             If _data Is Nothing Then _data = New WatchlistData()
+            _data = NormalizeData(_data)
             _data.LastModified = DateTime.Now
 
             Dim dirPath = Path.GetDirectoryName(_filePath)
@@ -58,60 +59,100 @@ Public Class WatchlistService
         If _data Is Nothing Then Load()
 
         Return _data.Groups.
-            Select(Function(g) New WatchlistGroup With {
-                .Name = g.Name,
-                .Codes = g.Codes.ToList()
-            }).
+            Select(Function(g) CloneGroup(g)).
             ToList()
     End Function
 
-    Public Sub AddStock(groupName As String, code As String)
+    Public Function CreateGroup(groupName As String) As WatchlistGroup
         If _data Is Nothing Then Load()
 
         Dim normalizedGroup = NormalizeGroupName(groupName)
-        Dim normalizedCode = NormalizeCode(code)
-        If normalizedCode = "" Then Return
+        If _data.Groups.Any(Function(g) String.Equals(g.Name, normalizedGroup, StringComparison.OrdinalIgnoreCase)) Then
+            Throw New InvalidOperationException("동일한 그룹명이 이미 존재합니다.")
+        End If
 
-        Dim group = _data.Groups.FirstOrDefault(Function(g) String.Equals(g.Name, normalizedGroup, StringComparison.OrdinalIgnoreCase))
+        Dim group As New WatchlistGroup With {.Name = normalizedGroup}
+        _data.Groups.Add(group)
+        SortGroups()
+        Save()
+        Return CloneGroup(group)
+    End Function
+
+    Public Sub RenameGroup(oldName As String, newName As String)
+        If _data Is Nothing Then Load()
+
+        Dim group = FindGroup(oldName)
+        If group Is Nothing Then Throw New InvalidOperationException("수정할 그룹을 찾을 수 없습니다.")
+
+        Dim normalizedNewName = NormalizeGroupName(newName)
+        If _data.Groups.Any(Function(g) Not Object.ReferenceEquals(g, group) AndAlso String.Equals(g.Name, normalizedNewName, StringComparison.OrdinalIgnoreCase)) Then
+            Throw New InvalidOperationException("동일한 그룹명이 이미 존재합니다.")
+        End If
+
+        group.Name = normalizedNewName
+        SortGroups()
+        Save()
+    End Sub
+
+    Public Sub DeleteGroup(groupName As String)
+        If _data Is Nothing Then Load()
+
+        Dim group = FindGroup(groupName)
+        If group Is Nothing Then Return
+
+        _data.Groups.Remove(group)
+        Save()
+    End Sub
+
+    Public Sub UpsertStock(groupName As String, code As String, comment As String)
+        If _data Is Nothing Then Load()
+
+        Dim group = FindGroup(groupName)
         If group Is Nothing Then
-            group = New WatchlistGroup With {.Name = normalizedGroup}
+            group = New WatchlistGroup With {.Name = NormalizeGroupName(groupName)}
             _data.Groups.Add(group)
         End If
 
-        If group.Codes.Any(Function(c) String.Equals(c, normalizedCode, StringComparison.OrdinalIgnoreCase)) Then Return
+        Dim normalizedCode = NormalizeCode(code)
+        If normalizedCode = "" Then Throw New InvalidOperationException("종목코드를 입력하세요.")
 
-        group.Codes.Add(normalizedCode)
-        group.Codes = group.Codes.
-            Select(Function(c) NormalizeCode(c)).
-            Where(Function(c) c <> "").
-            Distinct(StringComparer.OrdinalIgnoreCase).
-            OrderBy(Function(c) c).
-            ToList()
+        Dim stock = group.Stocks.FirstOrDefault(Function(s) String.Equals(s.Code, normalizedCode, StringComparison.OrdinalIgnoreCase))
+        If stock Is Nothing Then
+            stock = New WatchlistStock With {.Code = normalizedCode}
+            group.Stocks.Add(stock)
+        End If
+
+        stock.Code = normalizedCode
+        stock.Comment = NormalizeComment(comment)
+        NormalizeGroup(group)
+        SortGroups()
         Save()
     End Sub
 
     Public Sub RemoveStock(groupName As String, code As String)
         If _data Is Nothing Then Load()
 
-        Dim normalizedGroup = NormalizeGroupName(groupName)
+        Dim group = FindGroup(groupName)
+        If group Is Nothing Then Return
+
         Dim normalizedCode = NormalizeCode(code)
         If normalizedCode = "" Then Return
 
-        Dim group = _data.Groups.FirstOrDefault(Function(g) String.Equals(g.Name, normalizedGroup, StringComparison.OrdinalIgnoreCase))
-        If group Is Nothing Then Return
-
-        group.Codes = group.Codes.
-            Select(Function(c) NormalizeCode(c)).
-            Where(Function(c) c <> "" AndAlso Not String.Equals(c, normalizedCode, StringComparison.OrdinalIgnoreCase)).
-            Distinct(StringComparer.OrdinalIgnoreCase).
+        group.Stocks = group.Stocks.
+            Where(Function(s) Not String.Equals(s.Code, normalizedCode, StringComparison.OrdinalIgnoreCase)).
             ToList()
-
-        If group.Codes.Count = 0 Then
-            _data.Groups.Remove(group)
-        End If
-
+        NormalizeGroup(group)
         Save()
     End Sub
+
+    Public Sub AddStock(groupName As String, code As String)
+        UpsertStock(groupName, code, "")
+    End Sub
+
+    Private Function FindGroup(groupName As String) As WatchlistGroup
+        Dim normalizedGroup = NormalizeGroupName(groupName)
+        Return _data.Groups.FirstOrDefault(Function(g) String.Equals(g.Name, normalizedGroup, StringComparison.OrdinalIgnoreCase))
+    End Function
 
     Private Shared Function NormalizeData(data As WatchlistData) As WatchlistData
         Dim result = If(data, New WatchlistData())
@@ -119,19 +160,73 @@ Public Class WatchlistService
 
         result.Groups = result.Groups.
             Where(Function(g) g IsNot Nothing).
-            Select(Function(g) New WatchlistGroup With {
-                .Name = NormalizeGroupName(g.Name),
-                .Codes = If(g.Codes, New List(Of String)()).
-                    Select(Function(c) NormalizeCode(c)).
-                    Where(Function(c) c <> "").
-                    Distinct(StringComparer.OrdinalIgnoreCase).
-                    OrderBy(Function(c) c).
-                    ToList()
-            }).
+            Select(Function(g)
+                       NormalizeGroup(g)
+                       Return g
+                   End Function).
             Where(Function(g) g.Name <> "").
+            OrderBy(Function(g) g.Name, StringComparer.OrdinalIgnoreCase).
             ToList()
 
         Return result
+    End Function
+
+    Private Shared Sub NormalizeGroup(group As WatchlistGroup)
+        If group Is Nothing Then Return
+
+        group.Name = NormalizeGroupName(group.Name)
+
+        Dim stocks = New List(Of WatchlistStock)()
+        If group.Stocks IsNot Nothing Then
+            stocks.AddRange(group.Stocks)
+        End If
+
+        If stocks.Count = 0 AndAlso group.Codes IsNot Nothing Then
+            stocks.AddRange(group.Codes.Select(Function(c) New WatchlistStock With {.Code = c}))
+        End If
+
+        group.Stocks = stocks.
+            Where(Function(s) s IsNot Nothing).
+            Select(Function(s) New WatchlistStock With {
+                .Code = NormalizeCode(s.Code),
+                .Comment = NormalizeComment(s.Comment)
+            }).
+            Where(Function(s) s.Code <> "").
+            GroupBy(Function(s) s.Code, StringComparer.OrdinalIgnoreCase).
+            Select(Function(g)
+                       Dim first = g.First()
+                       Dim comment = g.Select(Function(x) NormalizeComment(x.Comment)).FirstOrDefault(Function(text) text <> "")
+                       If comment <> "" Then first.Comment = comment
+                       Return first
+                   End Function).
+            OrderBy(Function(s) s.Code, StringComparer.OrdinalIgnoreCase).
+            ToList()
+
+        group.Codes = group.Stocks.Select(Function(s) s.Code).ToList()
+    End Sub
+
+    Private Sub SortGroups()
+        _data.Groups = _data.Groups.
+            OrderBy(Function(g) g.Name, StringComparer.OrdinalIgnoreCase).
+            ToList()
+    End Sub
+
+    Private Shared Function CloneGroup(group As WatchlistGroup) As WatchlistGroup
+        Dim clone As New WatchlistGroup With {
+            .Name = If(If(group Is Nothing, Nothing, group.Name), "")
+        }
+
+        If group IsNot Nothing AndAlso group.Stocks IsNot Nothing Then
+            clone.Stocks = group.Stocks.
+                Select(Function(s) New WatchlistStock With {
+                    .Code = If(s.Code, ""),
+                    .Comment = If(s.Comment, "")
+                }).
+                ToList()
+        End If
+
+        clone.Codes = clone.Stocks.Select(Function(s) s.Code).ToList()
+        Return clone
     End Function
 
     Private Shared Function NormalizeGroupName(groupName As String) As String
@@ -142,5 +237,9 @@ Public Class WatchlistService
 
     Private Shared Function NormalizeCode(code As String) As String
         Return If(code, "").Trim()
+    End Function
+
+    Private Shared Function NormalizeComment(comment As String) As String
+        Return If(comment, "").Trim()
     End Function
 End Class

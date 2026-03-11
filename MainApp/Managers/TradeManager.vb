@@ -521,7 +521,7 @@ Public Class TradeManager
         If Not _positions.TryGetValue(code, pos) Then Return
         If pos.Quantity <= 0 Then Return
 
-        Dim price = CInt(m.Dbl("price"))
+        Dim price = Math.Abs(CInt(m.Dbl("price")))
         If price <= 0 Then Return
 
         pos.UpdatePrice(price)

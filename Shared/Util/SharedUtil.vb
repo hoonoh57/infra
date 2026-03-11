@@ -6,24 +6,35 @@ Imports System.Globalization
 
 Public Class SharedUtil
 
-    ''' <summary>부호/공백 제거 후 Integer</summary>
+    ''' <summary>가격/수량용 Integer 파서 (부호 제거)</summary>
     Public Shared Function SafeInt(raw As String) As Integer
         If String.IsNullOrWhiteSpace(raw) Then Return 0
-        Dim s = raw.Trim().Replace("+", "").Replace(",", "")
-        If s.StartsWith("-") Then
-            Dim v As Integer = 0
-            Integer.TryParse(s, v)
-            Return v
-        End If
-        s = s.TrimStart("-"c)
+        Dim s = raw.Trim().Replace("+", "").Replace("-", "").Replace(",", "")
         Dim r As Integer = 0
         Integer.TryParse(s, r)
-        If raw.Trim().StartsWith("-") Then r = -r
         Return r
     End Function
 
-    ''' <summary>부호/공백 제거 후 Long</summary>
+    ''' <summary>부호를 보존하는 Integer 파서</summary>
+    Public Shared Function SafeIntSigned(raw As String) As Integer
+        If String.IsNullOrWhiteSpace(raw) Then Return 0
+        Dim s = raw.Trim().Replace("+", "").Replace(",", "")
+        Dim r As Integer = 0
+        Integer.TryParse(s, r)
+        Return r
+    End Function
+
+    ''' <summary>가격/수량용 Long 파서 (부호 제거)</summary>
     Public Shared Function SafeLong(raw As String) As Long
+        If String.IsNullOrWhiteSpace(raw) Then Return 0
+        Dim s = raw.Trim().Replace("+", "").Replace("-", "").Replace(",", "")
+        Dim r As Long = 0
+        Long.TryParse(s, r)
+        Return r
+    End Function
+
+    ''' <summary>부호를 보존하는 Long 파서</summary>
+    Public Shared Function SafeLongSigned(raw As String) As Long
         If String.IsNullOrWhiteSpace(raw) Then Return 0
         Dim s = raw.Trim().Replace("+", "").Replace(",", "")
         Dim r As Long = 0
@@ -38,7 +49,6 @@ Public Class SharedUtil
         If Not keepSign Then s = s.Replace("+", "").Replace("-", "")
         Dim r As Double = 0
         Double.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, r)
-        If Not keepSign AndAlso raw.Trim().StartsWith("-") Then r = -r
         Return r
     End Function
 
@@ -48,6 +58,33 @@ Public Class SharedUtil
         Dim s = raw.Trim()
         If s.StartsWith("A") AndAlso s.Length = 7 Then s = s.Substring(1)
         Return s
+    End Function
+
+    ''' <summary>차트/시세 요청용 코드 정규화 (지수 001 → U001)</summary>
+    Public Shared Function NormalizeChartCode(raw As String) As String
+        Dim s = NormalizeCode(raw)
+        If s = "" Then Return ""
+
+        If s.StartsWith("U", StringComparison.OrdinalIgnoreCase) AndAlso s.Length = 4 Then
+            Return "U" & s.Substring(1)
+        End If
+
+        If s.Length = 3 AndAlso s.All(Function(ch) Char.IsDigit(ch)) Then
+            Return "U" & s
+        End If
+
+        Return s
+    End Function
+
+    Public Shared Function GetKnownIndexName(raw As String) As String
+        Select Case NormalizeChartCode(raw)
+            Case "U001"
+                Return "코스피"
+            Case "U201"
+                Return "코스닥"
+            Case Else
+                Return ""
+        End Select
     End Function
 
     ''' <summary>HHmmss 문자열 → 타임스탬프 (오늘 기준)</summary>

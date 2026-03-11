@@ -34,8 +34,16 @@ Public Class CybosBridge
                                                            Dim interval = 1
                                                            If tf.Length > 1 Then Integer.TryParse(tf.Substring(1), interval)
                                                            Dim stopTime = m.Str("stopTime", "")
+                                                           Dim isIndexCode = code.StartsWith("U", StringComparison.OrdinalIgnoreCase)
                                                            If String.IsNullOrWhiteSpace(stopTime) Then
-                                                               _client.분봉(code, interval, count, Sub(r) EmitCandle(r, code))
+                                                               _client.분봉(code, interval, count, Sub(r)
+                                                                                                     Dim rows = r.DictList("rows")
+                                                                                                     If isIndexCode AndAlso (rows Is Nothing OrElse rows.Count = 0) Then
+                                                                                                         _client.일봉(code, Math.Max(count, 120), Sub(d) EmitCandle(d, code))
+                                                                                                         Return
+                                                                                                     End If
+                                                                                                     EmitCandle(r, code)
+                                                                                                 End Sub)
                                                            Else
                                                                _client.분봉기간(code, interval, stopTime, Sub(r) EmitCandle(r, code))
                                                            End If

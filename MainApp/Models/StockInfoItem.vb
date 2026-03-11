@@ -88,12 +88,12 @@ Public Class StockInfoItem
 
     ''' <summary>실시간 틱 데이터로 업데이트</summary>
     Public Sub UpdateFromTick(m As Msg)
-        Dim p = CInt(m.Dbl("price"))
+        Dim p = Math.Abs(CInt(m.Dbl("price")))
         If p > 0 Then
             Price = p
 
             ' ★ 추가: 틱에서 prevClose가 제공되면 설정
-            Dim pc = CInt(m.Dbl("prevClose"))
+            Dim pc = Math.Abs(CInt(m.Dbl("prevClose")))
             If pc > 0 AndAlso PrevClose = 0 Then PrevClose = pc
 
             If PrevClose > 0 Then
@@ -102,17 +102,17 @@ Public Class StockInfoItem
             End If
         End If
 
-        Dim v = m.Dbl("volume")
+        Dim v = Math.Abs(m.Dbl("volume"))
         If v > 0 Then Volume += CLng(v)
 
-        Dim o = CInt(m.Dbl("open")) : If o > 0 Then Open = o
-        Dim h = CInt(m.Dbl("high")) : If h > 0 AndAlso h > High Then High = h
-        Dim l = CInt(m.Dbl("low")) : If l > 0 AndAlso (Low = 0 OrElse l < Low) Then Low = l
-        Dim a = CInt(m.Dbl("ask1")) : If a > 0 Then Ask1 = a
-        Dim b = CInt(m.Dbl("bid1")) : If b > 0 Then Bid1 = b
+        Dim o = Math.Abs(CInt(m.Dbl("open"))) : If o > 0 Then Open = o
+        Dim h = Math.Abs(CInt(m.Dbl("high"))) : If h > 0 AndAlso h > High Then High = h
+        Dim l = Math.Abs(CInt(m.Dbl("low"))) : If l > 0 AndAlso (Low = 0 OrElse l < Low) Then Low = l
+        Dim a = Math.Abs(CInt(m.Dbl("ask1"))) : If a > 0 Then Ask1 = a
+        Dim b = Math.Abs(CInt(m.Dbl("bid1"))) : If b > 0 Then Bid1 = b
         Dim st = m.Dbl("strength") : If st > 0 Then Strength = st
 
-        Dim cv = m.Dbl("cumVolume") : If cv > 0 Then Volume = CLng(cv)
+        Dim cv = Math.Abs(m.Dbl("cumVolume")) : If cv > 0 Then Volume = CLng(cv)
 
         LastTickTime = DateTime.Now
     End Sub
@@ -129,31 +129,34 @@ Public Class StockInfoItem
         Dim hi = SafeInt(row, "고가", "high") : If hi > 0 Then High = hi
         Dim lo = SafeInt(row, "저가", "low") : If lo > 0 Then Low = lo
         Dim op = SafeInt(row, "시가", "open") : If op > 0 Then Open = op
+        Dim a = SafeInt(row, "매도호가", "ask1") : If a > 0 Then Ask1 = a
+        Dim b = SafeInt(row, "매수호가", "bid1") : If b > 0 Then Bid1 = b
+        Dim st = SafeDbl(row, "체결강도", "strength") : If st > 0 Then Strength = st
 
-        ' ★ 수정1: 전일대비는 부호를 보존해야 함 (SafeInt의 Abs 제거 버전)
-        Dim ch = SafeIntSigned(row, "전일대비", "change", "대비")
-        Change = ch
+        ' ★ 전일종가를 직접 수신 (MarketEye 필드23)
+        Dim pc = SafeInt(row, "전일종가", "prevClose") : If pc > 0 Then PrevClose = pc
 
-        ' ★ 수정2: PrevClose 역산 (Change로부터) 또는 직접 수신
-        Dim pc = SafeInt(row, "기준가", "prevClose", "전일종가")
-        If pc > 0 Then
-            PrevClose = pc
-        ElseIf Price > 0 AndAlso Change <> 0 Then
+        ' ★ 전일대비: 대비부호가 반영된 부호 있는 값
+        Dim ch = SafeIntSigned(row, "전일대비", "change")
+        If ch <> 0 Then Change = ch
+
+        ' PrevClose 역산 폴백
+        If PrevClose = 0 AndAlso Price > 0 AndAlso Change <> 0 Then
             PrevClose = Price - Change
         End If
 
-        ' ★ 수정3: 등락률 - 키움 API 스케일 보정
+        ' ★ 등락률: DoMarketEye에서 이미 계산하여 보내줌
         Dim cr = SafeDblSigned(row, "등락율", "changeRate", "등락률")
-        ' 키움 OPTKWFID는 등락률을 100배 스케일로 보내므로 보정
-        If Math.Abs(cr) > 30 AndAlso PrevClose > 0 Then
-            ' 실제 등락률 재계산 (API 값이 의심스러울 때)
-            ChangeRate = If(PrevClose > 0, (CDbl(Change) / PrevClose) * 100, 0)
-        Else
-            ChangeRate = cr
-        End If
+        ChangeRate = cr
+
+        ' 추가 정보
+        Dim mc = SafeLong(row, "시가총액", "marketCap") : If mc > 0 Then MarketCap = mc
+        Dim per = SafeDbl(row, "PER") : If per <> 0 Then Me.PER = per
+        Dim ls = SafeLong(row, "상장주식수", "listedShares") : If ls > 0 Then ListedShares = ls
 
         State = DataReadyState.InfoLoaded
     End Sub
+
     ''' <summary>부호를 보존하는 SafeInt (전일대비 등에 사용)</summary>
     Private Shared Function SafeIntSigned(d As Dictionary(Of String, Object), ParamArray keys() As String) As Integer
         For Each k In keys

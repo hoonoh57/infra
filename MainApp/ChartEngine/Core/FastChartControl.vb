@@ -262,8 +262,22 @@ Public Class FastChartControl
 
     Public Sub UpdateTick(price As Single, volume As Long, tickTime As DateTime)
         If _candles.Count = 0 Then Return
-        _candles(_candles.Count - 1).UpdateFromTick(price, volume, tickTime)
-        _indicatorEngine.UpdateLast(_candles)
+
+        Dim barTime = AlignTickToCurrentBar(tickTime)
+        Dim lastCandle = _candles(_candles.Count - 1)
+
+        If lastCandle.Dt = DateTime.MinValue Then
+            lastCandle.Dt = barTime
+        End If
+
+        If ShouldStartNewRealtimeBar(lastCandle.Dt, barTime) Then
+            AddCandle(CandleItem.Create(barTime, price))
+            _candles(_candles.Count - 1).UpdateFromTick(price, volume, tickTime)
+        Else
+            lastCandle.UpdateFromTick(price, volume, tickTime)
+            _indicatorEngine.UpdateLast(_candles)
+        End If
+
         EvaluateStrategies()
         _needsRepaint = True
     End Sub
@@ -485,10 +499,10 @@ Public Class FastChartControl
         Dim code = If(m.Has("stockCode"), m.Str("stockCode"), m.Str("code"))
         If code <> _stockCode Then Return
 
-        Dim price = m.Sng("price")
+        Dim price = Math.Abs(m.Sng("price"))
         Dim vol As Long = 0
-        If m.Has("volume") Then vol = m.Lng("volume")
-        Dim fallbackDt = If(_candles IsNot Nothing AndAlso _candles.Count > 0, _candles(_candles.Count - 1).Dt, DateTime.Now)
+        If m.Has("volume") Then vol = Math.Abs(m.Lng("volume"))
+        Dim fallbackDt = DateTime.Now
         Dim tickTime As DateTime = ParseMsgDateTime(m, fallbackDt)
 
         For Each ind In _indicatorEngine.GetAll()
@@ -1183,6 +1197,27 @@ Public Class FastChartControl
         Next
 
         Return fallback
+    End Function
+
+    Private Function AlignTickToCurrentBar(tickTime As DateTime) As DateTime
+        If tickTime = DateTime.MinValue Then tickTime = DateTime.Now
+
+        Dim tf = RuntimeChartSettings.NormalizeMinuteTimeframe(RuntimeChartSettings.DefaultCandleTimeframe)
+        If String.IsNullOrWhiteSpace(tf) OrElse Not tf.StartsWith("m", StringComparison.OrdinalIgnoreCase) Then
+            Return New DateTime(tickTime.Year, tickTime.Month, tickTime.Day, tickTime.Hour, tickTime.Minute, 0)
+        End If
+
+        Dim minuteUnit As Integer = 1
+        If tf.Length > 1 Then Integer.TryParse(tf.Substring(1), minuteUnit)
+        If minuteUnit <= 0 Then minuteUnit = 1
+
+        Dim bucketMinute = (tickTime.Minute \ minuteUnit) * minuteUnit
+        Return New DateTime(tickTime.Year, tickTime.Month, tickTime.Day, tickTime.Hour, bucketMinute, 0)
+    End Function
+
+    Private Shared Function ShouldStartNewRealtimeBar(lastBarTime As DateTime, currentBarTime As DateTime) As Boolean
+        If lastBarTime = DateTime.MinValue Then Return False
+        Return currentBarTime > lastBarTime
     End Function
 
     Private Shared Function NormalizeHHmmssDigits(raw As String) As String
@@ -2418,7 +2453,7 @@ Public Class FastChartControl
 
         Dim evalResults = BuildStrategyEvaluationResults()
         Dim sigList = _strategyEngine.EvaluateAll(_stockCode, _candles, evalResults, _prevClose)
-        AppLogger.I.Info($"[Strategy] 평가 완료: code={_stockCode}, strategies={_appliedStrategies.Count}, signals={sigList.Count}")
+        'AppLogger.I.Info($"[Strategy] 평가 완료: code={_stockCode}, strategies={_appliedStrategies.Count}, signals={sigList.Count}")
         For Each sig In sigList
             _signals.Add(sig)
             Dim m As New Msg(Topics.STRATEGY_SIGNAL)
