@@ -25,6 +25,7 @@ Public Class FastChartControl
     Private Const AXIS_FONT_SIZE As Single = 11
     Private Const CROSSHAIR_LABEL_H As Single = 18
     Private Const SIGNAL_ARROW_SIZE As Single = 10
+    Private Const RIGHT_DRAG_PADDING_BARS As Integer = 12
 
     ' ──────────────────── 색상 팔레트 ────────────────────
     Private Shared ReadOnly ColBackground As New SKColor(24, 26, 32)
@@ -113,6 +114,8 @@ Public Class FastChartControl
     Private _dragStartX As Integer
     Private _dragStartY As Integer
     Private _dragStartIndex As Integer
+    Private _dragStartMaxP As Single
+    Private _dragStartMinP As Single
     Private _manualMaxP As Single = 0
     Private _manualMinP As Single = 0
     Private _isAutoScaleY As Boolean = True
@@ -172,6 +175,7 @@ Public Class FastChartControl
         AddHandler _skControl.MouseEnter, AddressOf OnGLMouseEnter
         AddHandler _skControl.MouseLeave, AddressOf OnGLMouseLeave
         AddHandler _skControl.KeyDown, AddressOf OnGLKeyDown
+        AddHandler _skControl.Resize, AddressOf OnChartViewportResize
 
         MessageBus.I.On(Topics.CANDLE_LOADED, AddressOf OnCandleLoaded)
         MessageBus.I.On(Topics.TICK_CANDLE_LOADED, AddressOf OnTickCandleLoaded)
@@ -251,6 +255,7 @@ Public Class FastChartControl
 
         If prevClose > 0 Then _prevClose = prevClose
         ReCalculate()
+        MoveToLatestVisible()
     End Sub
 
     Public Sub ReCalculate()
@@ -284,11 +289,49 @@ Public Class FastChartControl
 
     Public Sub AddCandle(c As CandleItem)
         _candles.Add(c)
-        If _vs.StartIndex >= _candles.Count - _vs.VisibleCount - 2 Then
-            _vs.StartIndex = Math.Max(0, _candles.Count - _vs.VisibleCount)
+        If _vs.StartIndex >= GetLatestStartIndex() - 2 Then
+            MoveToLatestVisible()
         End If
         _indicatorEngine.CalculateAll(_candles)
         _needsRepaint = True
+    End Sub
+
+    Private Sub MoveToLatestVisible()
+        _vs.StartIndex = GetLatestStartIndex()
+    End Sub
+
+    Private Function GetLatestStartIndex() As Integer
+        Return GetLatestStartIndexForVisibleCount(_vs.VisibleCount)
+    End Function
+
+    Private Function GetLatestStartIndexForVisibleCount(visibleCount As Integer) As Integer
+        Dim safeVisibleCount = Math.Max(1, visibleCount)
+        Return Math.Max(0, _candles.Count - safeVisibleCount)
+    End Function
+
+    Private Function GetMaxDragStartIndex() As Integer
+        Return Math.Max(0, GetLatestStartIndex() + RIGHT_DRAG_PADDING_BARS)
+    End Function
+
+    Private Function IsLatestCandleVisible() As Boolean
+        If _candles Is Nothing OrElse _candles.Count = 0 Then Return False
+        Dim latestIndex = _candles.Count - 1
+        Return _vs.StartIndex <= latestIndex AndAlso _vs.EndIndex >= latestIndex
+    End Function
+
+    Private Function GetRightPaddingBars() As Integer
+        Return Math.Max(0, _vs.StartIndex - GetLatestStartIndex())
+    End Function
+
+    Private Sub KeepLatestVisibleForNewVisibleCount(newVisibleCount As Integer)
+        Dim safeNewVisible = Math.Max(1, newVisibleCount)
+        Dim oldVisibleCount = Math.Max(1, _vs.VisibleCount)
+        Dim rightPadding = GetRightPaddingBars()
+        Dim scaledPadding = CInt(Math.Round(rightPadding * (safeNewVisible / CDbl(oldVisibleCount))))
+        scaledPadding = Math.Max(0, Math.Min(RIGHT_DRAG_PADDING_BARS, scaledPadding))
+
+        _vs.VisibleCount = safeNewVisible
+        _vs.StartIndex = Math.Max(0, GetLatestStartIndexForVisibleCount(safeNewVisible) + scaledPadding)
     End Sub
 
     Public Sub AddIndicator(ind As IIndicator)
@@ -2074,13 +2117,33 @@ Public Class FastChartControl
         If _isDragging Then
             Dim dx = e.X - _dragStartX
             Dim candleShift = CInt(dx / (_vs.CandleWidth + _vs.Gap))
-            _vs.StartIndex = Math.Max(0, Math.Min(_dragStartIndex - candleShift, _candles.Count - _vs.VisibleCount))
+            _vs.StartIndex = Math.Max(0, Math.Min(_dragStartIndex - candleShift, GetMaxDragStartIndex()))
+
+            Dim dy = e.Y - _dragStartY
+            Dim range = _dragStartMaxP - _dragStartMinP
+            If range <= 0 Then range = Math.Max(1.0F, _priceHigh - _priceLow)
+
+            If _mainRect.Height > 0 Then
+                Dim delta = dy * (range / _mainRect.Height)
+                _isAutoScaleY = False
+                _manualMaxP = _dragStartMaxP + delta
+                _manualMinP = Math.Max(0.0F, _dragStartMinP + delta)
+            End If
         ElseIf _isDraggingPrice Then
             Dim dy = e.Y - _dragStartY
             Dim range = _manualMaxP - _manualMinP
-            Dim delta = dy * (range / _mainRect.Height)
-            _manualMaxP += delta
-            _manualMinP += delta
+            If range <= 0 Then range = Math.Max(1.0F, _priceHigh - _priceLow)
+
+            Dim zoomFactor = 1.0F + (dy * 0.01F)
+            If zoomFactor < 0.2F Then zoomFactor = 0.2F
+            If zoomFactor > 5.0F Then zoomFactor = 5.0F
+
+            Dim center = (_manualMaxP + _manualMinP) / 2.0F
+            If center <= 0 Then center = (_priceHigh + _priceLow) / 2.0F
+
+            Dim newRange = Math.Max(1.0F, range * zoomFactor)
+            _manualMaxP = center + (newRange / 2.0F)
+            _manualMinP = Math.Max(0.0F, center - (newRange / 2.0F))
             _dragStartY = e.Y
         End If
 
@@ -2109,11 +2172,18 @@ Public Class FastChartControl
             If e.X > _mainRect.Right Then
                 _isDraggingPrice = True
                 _isAutoScaleY = False
+                If _manualMaxP <= _manualMinP Then
+                    _manualMaxP = _priceHigh
+                    _manualMinP = _priceLow
+                End If
                 _dragStartY = e.Y
             Else
                 _isDragging = True
                 _dragStartX = e.X
+                _dragStartY = e.Y
                 _dragStartIndex = _vs.StartIndex
+                _dragStartMaxP = If(_isAutoScaleY OrElse _manualMaxP <= _manualMinP, _priceHigh, _manualMaxP)
+                _dragStartMinP = If(_isAutoScaleY OrElse _manualMaxP <= _manualMinP, _priceLow, _manualMinP)
             End If
         ElseIf e.Button = MouseButtons.Right Then
             ShowContextMenu(e.Location)
@@ -2143,6 +2213,7 @@ Public Class FastChartControl
     End Sub
 
     Private Sub OnGLMouseWheel(sender As Object, e As MouseEventArgs)
+        Dim latestVisible = IsLatestCandleVisible()
         Dim zoom = If(e.Delta > 0, 1.2F, 0.8F)
         _vs.CandleWidth *= zoom
         If _vs.CandleWidth < 1 Then _vs.CandleWidth = 1
@@ -2175,9 +2246,26 @@ Public Class FastChartControl
         If desiredStart < 0 Then desiredStart = 0
         If desiredStart > maxStart Then desiredStart = maxStart
 
-        _vs.VisibleCount = newVisibleCount
-        _vs.StartIndex = CInt(desiredStart)
+        If latestVisible Then
+            KeepLatestVisibleForNewVisibleCount(newVisibleCount)
+        Else
+            _vs.VisibleCount = newVisibleCount
+            _vs.StartIndex = CInt(desiredStart)
+        End If
 
+        _needsRepaint = True
+    End Sub
+
+    Private Sub OnChartViewportResize(sender As Object, e As EventArgs)
+        If _candles Is Nothing OrElse _candles.Count = 0 Then Return
+        If Not IsLatestCandleVisible() Then Return
+
+        Dim denom As Double = _vs.CandleWidth + _vs.Gap
+        If denom <= 0 OrElse Double.IsNaN(denom) OrElse Double.IsInfinity(denom) Then Return
+
+        Dim chartWidth = Math.Max(1.0, CDbl(_skControl.Width - MARGIN_LEFT - MARGIN_RIGHT))
+        Dim newVisibleCount = Math.Max(1, CInt(Math.Truncate(chartWidth / denom)))
+        KeepLatestVisibleForNewVisibleCount(newVisibleCount)
         _needsRepaint = True
     End Sub
 
@@ -2202,7 +2290,7 @@ Public Class FastChartControl
             Case Keys.Home
                 _vs.StartIndex = 0
             Case Keys.End
-                _vs.StartIndex = Math.Max(0, _candles.Count - _vs.VisibleCount)
+                MoveToLatestVisible()
             Case Keys.Add, Keys.Oemplus
                 _vs.CandleWidth *= 1.2F
                 _vs.VisibleCount = CInt(_mainRect.Width / (_vs.CandleWidth + _vs.Gap))
@@ -2398,14 +2486,14 @@ Public Class FastChartControl
                                       _vs.CandleWidth = 8
                                       _vs.Gap = 2
                                       _vs.VisibleCount = 120
-                                      _vs.StartIndex = Math.Max(0, _candles.Count - _vs.VisibleCount)
+                                      MoveToLatestVisible()
                                       _needsRepaint = True
                                   End Sub
         menu.Items.Add(miReset)
 
         Dim miEnd As New ToolStripMenuItem("최신으로 이동 (End)")
         AddHandler miEnd.Click, Sub(s, ev)
-                                    _vs.StartIndex = Math.Max(0, _candles.Count - _vs.VisibleCount)
+                                    MoveToLatestVisible()
                                     _needsRepaint = True
                                 End Sub
         menu.Items.Add(miEnd)
