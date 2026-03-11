@@ -495,14 +495,6 @@ Public Class MainShell
                                                          AppLogger.I.Info($"프로그램순매수 수신: {code} → {cnt}건 provider:{provider}", "Data")
                                                      End Sub)
 
-        ' 실시간 체결 로그 (샘플링: 100번째마다)
-        Dim tickCounter As Integer = 0
-        MessageBus.I.On(Topics.TICK, Sub(m)
-                                         tickCounter += 1
-                                         If tickCounter Mod 100 = 1 Then
-                                             AppLogger.I.Debug($"틱 #{tickCounter}: {m.Str("code")} {m.Dbl("price"):N0}", "Realtime")
-                                         End If
-                                     End Sub)
 
         ' 주문 체결
         MessageBus.I.On(Topics.ORDER_EXECUTED, Sub(m)

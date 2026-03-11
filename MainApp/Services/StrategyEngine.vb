@@ -55,7 +55,6 @@ Namespace Services
                 Dim buyCnt As Integer = results.Where(Function(r) r IsNot Nothing AndAlso r.IsBuySignal).Count()
                 Dim sellCnt As Integer = results.Where(Function(r) r IsNot Nothing AndAlso r.IsSellSignal).Count()
                 Dim markers = _evaluator.GenerateMarkers(results, candles)
-                AppLogger.I.Info($"[Strategy] {strat.Name}: eval={results.Count}, buy={buyCnt}, sell={sellCnt}, markers={markers.Count}")
 
                 ' 각 신호에 전략 정보 보강
                 For Each m In markers

@@ -3,6 +3,7 @@
 ' ═══════════════════════════════════════════════════════════════
 
 Imports System.Drawing
+Imports System.IO
 Imports System.Windows.Forms
 Imports [Shared]
 Imports WeifenLuo.WinFormsUI.Docking
@@ -28,15 +29,14 @@ Public Class ChartForm
         Me.Controls.Add(_chart)
 
         AddHandler _chart.IndicatorSettingRequested, AddressOf OnIndicatorSettingRequested
+        AddHandler _chart.ChartProfileChanged, AddressOf OnChartProfileChanged
         AddHandler _chart.StrategySettingRequested, AddressOf OnStrategySettingRequested
         AddHandler _chart.DataViewRequested, AddressOf OnDataViewRequested
 
-        ' 기본 지표 추가 (샘플)
-        _chart.AddIndicator(New MA_Indicator(5))
-        _chart.AddIndicator(New MA_Indicator(20))
-        _chart.AddIndicator(New MA_Indicator(60))
-        _chart.AddIndicator(New Bollinger_Indicator())
-        _chart.AddIndicator(New Volume_Indicator())
+        Dim profilePath = Path.Combine(Application.StartupPath, "chart_profile.json")
+        If File.Exists(profilePath) Then
+            _chart.ApplyChartProfile(ChartProfileService.I.GetProfile())
+        End If
     End Sub
 
     Private Sub OnIndicatorSettingRequested(sender As Object, e As EventArgs)
@@ -46,8 +46,17 @@ Public Class ChartForm
         Using f As New IndicatorSettingForm(ind)
             If f.ShowDialog(Me) = DialogResult.OK Then
                 _chart.ReCalculate()
+                SaveChartProfile()
             End If
         End Using
+    End Sub
+
+    Private Sub OnChartProfileChanged(sender As Object, e As EventArgs)
+        SaveChartProfile()
+    End Sub
+
+    Private Sub SaveChartProfile()
+        ChartProfileService.I.SaveProfile(_chart.ExportChartProfile())
     End Sub
 
     Private Sub OnStrategySettingRequested(sender As Object, e As EventArgs)

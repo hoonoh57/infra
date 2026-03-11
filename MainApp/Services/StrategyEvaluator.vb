@@ -87,7 +87,6 @@ Namespace Services
                     Dim v = snapshots(i).GetValue(k)
                     If Not Double.IsNaN(v) Then valid += 1
                 Next
-                AppLogger.I.Info($"[StrategyDiag] {strategy.Name} key={k} valid={valid}/{snapshots.Count}")
             Next
         End Sub
 

@@ -358,6 +358,75 @@ Public Class FastChartControl
         _strategyEngine.Remove(name)
     End Sub
 
+    Public Function ExportChartProfile() As ChartProfileData
+        Dim profile As New ChartProfileData()
+        Dim order As Integer = 0
+
+        For Each ind In _indicatorEngine.GetAll()
+            order += 1
+            profile.Indicators.Add(New ChartProfileIndicatorItem With {
+                .IndicatorType = GetIndicatorTypeName(ind),
+                .IndicatorName = ind.Name,
+                .DisplayOrder = order,
+                .PanelIndex = ind.PanelIndex,
+                .Parameters = New Dictionary(Of String, Object)(If(ind.Parameters, New Dictionary(Of String, Object)()), StringComparer.OrdinalIgnoreCase)
+            })
+        Next
+
+        profile.ContextOptions = New ChartProfileContextOptions With {
+            .ShowCurrentPriceLine = _showCurrentPriceLine,
+            .ShowPrevCloseLine = _showPrevCloseLine,
+            .ShowViLine = _showViLine,
+            .ShowDayChangeLines = _showDayChangeLines,
+            .ShowCrosshair = _vs.ShowCrosshair,
+            .IsAutoScaleY = _isAutoScaleY,
+            .ManualMaxPrice = _manualMaxP,
+            .ManualMinPrice = _manualMinP,
+            .CandleWidth = _vs.CandleWidth,
+            .Gap = _vs.Gap,
+            .VisibleCount = _vs.VisibleCount,
+            .PanelHeightRatio = _vs.PanelHeightRatio
+        }
+
+        Return profile
+    End Function
+
+    Public Sub ApplyChartProfile(profile As ChartProfileData)
+        If profile Is Nothing Then Return
+
+        _indicatorEngine.Clear()
+        _signals.Clear()
+        _selectedIndicatorName = ""
+
+        Dim indicators = If(profile.Indicators, New List(Of ChartProfileIndicatorItem)()).
+            OrderBy(Function(ind) ind.DisplayOrder).
+            ToList()
+
+        For Each item In indicators
+            Dim indicator = CreateIndicatorByType(item.IndicatorType)
+            If indicator Is Nothing Then Continue For
+
+            If item.Parameters IsNot Nothing AndAlso item.Parameters.Count > 0 Then
+                indicator.Parameters = New Dictionary(Of String, Object)(item.Parameters, StringComparer.OrdinalIgnoreCase)
+            End If
+
+            _indicatorEngine.Register(indicator)
+        Next
+
+        ApplyChartContextOptions(profile.ContextOptions)
+
+        If _candles IsNot Nothing AndAlso _candles.Count > 0 Then
+            _indicatorEngine.CalculateAll(_candles)
+        End If
+
+        RebuildPanelLayout()
+        _needsRepaint = True
+    End Sub
+
+    Private Sub NotifyChartProfileChanged()
+        RaiseEvent ChartProfileChanged(Me, EventArgs.Empty)
+    End Sub
+
     Public ReadOnly Property ViewState As ChartViewState
         Get
             Return _vs
@@ -1672,6 +1741,7 @@ Public Class FastChartControl
             p.Color = If(isSelected, SKColors.White, ColAxisText)
             p.TextSize = 11
             p.IsAntialias = True
+            p.Typeface = SKTypeface.FromFamilyName("맑은 고딕")
             p.FakeBoldText = isSelected
 
             Dim displayLabel = label
@@ -1708,7 +1778,7 @@ Public Class FastChartControl
             If Not r.Values.ContainsKey(vk) Then Continue For
             Dim v = r.Values(vk)
             ' 메인 패널(0)에서 0값은 무효값으로 간주하여 선 끊기
-            If Single.IsNaN(v) OrElse (pIdx = 0 AndAlso v <= 0) Then
+            If Single.IsNaN(v) Then
                 started = False
                 Continue For
             End If
@@ -2339,26 +2409,62 @@ Public Class FastChartControl
 
 
     Public Sub AddIndicatorByName(name As String)
-        Dim ind As IIndicator = Nothing
-        Select Case name
-            Case "MA" : ind = New MA_Indicator()
-            Case "Bollinger" : ind = New Bollinger_Indicator()
-            Case "Volume" : ind = New Volume_Indicator()
-            Case "MACD" : ind = New MACD_Indicator()
-            Case "RSI" : ind = New RSI_Indicator()
-            Case "SuperTrend" : ind = New SuperTrend_Indicator()
-            Case "JMA" : ind = New JMA_Indicator()
-            Case "VWAP" : ind = New VWAP_Indicator()
-            Case "OBV" : ind = New OBV_Indicator()
-            Case "Disparity" : ind = New Disparity_Indicator()
-            Case "TickIntensity" : ind = New TickIntensity_Indicator()
-            Case "TradeStrength" : ind = New TradeStrength_Indicator()
-            Case "CumTradeAmount" : ind = New CumTradeAmount_Indicator()
-            Case "ProgramTrade" : ind = New ProgramTrade_Indicator()
-            Case "SectorLeader" : ind = New SectorLeader_Indicator()
-        End Select
+        Dim ind = CreateIndicatorByType(name)
 
-        If ind IsNot Nothing Then AddIndicator(ind)
+        If ind IsNot Nothing Then
+            AddIndicator(ind)
+            NotifyChartProfileChanged()
+        End If
+    End Sub
+
+    Private Shared Function GetIndicatorTypeName(ind As IIndicator) As String
+        If ind Is Nothing Then Return ""
+
+        Dim typeName = ind.GetType().Name
+        If typeName.EndsWith("_Indicator", StringComparison.OrdinalIgnoreCase) Then
+            typeName = typeName.Substring(0, typeName.Length - "_Indicator".Length)
+        End If
+        Return typeName
+    End Function
+
+    Private Shared Function CreateIndicatorByType(name As String) As IIndicator
+        Select Case If(name, "").Trim()
+            Case "MA" : Return New MA_Indicator()
+            Case "Bollinger" : Return New Bollinger_Indicator()
+            Case "Volume" : Return New Volume_Indicator()
+            Case "MACD" : Return New MACD_Indicator()
+            Case "RSI" : Return New RSI_Indicator()
+            Case "SuperTrend" : Return New SuperTrend_Indicator()
+            Case "JMA" : Return New JMA_Indicator()
+            Case "VWAP" : Return New VWAP_Indicator()
+            Case "OBV" : Return New OBV_Indicator()
+            Case "Disparity" : Return New Disparity_Indicator()
+            Case "TickIntensity" : Return New TickIntensity_Indicator()
+            Case "TradeStrength" : Return New TradeStrength_Indicator()
+            Case "CumTradeAmount" : Return New CumTradeAmount_Indicator()
+            Case "ProgramTrade" : Return New ProgramTrade_Indicator()
+            Case "SectorLeader" : Return New SectorLeader_Indicator()
+            Case Else : Return Nothing
+        End Select
+    End Function
+
+    Private Sub ApplyChartContextOptions(options As ChartProfileContextOptions)
+        Dim ctx = If(options, New ChartProfileContextOptions())
+
+        _showCurrentPriceLine = ctx.ShowCurrentPriceLine
+        _showPrevCloseLine = ctx.ShowPrevCloseLine
+        _showViLine = ctx.ShowViLine
+        _showDayChangeLines = ctx.ShowDayChangeLines
+
+        _vs.ShowCrosshair = ctx.ShowCrosshair
+        _vs.CandleWidth = Math.Max(1.0F, ctx.CandleWidth)
+        _vs.Gap = Math.Max(0.0F, ctx.Gap)
+        _vs.VisibleCount = Math.Max(1, ctx.VisibleCount)
+        _vs.PanelHeightRatio = If(ctx.PanelHeightRatio > 0, ctx.PanelHeightRatio, _vs.PanelHeightRatio)
+
+        _isAutoScaleY = ctx.IsAutoScaleY
+        _manualMaxP = Math.Max(0.0F, ctx.ManualMaxPrice)
+        _manualMinP = Math.Max(0.0F, ctx.ManualMinPrice)
     End Sub
 
     Private Sub ShowContextMenu(pt As Point)
@@ -2393,11 +2499,12 @@ Public Class FastChartControl
             menu.Items.Add(miEdit)
 
             Dim miDelete = New ToolStripMenuItem($"'{_selectedIndicatorName}' 삭제", Nothing, Sub()
-                                                                                                _indicatorEngine.Remove(_selectedIndicatorName)
-                                                                                                _selectedIndicatorName = ""
-                                                                                                RebuildPanelLayout()
-                                                                                                _needsRepaint = True
-                                                                                            End Sub)
+                                                                                                 _indicatorEngine.Remove(_selectedIndicatorName)
+                                                                                                 _selectedIndicatorName = ""
+                                                                                                 RebuildPanelLayout()
+                                                                                                 _needsRepaint = True
+                                                                                                 NotifyChartProfileChanged()
+                                                                                             End Sub)
             menu.Items.Add(miDelete)
         End If
 
@@ -2435,13 +2542,15 @@ Public Class FastChartControl
         Dim miPriceLine = New ToolStripMenuItem("현재가 라인", Nothing, Sub()
                                                                        _showCurrentPriceLine = Not _showCurrentPriceLine
                                                                        _needsRepaint = True
-                                                                   End Sub)
+                                                                       NotifyChartProfileChanged()
+                                                                    End Sub)
         miPriceLine.Checked = _showCurrentPriceLine
         miOpt.DropDownItems.Add(miPriceLine)
 
         Dim miViLine = New ToolStripMenuItem("VI 예상선", Nothing, Sub()
                                                                     _showViLine = Not _showViLine
                                                                     _needsRepaint = True
+                                                                    NotifyChartProfileChanged()
                                                                 End Sub)
         miViLine.Checked = _showViLine
         miOpt.DropDownItems.Add(miViLine)
@@ -2449,6 +2558,7 @@ Public Class FastChartControl
         Dim miDayLine = New ToolStripMenuItem("Day Change Line", Nothing, Sub()
                                                                               _showDayChangeLines = Not _showDayChangeLines
                                                                               _needsRepaint = True
+                                                                              NotifyChartProfileChanged()
                                                                           End Sub)
         miDayLine.Checked = _showDayChangeLines
         miOpt.DropDownItems.Add(miDayLine)
@@ -2488,6 +2598,7 @@ Public Class FastChartControl
                                       _vs.VisibleCount = 120
                                       MoveToLatestVisible()
                                       _needsRepaint = True
+                                      NotifyChartProfileChanged()
                                   End Sub
         menu.Items.Add(miReset)
 
@@ -2566,7 +2677,6 @@ Public Class FastChartControl
         If NeedSuperTrendForStrategies() AndAlso Not HasSuperTrendResults(merged) Then
             Dim st As New SuperTrend_Indicator()
             merged(st.Name) = st.Calculate(_candles)
-            AppLogger.I.Info($"[Strategy] 런타임 지표 보강: SuperTrend 자동 계산 ({st.Name})")
         End If
 
         Return merged
@@ -2724,6 +2834,7 @@ Public Class FastChartControl
     End Function
 
     Public Event ChartClicked As EventHandler(Of ChartClickEventArgs)
+    Public Event ChartProfileChanged As EventHandler(Of EventArgs)
     Public Event IndicatorSettingRequested As EventHandler(Of EventArgs)
     Public Event StrategySettingRequested As EventHandler(Of EventArgs)
     Public Event DataViewRequested As EventHandler(Of EventArgs)
