@@ -31,3 +31,8 @@ Desktop.ini
 # Gemini/Agent files
 .gemini/
 .agents/
+
+# Local tooling and scratch artifacts
+.dotnet_cli/
+_obj_test/
+image/
