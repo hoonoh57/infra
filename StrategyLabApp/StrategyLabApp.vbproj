@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net481</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <PlatformTarget>x64</PlatformTarget>
+    <MyType>Empty</MyType>
+    <Platforms>AnyCPU;x64</Platforms>
+    <RootNamespace></RootNamespace>
+    <StartupObject>StrategyLabApp.Program</StartupObject>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\MainApp\MainApp.vbproj" />
+    <ProjectReference Include="..\Shared\Shared.vbproj" />
+    <ProjectReference Include="..\StrategyCore\StrategyCore.vbproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <Reference Include="System.Windows.Forms.DataVisualization" />
+  </ItemGroup>
+</Project>
