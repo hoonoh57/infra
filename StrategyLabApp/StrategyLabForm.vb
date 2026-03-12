@@ -1189,6 +1189,9 @@ Namespace StrategyLabApp
                 _lastResult = CloneResult(outcome.Result)
                 _txtSymbol.Text = outcome.Item.Code
                 RenderChart(_lastResult.Report)
+                _fastChart.ShowAllCandles()
+                _fastChart.Refresh()
+                Application.DoEvents()
                 Application.DoEvents()
 
                 Dim width = Math.Max(1, _panelLabChart.ClientSize.Width)
