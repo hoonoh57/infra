@@ -1,13 +1,18 @@
 ' TickIntensity_Indicator.vb
+Imports [Shared]
 
 Public Class TickIntensity_Indicator
     Implements IIndicator
 
     Private Const SMA5_PERIOD As Integer = 5
     Private Const SMA20_PERIOD As Integer = 20
+
     Private _timeframeMinutes As Integer = 1
     Private _params As New Dictionary(Of String, Object) From {{"TimeframeMinutes", 1}}
     Private _tickBars As New List(Of DateTime)
+    Private _currentRealtimeBarStart As DateTime = DateTime.MinValue
+    Private _currentRealtimeTickCount As Integer = 0
+    Private ReadOnly _completedRealtimeBars As New Dictionary(Of DateTime, Single)
     Private ReadOnly _tickLock As New Object()
 
     Public Sub New(Optional timeframeMinutes As Integer = 1)
@@ -20,16 +25,19 @@ Public Class TickIntensity_Indicator
             Return $"TICKINT_{_timeframeMinutes}"
         End Get
     End Property
+
     Public ReadOnly Property DisplayName As String Implements IIndicator.DisplayName
         Get
             Return $"TickIntensity({_timeframeMinutes}m)"
         End Get
     End Property
+
     Public ReadOnly Property PanelIndex As Integer Implements IIndicator.PanelIndex
         Get
             Return 4
         End Get
     End Property
+
     Public Property Parameters As Dictionary(Of String, Object) Implements IIndicator.Parameters
         Get
             Return _params
@@ -45,8 +53,9 @@ Public Class TickIntensity_Indicator
     Public Sub SetTickBars(tickTimestamps As List(Of DateTime))
         SyncLock _tickLock
             _tickBars = If(tickTimestamps, New List(Of DateTime))
-            ' 사이보스 틱봉은 분단위 시각만 제공되므로 시간 정렬(Sort) 금지.
-            ' 내림차순 응답일 때만 앞뒤 반전(Reverse)으로 방향만 맞춘다.
+            _currentRealtimeBarStart = DateTime.MinValue
+            _currentRealtimeTickCount = 0
+            _completedRealtimeBars.Clear()
             If _tickBars.Count > 1 AndAlso _tickBars(0) > _tickBars(_tickBars.Count - 1) Then
                 _tickBars.Reverse()
             End If
@@ -55,8 +64,21 @@ Public Class TickIntensity_Indicator
 
     Public Sub AddTick(ts As DateTime)
         SyncLock _tickLock
-            _tickBars.Add(ts)
-            ' 실시간 틱도 Sort 금지. 수신 순서를 그대로 유지한다.
+            Dim barStart = AlignToBarStart(ts)
+            If _currentRealtimeBarStart = DateTime.MinValue Then
+                _currentRealtimeBarStart = barStart
+                _currentRealtimeTickCount = 1
+                Return
+            End If
+
+            If barStart = _currentRealtimeBarStart Then
+                _currentRealtimeTickCount += 1
+                Return
+            End If
+
+            _completedRealtimeBars(_currentRealtimeBarStart) = NormalizeRealtimeTickCount(_currentRealtimeTickCount)
+            _currentRealtimeBarStart = barStart
+            _currentRealtimeTickCount = 1
         End SyncLock
     End Sub
 
@@ -65,61 +87,86 @@ Public Class TickIntensity_Indicator
         Dim results As New List(Of IndicatorResult)(count)
         Dim span = New TimeSpan(0, _timeframeMinutes, 0)
         Dim tickSums(count - 1) As Single
+        Dim tickSigned(count - 1) As Single
         Dim hasAnyTick As Boolean
+
         SyncLock _tickLock
-            hasAnyTick = (_tickBars.Count > 0)
+            hasAnyTick = (_tickBars.Count > 0 OrElse _completedRealtimeBars.Count > 0 OrElse _currentRealtimeTickCount > 0)
             Dim tickIdx = 0
             For i = 0 To count - 1
                 Dim pStart = candles(i).Dt
                 Dim pEnd = pStart.Add(span)
                 Dim cnt = 0
+
                 While tickIdx < _tickBars.Count AndAlso _tickBars(tickIdx) < pStart
                     tickIdx += 1
                 End While
+
                 Dim k = tickIdx
                 While k < _tickBars.Count AndAlso _tickBars(k) < pEnd
                     cnt += 1
                     k += 1
                 End While
-                tickSums(i) = If(hasAnyTick, CSng(cnt), Single.NaN)
+
+                If hasAnyTick Then
+                    Dim historicalCount As Single = CSng(cnt)
+                    If _completedRealtimeBars.ContainsKey(pStart) Then
+                        historicalCount = _completedRealtimeBars(pStart)
+                    ElseIf _currentRealtimeBarStart = pStart Then
+                        historicalCount = NormalizeRealtimeTickCount(_currentRealtimeTickCount)
+                    End If
+                    tickSums(i) = historicalCount
+                    tickSigned(i) = ApplyCandleDirection(candles(i), tickSums(i))
+                Else
+                    tickSums(i) = Single.NaN
+                    tickSigned(i) = Single.NaN
+                End If
             Next
         End SyncLock
+
         Dim sma5 = CalcSMA(tickSums, SMA5_PERIOD)
         Dim sma20 = CalcSMA(tickSums, SMA20_PERIOD)
+
         For i = 0 To count - 1
-            Dim r As New IndicatorResult With {.Name = Name, .Index = i, .PanelIndex = PanelIndex,
-                .Values = New Dictionary(Of String, Single)}
-            r.Values("TickSum") = tickSums(i)
+            Dim r As New IndicatorResult With {
+                .Name = Name,
+                .Index = i,
+                .PanelIndex = PanelIndex,
+                .Values = New Dictionary(Of String, Single)
+            }
+            r.Values("TickSum") = tickSigned(i)
             r.Values("MA5") = sma5(i)
             r.Values("MA20") = sma20(i)
-            If Not Single.IsNaN(sma20(i)) AndAlso sma20(i) > 0 Then
-                r.Values("Ratio") = tickSums(i) / sma20(i) * 100.0F
-            Else
-                r.Values("Ratio") = Single.NaN
-            End If
             results.Add(r)
         Next
+
         Return results
     End Function
 
     Public Function UpdateLast(candles As List(Of CandleItem), prevResults As List(Of IndicatorResult)) As IndicatorResult Implements IIndicator.UpdateLast
         Dim i = candles.Count - 1
-        Dim r As New IndicatorResult With {.Name = Name, .Index = i, .PanelIndex = PanelIndex,
-            .Values = New Dictionary(Of String, Single)}
+        Dim r As New IndicatorResult With {
+            .Name = Name,
+            .Index = i,
+            .PanelIndex = PanelIndex,
+            .Values = New Dictionary(Of String, Single)
+        }
+
         If i < 0 Then
             r.Values("TickSum") = Single.NaN
             r.Values("MA5") = Single.NaN
             r.Values("MA20") = Single.NaN
-            r.Values("Ratio") = Single.NaN
             Return r
         End If
+
         Dim span = New TimeSpan(0, _timeframeMinutes, 0)
         Dim pStart = candles(i).Dt
         Dim pEnd = pStart.Add(span)
         Dim cnt = 0
         Dim hasAnyTick As Boolean
+
         SyncLock _tickLock
-            hasAnyTick = (_tickBars.Count > 0)
+            hasAnyTick = (_tickBars.Count > 0 OrElse _completedRealtimeBars.Count > 0 OrElse _currentRealtimeTickCount > 0)
             Dim lo = 0
             Dim hi = _tickBars.Count - 1
             While lo <= hi
@@ -130,27 +177,36 @@ Public Class TickIntensity_Indicator
                     hi = mid - 1
                 End If
             End While
+
             Dim k = lo
             While k < _tickBars.Count AndAlso _tickBars(k) < pEnd
                 cnt += 1
                 k += 1
             End While
         End SyncLock
+
         If Not hasAnyTick Then
             r.Values("TickSum") = Single.NaN
             r.Values("MA5") = Single.NaN
             r.Values("MA20") = Single.NaN
-            r.Values("Ratio") = Single.NaN
             Return r
         End If
-        r.Values("TickSum") = CSng(cnt)
-        Dim sum5 As Single = CSng(cnt)
+
+        Dim normalizedCnt = NormalizeRealtimeTickCount(cnt)
+        If _completedRealtimeBars.ContainsKey(pStart) Then
+            normalizedCnt = _completedRealtimeBars(pStart)
+        ElseIf _currentRealtimeBarStart = pStart Then
+            normalizedCnt = NormalizeRealtimeTickCount(_currentRealtimeTickCount)
+        End If
+        r.Values("TickSum") = ApplyCandleDirection(candles(i), normalizedCnt)
+
+        Dim sum5 As Single = normalizedCnt
         Dim valid5 = 1
         If prevResults IsNot Nothing Then
             Dim sJ = Math.Max(0, prevResults.Count - SMA5_PERIOD + 1)
             For j = prevResults.Count - 1 To sJ Step -1
                 If valid5 >= SMA5_PERIOD Then Exit For
-                Dim tsVal = prevResults(j).Val("TickSum")
+                Dim tsVal = Math.Abs(prevResults(j).Val("TickSum"))
                 If Not Single.IsNaN(tsVal) Then
                     sum5 += tsVal
                     valid5 += 1
@@ -158,27 +214,39 @@ Public Class TickIntensity_Indicator
             Next
         End If
         r.Values("MA5") = If(valid5 >= SMA5_PERIOD, sum5 / SMA5_PERIOD, Single.NaN)
-        Dim sum20 As Single = CSng(cnt)
+
+        Dim sum20 As Single = normalizedCnt
         Dim valid20 = 1
         If prevResults IsNot Nothing Then
             Dim sJ = Math.Max(0, prevResults.Count - SMA20_PERIOD + 1)
             For j = prevResults.Count - 1 To sJ Step -1
                 If valid20 >= SMA20_PERIOD Then Exit For
-                Dim tsVal = prevResults(j).Val("TickSum")
+                Dim tsVal = Math.Abs(prevResults(j).Val("TickSum"))
                 If Not Single.IsNaN(tsVal) Then
                     sum20 += tsVal
                     valid20 += 1
                 End If
             Next
         End If
-        Dim ma20Val = If(valid20 >= SMA20_PERIOD, sum20 / SMA20_PERIOD, Single.NaN)
-        r.Values("MA20") = ma20Val
-        If Not Single.IsNaN(ma20Val) AndAlso ma20Val > 0 Then
-            r.Values("Ratio") = CSng(cnt) / ma20Val * 100.0F
-        Else
-            r.Values("Ratio") = Single.NaN
-        End If
+        r.Values("MA20") = If(valid20 >= SMA20_PERIOD, sum20 / SMA20_PERIOD, Single.NaN)
         Return r
+    End Function
+
+    Private Shared Function NormalizeRealtimeTickCount(rawTickCount As Integer) As Single
+        Dim tickUnit = Math.Max(1, RuntimeChartSettings.DefaultTickUnit)
+        Return CSng(rawTickCount / CSng(tickUnit))
+    End Function
+
+    Private Function AlignToBarStart(ts As DateTime) As DateTime
+        Dim minuteStep = Math.Max(1, _timeframeMinutes)
+        Dim minute = (ts.Minute \ minuteStep) * minuteStep
+        Return New DateTime(ts.Year, ts.Month, ts.Day, ts.Hour, minute, 0)
+    End Function
+
+    Private Shared Function ApplyCandleDirection(candle As CandleItem, tickSum As Single) As Single
+        If Single.IsNaN(tickSum) Then Return Single.NaN
+        If candle.Close < candle.Open Then Return -tickSum
+        Return tickSum
     End Function
 
     Private Shared Function CalcSMA(data As Single(), period As Integer) As Single()

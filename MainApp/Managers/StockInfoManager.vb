@@ -6,7 +6,9 @@
 ' ═══════════════════════════════════════════════════════════════
 
 Imports System.Collections.Concurrent
+Imports System.IO
 Imports [Shared]
+Imports Newtonsoft.Json
 
 Public Class StockInfoManager
 
@@ -292,6 +294,10 @@ Public Class StockInfoManager
                                              End If
                                              Return oldRows
                                          End Function)
+            SaveStrategyLabCandleSnapshot(code,
+                                          m.Str("timeframe", RuntimeChartSettings.DefaultCandleTimeframe),
+                                          m.Str("provider", RuntimeChartSettings.MarketDataProvider),
+                                          rows)
         End If
 
         If item.State < DataReadyState.CandleLoaded Then
@@ -506,5 +512,40 @@ Public Class StockInfoManager
         Next
         Return copy
     End Function
+
+    Private Sub SaveStrategyLabCandleSnapshot(code As String,
+                                              timeframe As String,
+                                              provider As String,
+                                              rows As List(Of Dictionary(Of String, String)))
+        If String.IsNullOrWhiteSpace(code) OrElse rows Is Nothing OrElse rows.Count = 0 Then Return
+
+        Try
+            Dim normalizedProvider = If(provider, RuntimeChartSettings.MarketDataProvider).Trim().ToLowerInvariant()
+            If normalizedProvider = "" Then normalizedProvider = RuntimeChartSettings.MarketDataProvider
+
+            Dim normalizedTimeframe = If(timeframe, "").Trim().ToLowerInvariant()
+            If normalizedTimeframe = "" Then normalizedTimeframe = RuntimeChartSettings.DefaultCandleTimeframe
+
+            Dim baseDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                       "Infra",
+                                       "StrategyLab",
+                                       "candles",
+                                       normalizedProvider,
+                                       normalizedTimeframe)
+            Directory.CreateDirectory(baseDir)
+
+            Dim payload As New Dictionary(Of String, Object)(StringComparer.OrdinalIgnoreCase) From {
+                {"code", code},
+                {"provider", normalizedProvider},
+                {"timeframe", normalizedTimeframe},
+                {"savedAt", DateTime.Now},
+                {"rows", CloneRows(rows)}
+            }
+
+            Dim fullPath = Path.Combine(baseDir, $"{code}.json")
+            File.WriteAllText(fullPath, JsonConvert.SerializeObject(payload, Formatting.None))
+        Catch
+        End Try
+    End Sub
 
 End Class

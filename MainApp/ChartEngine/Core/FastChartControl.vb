@@ -153,6 +153,7 @@ Public Class FastChartControl
     Private _panelIndicators As New List(Of List(Of String))
     Private _panelRanges As New List(Of Tuple(Of Single, Single))
     Private _panelLeftRanges As New List(Of Tuple(Of Single, Single))
+    Private _isStaticChartContext As Boolean = False
 
     Public Sub New()
         SetStyle(ControlStyles.Selectable, True)
@@ -195,7 +196,24 @@ Public Class FastChartControl
         _chartHost = host
     End Sub
 
+    Public Sub SetStaticChartContext(stockCode As String, Optional chartType As String = "minute", Optional stockName As String = "")
+        _isStaticChartContext = True
+        _stockCode = stockCode
+        _chartType = chartType
+        _requestedCount = 0
+        _tickCandleRetryCount = 0
+        _tickAuxRequested = False
+        _programAuxRequested = False
+        _programRtSubscribed = False
+        _sectorAuxRequested = False
+        _stockName = If(String.IsNullOrWhiteSpace(stockName), stockCode, stockName)
+        _signals.Clear()
+        ResetInitialViewportState()
+        _needsRepaint = True
+    End Sub
+
     Public Sub SetStock(stockCode As String, Optional chartType As String = "minute", Optional count As Integer = 0)
+        _isStaticChartContext = False
         Dim prevCode = _stockCode
         If Not String.IsNullOrWhiteSpace(prevCode) AndAlso
            Not String.Equals(prevCode, stockCode, StringComparison.OrdinalIgnoreCase) Then
@@ -259,6 +277,21 @@ Public Class FastChartControl
         If prevClose > 0 Then _prevClose = prevClose
         ReCalculate()
         MoveToLatestVisible()
+    End Sub
+
+    Public Sub ShowAllCandles()
+        If _candles Is Nothing OrElse _candles.Count = 0 Then Return
+        _vs.StartIndex = 0
+        _vs.VisibleCount = _candles.Count
+        _needsRepaint = True
+    End Sub
+
+    Public Sub SetStrategySignals(signals As IEnumerable(Of StrategySignal))
+        _signals.Clear()
+        If signals IsNot Nothing Then
+            _signals.AddRange(signals.Where(Function(signal) signal IsNot Nothing))
+        End If
+        _needsRepaint = True
     End Sub
 
     Public Sub ReCalculate()
@@ -475,6 +508,7 @@ Public Class FastChartControl
     End Property
 
     Private Sub OnCandleLoaded(m As Msg)
+        If _isStaticChartContext Then Return
         If m.Has("provider") Then
             If Not RuntimeChartSettings.IsMarketDataProvider(m.Str("provider")) Then Return
         End If
@@ -561,6 +595,7 @@ Public Class FastChartControl
     End Sub
 
     Private Sub OnCandlePeriodLoaded(m As Msg)
+        If _isStaticChartContext Then Return
         If m.Has("provider") Then
             If Not RuntimeChartSettings.IsMarketDataProvider(m.Str("provider")) Then Return
         End If
@@ -572,6 +607,7 @@ Public Class FastChartControl
     End Sub
 
     Private Sub OnTickCandleLoaded(m As Msg)
+        If _isStaticChartContext Then Return
         Dim code = If(m.Has("stockCode"), m.Str("stockCode"), m.Str("code"))
         If code <> _stockCode Then Return
         ApplyTickRowsFromMsg(m)
@@ -637,6 +673,7 @@ Public Class FastChartControl
     End Sub
 
     Private Sub OnTick(m As Msg)
+        If _isStaticChartContext Then Return
         Dim code = If(m.Has("stockCode"), m.Str("stockCode"), m.Str("code"))
         If code <> _stockCode Then Return
 
@@ -645,6 +682,11 @@ Public Class FastChartControl
         If m.Has("volume") Then vol = Math.Abs(m.Lng("volume"))
         Dim fallbackDt = DateTime.Now
         Dim tickTime As DateTime = ParseMsgDateTime(m, fallbackDt)
+        Dim tickStrength As Single = Single.NaN
+        Dim strengthKey = ChrW(&HCCB4) & ChrW(&HACB0) & ChrW(&HAC15) & ChrW(&HB3C4)
+        If m.Has("strength") Then tickStrength = m.Sng("strength")
+        If Single.IsNaN(tickStrength) AndAlso m.Has(strengthKey) Then tickStrength = CSng(SharedUtil.SafeDouble(m.Str(strengthKey), True))
+        If Single.IsNaN(tickStrength) AndAlso m.Has("泥닿껐媛뺣룄") Then tickStrength = CSng(SharedUtil.SafeDouble(m.Str("泥닿껐媛뺣룄"), True))
 
         For Each ind In _indicatorEngine.GetAll()
             Dim tickInd = TryCast(ind, TickIntensity_Indicator)
@@ -653,7 +695,6 @@ Public Class FastChartControl
             End If
         Next
 
-        Dim tickStrength As Single = Single.NaN
         If m.Has("strength") Then tickStrength = m.Sng("strength")
         If Single.IsNaN(tickStrength) AndAlso m.Has("체결강도") Then tickStrength = CSng(SharedUtil.SafeDouble(m.Str("체결강도"), True))
         If Not Single.IsNaN(tickStrength) Then
@@ -686,6 +727,7 @@ Public Class FastChartControl
     End Sub
 
     Private Sub OnProgramTrade(m As Msg)
+        If _isStaticChartContext Then Return
         Dim code = If(m.Has("stockCode"), m.Str("stockCode"), m.Str("code"))
         If code <> _stockCode Then Return
 
@@ -807,6 +849,7 @@ Public Class FastChartControl
     End Sub
 
     Private Sub OnTradeStrength(m As Msg)
+        If _isStaticChartContext Then Return
         Dim code = If(m.Has("stockCode"), m.Str("stockCode"), m.Str("code"))
         If code <> _stockCode Then Return
 
@@ -879,6 +922,7 @@ Public Class FastChartControl
     End Sub
 
     Private Sub OnSectorStocksResult(m As Msg)
+        If _isStaticChartContext Then Return
         If String.IsNullOrWhiteSpace(_stockCode) Then Return
         If Not m.Has("rows") Then Return
 
@@ -1114,6 +1158,7 @@ Public Class FastChartControl
     End Sub
 
     Private Sub OnStrategySignal(m As Msg)
+        If _isStaticChartContext Then Return
         Dim code = m.Str("stockCode")
         If code <> _stockCode Then Return
 
@@ -1157,16 +1202,36 @@ Public Class FastChartControl
         Dim cH = cB - cT
 
         Dim panelCount = _panelIndicators.Count
+        Dim separatorCount = If(panelCount > 0, panelCount, 0)
+        Dim separatorTotalH As Single = separatorCount * PANEL_SEPARATOR_H
+        Dim usableH = Math.Max(1.0F, cH - separatorTotalH)
+
+        Dim minPriceH = Math.Max(140.0F, usableH * 0.28F)
+        Dim minVolumeH = Math.Max(60.0F, usableH * 0.10F)
+        Dim minMainSectionH = minPriceH + minVolumeH
+
         Dim panelTotalH As Single = 0
         If panelCount > 0 Then
-            panelTotalH = cH * _vs.PanelHeightRatio * panelCount
-            Dim maxPanelH = cH * 0.65F
+            panelTotalH = usableH * _vs.PanelHeightRatio * panelCount
+            Dim maxPanelH = usableH * 0.6F
             If panelTotalH > maxPanelH Then panelTotalH = maxPanelH
+            If usableH - panelTotalH < minMainSectionH Then
+                panelTotalH = Math.Max(0.0F, usableH - minMainSectionH)
+            End If
         End If
 
-        Dim mainH = cH - panelTotalH
-        Dim volumeH = mainH * VOLUME_RATIO
-        mainH -= volumeH
+        Dim mainSectionH = Math.Max(minMainSectionH, usableH - panelTotalH)
+        If mainSectionH > usableH Then mainSectionH = usableH
+
+        Dim volumeH = Math.Max(minVolumeH, mainSectionH * VOLUME_RATIO)
+        Dim maxVolumeH = Math.Max(minVolumeH, mainSectionH * 0.28F)
+        If volumeH > maxVolumeH Then volumeH = maxVolumeH
+
+        Dim mainH = Math.Max(minPriceH, mainSectionH - volumeH)
+        If mainH + volumeH > mainSectionH Then
+            mainH = Math.Max(minPriceH, mainSectionH - minVolumeH)
+            volumeH = Math.Max(minVolumeH, mainSectionH - mainH)
+        End If
 
         _mainRect = New SKRect(cL, cT, cR, cT + mainH)
         _volumeRect = New SKRect(cL, _mainRect.Bottom, cR, _mainRect.Bottom + volumeH)
@@ -1179,8 +1244,11 @@ Public Class FastChartControl
         End If
 
         For i As Integer = 0 To panelCount - 1
-            _panelRects.Add(New SKRect(cL, pY + PANEL_SEPARATOR_H, cR, pY + sPH))
-            pY += sPH
+            Dim top = pY + PANEL_SEPARATOR_H
+            Dim bottom = top + sPH
+            If i = panelCount - 1 OrElse bottom > cB Then bottom = cB
+            _panelRects.Add(New SKRect(cL, top, cR, bottom))
+            pY = bottom
         Next
     End Sub
 
@@ -1879,9 +1947,7 @@ Public Class FastChartControl
     End Sub
 
     Private Shared Function IsTickIntensityRatioKey(indName As String, valueKey As String) As Boolean
-        If String.IsNullOrWhiteSpace(indName) OrElse String.IsNullOrWhiteSpace(valueKey) Then Return False
-        Return indName.StartsWith("TICKINT_", StringComparison.OrdinalIgnoreCase) AndAlso
-               valueKey.Equals("Ratio", StringComparison.OrdinalIgnoreCase)
+        Return False
     End Function
 
     Private Shared Function IsProgramNetBuyLeftAxisKey(indName As String, valueKey As String) As Boolean
