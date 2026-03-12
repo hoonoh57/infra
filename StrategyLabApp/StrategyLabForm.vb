@@ -1,8 +1,11 @@
 Imports System
 Imports System.Collections.Generic
 Imports System.Drawing
+Imports System.Drawing.Imaging
+Imports System.Diagnostics
 Imports System.IO
 Imports System.Linq
+Imports System.Text
 Imports System.Windows.Forms
 Imports System.Windows.Forms.DataVisualization.Charting
 Imports MainApp
@@ -32,6 +35,8 @@ Namespace StrategyLabApp
         Private ReadOnly _btnSaveCandidate As New Button()
         Private ReadOnly _btnApplySuggestion As New Button()
         Private ReadOnly _btnPinPromotion As New Button()
+        Private ReadOnly _btnExportBatchReport As New Button()
+        Private ReadOnly _btnExportBatchPdfReport As New Button()
         Private ReadOnly _btnSavePackage As New Button()
         Private ReadOnly _chart As New Chart()
         Private ReadOnly _chartPanel As New Panel()
@@ -58,6 +63,13 @@ Namespace StrategyLabApp
         Private Const MinRightPanelWidth As Integer = 520
         Private Const MinTopPanelHeight As Integer = 360
         Private Const MinBottomPanelHeight As Integer = 180
+
+        Private Class BatchReportOutcome
+            Public Property Item As StockInfoItem
+            Public Property Prompt As String = ""
+            Public Property Result As StrategyLabResult
+            Public Property ErrorMessage As String = ""
+        End Class
 
         Private Class MacdOverlayData
             Public Property Macd As List(Of Double)
@@ -159,13 +171,15 @@ Namespace StrategyLabApp
             Dim leftPanel As New TableLayoutPanel With {
                 .Dock = DockStyle.Fill,
                 .ColumnCount = 1,
-                .RowCount = 13,
+                .RowCount = 15,
                 .BackColor = Color.FromArgb(37, 39, 46)
             }
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 34))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 132))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Percent, 58.0F))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Percent, 42.0F))
+            leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 40))
+            leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 40))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 40))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 40))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 40))
@@ -262,12 +276,24 @@ Namespace StrategyLabApp
             AddHandler _btnPinPromotion.Click, AddressOf OnPinPromotionCandidate
             leftPanel.Controls.Add(_btnPinPromotion, 0, 8)
 
+            _btnExportBatchReport.Dock = DockStyle.Fill
+            _btnExportBatchReport.Text = "Export Batch Report"
+            ApplyButtonTheme(_btnExportBatchReport, Color.FromArgb(72, 70, 110))
+            AddHandler _btnExportBatchReport.Click, AddressOf OnExportBatchReport
+            leftPanel.Controls.Add(_btnExportBatchReport, 0, 9)
+
+            _btnExportBatchPdfReport.Dock = DockStyle.Fill
+            _btnExportBatchPdfReport.Text = "Export Batch PDF Report"
+            ApplyButtonTheme(_btnExportBatchPdfReport, Color.FromArgb(92, 66, 110))
+            AddHandler _btnExportBatchPdfReport.Click, AddressOf OnExportBatchPdfReport
+            leftPanel.Controls.Add(_btnExportBatchPdfReport, 0, 10)
+
             _lblRecommendation.Dock = DockStyle.Fill
             _lblRecommendation.ForeColor = Color.Gold
             _lblRecommendation.BackColor = Color.FromArgb(30, 33, 40)
             _lblRecommendation.Padding = New Padding(8, 6, 8, 6)
             _lblRecommendation.Text = "Recommended: none"
-            leftPanel.Controls.Add(_lblRecommendation, 0, 9)
+            leftPanel.Controls.Add(_lblRecommendation, 0, 11)
 
             _txtRecommendationReason.Dock = DockStyle.Fill
             _txtRecommendationReason.Multiline = True
@@ -275,20 +301,20 @@ Namespace StrategyLabApp
             _txtRecommendationReason.BackColor = Color.FromArgb(24, 26, 32)
             _txtRecommendationReason.ForeColor = Color.Gainsboro
             _txtRecommendationReason.Text = "Recommendation reason will appear here."
-            leftPanel.Controls.Add(_txtRecommendationReason, 0, 10)
+            leftPanel.Controls.Add(_txtRecommendationReason, 0, 12)
 
             _lblPromotionCandidate.Dock = DockStyle.Fill
             _lblPromotionCandidate.ForeColor = Color.LightGreen
             _lblPromotionCandidate.BackColor = Color.FromArgb(30, 33, 40)
             _lblPromotionCandidate.Padding = New Padding(8, 6, 8, 6)
             _lblPromotionCandidate.Text = "Promotion candidate: none"
-            leftPanel.Controls.Add(_lblPromotionCandidate, 0, 11)
+            leftPanel.Controls.Add(_lblPromotionCandidate, 0, 13)
 
             _lstCandidates.Dock = DockStyle.Fill
             _lstCandidates.BackColor = Color.FromArgb(26, 28, 34)
             _lstCandidates.ForeColor = Color.Gainsboro
             AddHandler _lstCandidates.SelectedIndexChanged, AddressOf OnCandidateSelected
-            leftPanel.Controls.Add(_lstCandidates, 0, 12)
+            leftPanel.Controls.Add(_lstCandidates, 0, 14)
 
             _btnSavePackage.Text = "Save Package"
             ApplyButtonTheme(_btnSavePackage, Color.FromArgb(90, 64, 128))
@@ -873,6 +899,560 @@ Namespace StrategyLabApp
             AppendHistory("System", $"Package saved: {Path.GetFileName(fullPath)} | Manifest hash={manifest.PackageHash}")
             MessageBox.Show(Me, $"패키지를 저장했습니다.{Environment.NewLine}{fullPath}", "StrategyLabApp", MessageBoxButtons.OK, MessageBoxIcon.Information)
         End Sub
+
+        Private Sub OnExportBatchReport(sender As Object, e As EventArgs)
+            Dim prompt = _txtPrompt.Text.Trim()
+            If String.IsNullOrWhiteSpace(prompt) Then
+                MessageBox.Show(Me, "프롬프트를 먼저 입력하세요.", "StrategyLab", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return
+            End If
+
+            Dim stocks = StockInfoManager.I.GetAll().
+                OrderBy(Function(item) item.Code, StringComparer.OrdinalIgnoreCase).
+                ToList()
+            If stocks.Count = 0 Then
+                MessageBox.Show(Me, "현재 종목정보 리스트가 비어 있습니다.", "StrategyLab", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return
+            End If
+
+            Dim mode = DirectCast(_cboMode.SelectedItem, TradeMode)
+            Dim fromDate = _dtFrom.Value.Date
+            Dim targetRate = CDbl(_numTarget.Value) / 100.0R
+
+            Using dlg As New SaveFileDialog()
+                dlg.Title = "Save StrategyLab Batch Report"
+                dlg.Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*"
+                dlg.FileName = $"StrategyLabBatch_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
+                dlg.InitialDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "reports")
+                If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+
+                Directory.CreateDirectory(Path.GetDirectoryName(dlg.FileName))
+
+                Dim lines As New List(Of String) From {
+                    BuildBatchReportHeader()
+                }
+                Dim outcomes As New List(Of BatchReportOutcome)()
+                Dim successCount As Integer = 0
+                Dim failCount As Integer = 0
+                Dim startedAt = DateTime.Now
+                Dim previousCursor = System.Windows.Forms.Cursor.Current
+                System.Windows.Forms.Cursor.Current = Cursors.WaitCursor
+
+                Try
+                    AppendHistory("System", $"Batch evaluation started. Count={stocks.Count}, Prompt={prompt}")
+
+                    For Each item In stocks
+                        Dim result As StrategyLabResult = Nothing
+                        Dim errorMessage As String = ""
+
+                        Try
+                            result = _labFacade.EvaluatePrompt(prompt, mode, item.Code, fromDate, targetRate, 5000, New CostModel())
+                            successCount += 1
+                        Catch ex As Exception
+                            errorMessage = ex.Message
+                            failCount += 1
+                        End Try
+
+                        outcomes.Add(New BatchReportOutcome With {
+                            .Item = item,
+                            .Prompt = prompt,
+                            .Result = result,
+                            .ErrorMessage = errorMessage
+                        })
+                        lines.Add(BuildBatchReportRow(item, prompt, result, errorMessage))
+                        AppendHistory("System", $"Batch {item.Code} {If(errorMessage = "", "OK", "FAIL")} {If(errorMessage = "", "", "- " & errorMessage)}")
+                        Application.DoEvents()
+                    Next
+
+                    File.WriteAllText(dlg.FileName, String.Join(Environment.NewLine, lines), New UTF8Encoding(True))
+                    Dim summaryPath = Path.Combine(Path.GetDirectoryName(dlg.FileName), Path.GetFileNameWithoutExtension(dlg.FileName) & "_summary.csv")
+                    File.WriteAllText(summaryPath, String.Join(Environment.NewLine, BuildBatchSummaryLines(outcomes)), New UTF8Encoding(True))
+
+                    Dim elapsed = DateTime.Now - startedAt
+                    AppendHistory("System", $"Batch report saved: {dlg.FileName} | Summary: {summaryPath} (Success={successCount}, Fail={failCount}, Elapsed={elapsed.TotalSeconds:N1}s)")
+                    MessageBox.Show(Me,
+                                    $"Batch report saved.{Environment.NewLine}Success: {successCount}{Environment.NewLine}Fail: {failCount}{Environment.NewLine}Detail: {dlg.FileName}{Environment.NewLine}Summary: {summaryPath}",
+                                    "StrategyLab",
+                                    MessageBoxButtons.OK,
+                                    MessageBoxIcon.Information)
+                Finally
+                    System.Windows.Forms.Cursor.Current = previousCursor
+                End Try
+            End Using
+        End Sub
+
+        Private Sub OnExportBatchPdfReport(sender As Object, e As EventArgs)
+            Dim prompt = _txtPrompt.Text.Trim()
+            If String.IsNullOrWhiteSpace(prompt) Then
+                MessageBox.Show(Me, "프롬프트를 먼저 입력하세요.", "StrategyLab", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return
+            End If
+
+            Dim stocks = StockInfoManager.I.GetAll().
+                OrderBy(Function(item) item.Code, StringComparer.OrdinalIgnoreCase).
+                ToList()
+            If stocks.Count = 0 Then
+                MessageBox.Show(Me, "현재 종목정보 리스트가 비어 있습니다.", "StrategyLab", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return
+            End If
+
+            Dim mode = DirectCast(_cboMode.SelectedItem, TradeMode)
+            Dim fromDate = _dtFrom.Value.Date
+            Dim targetRate = CDbl(_numTarget.Value) / 100.0R
+
+            Using dlg As New SaveFileDialog()
+                dlg.Title = "Save StrategyLab Batch PDF Report"
+                dlg.Filter = "PDF files (*.pdf)|*.pdf|All files (*.*)|*.*"
+                dlg.FileName = $"StrategyLabBatch_{DateTime.Now:yyyyMMdd_HHmmss}.pdf"
+                dlg.InitialDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "reports")
+                If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+
+                Directory.CreateDirectory(Path.GetDirectoryName(dlg.FileName))
+                Dim outcomes = RunBatchEvaluation(stocks, prompt, mode, fromDate, targetRate)
+                Dim htmlPath = Path.Combine(Path.GetDirectoryName(dlg.FileName), Path.GetFileNameWithoutExtension(dlg.FileName) & ".html")
+                Dim assetFolder = Path.Combine(Path.GetDirectoryName(dlg.FileName), Path.GetFileNameWithoutExtension(dlg.FileName) & "_assets")
+                File.WriteAllText(htmlPath, BuildBatchHtmlReport(prompt, mode, fromDate, targetRate, outcomes, assetFolder), New UTF8Encoding(True))
+
+                Dim pdfCreated = TryCreatePdfFromHtml(htmlPath, dlg.FileName)
+                Dim successCount = outcomes.Where(Function(x) x.Result IsNot Nothing AndAlso x.Result.Report IsNot Nothing).Count()
+                Dim failCount = outcomes.Where(Function(x) Not String.IsNullOrWhiteSpace(x.ErrorMessage)).Count()
+
+                If pdfCreated Then
+                    AppendHistory("System", $"Batch PDF report saved: {dlg.FileName} | Source HTML: {htmlPath} (Success={successCount}, Fail={failCount})")
+                    MessageBox.Show(Me,
+                                    $"Batch PDF report saved.{Environment.NewLine}Success: {successCount}{Environment.NewLine}Fail: {failCount}{Environment.NewLine}PDF: {dlg.FileName}{Environment.NewLine}HTML: {htmlPath}",
+                                    "StrategyLab",
+                                    MessageBoxButtons.OK,
+                                    MessageBoxIcon.Information)
+                Else
+                    AppendHistory("System", $"Batch HTML report saved: {htmlPath} (PDF conversion unavailable, Success={successCount}, Fail={failCount})")
+                    MessageBox.Show(Me,
+                                    $"HTML report was saved, but automatic PDF conversion was unavailable.{Environment.NewLine}Success: {successCount}{Environment.NewLine}Fail: {failCount}{Environment.NewLine}HTML: {htmlPath}",
+                                    "StrategyLab",
+                                    MessageBoxButtons.OK,
+                                    MessageBoxIcon.Information)
+                End If
+            End Using
+        End Sub
+
+        Private Function RunBatchEvaluation(stocks As IEnumerable(Of StockInfoItem),
+                                            prompt As String,
+                                            mode As TradeMode,
+                                            fromDate As DateTime,
+                                            targetRate As Double) As List(Of BatchReportOutcome)
+            Dim outcomes As New List(Of BatchReportOutcome)()
+            Dim stockList = stocks.ToList()
+            Dim startedAt = DateTime.Now
+            Dim previousCursor = System.Windows.Forms.Cursor.Current
+            System.Windows.Forms.Cursor.Current = Cursors.WaitCursor
+
+            Try
+                AppendHistory("System", $"Batch evaluation started. Count={stockList.Count}, Prompt={prompt}")
+
+                For Each item In stockList
+                    Dim result As StrategyLabResult = Nothing
+                    Dim errorMessage As String = ""
+
+                    Try
+                        result = _labFacade.EvaluatePrompt(prompt, mode, item.Code, fromDate, targetRate, 5000, New CostModel())
+                    Catch ex As Exception
+                        errorMessage = ex.Message
+                    End Try
+
+                    outcomes.Add(New BatchReportOutcome With {
+                        .Item = item,
+                        .Prompt = prompt,
+                        .Result = result,
+                        .ErrorMessage = errorMessage
+                    })
+                    AppendHistory("System", $"Batch {item.Code} {If(errorMessage = "", "OK", "FAIL")} {If(errorMessage = "", "", "- " & errorMessage)}")
+                    Application.DoEvents()
+                Next
+
+                Dim successCount = outcomes.Where(Function(x) x.Result IsNot Nothing AndAlso x.Result.Report IsNot Nothing).Count()
+                Dim failCount = outcomes.Where(Function(x) Not String.IsNullOrWhiteSpace(x.ErrorMessage)).Count()
+                Dim elapsed = DateTime.Now - startedAt
+                AppendHistory("System", $"Batch evaluation completed. Success={successCount}, Fail={failCount}, Elapsed={elapsed.TotalSeconds:N1}s")
+                Return outcomes
+            Finally
+                System.Windows.Forms.Cursor.Current = previousCursor
+            End Try
+        End Function
+
+        Private Function BuildBatchHtmlReport(prompt As String,
+                                              mode As TradeMode,
+                                              fromDate As DateTime,
+                                              targetRate As Double,
+                                              outcomes As IEnumerable(Of BatchReportOutcome),
+                                              assetFolder As String) As String
+            Dim rows = outcomes.ToList()
+            Dim successful = rows.Where(Function(x) x.Result IsNot Nothing AndAlso x.Result.Report IsNot Nothing).ToList()
+            Dim sb As New StringBuilder()
+            Directory.CreateDirectory(assetFolder)
+            sb.AppendLine("<!DOCTYPE html>")
+            sb.AppendLine("<html><head><meta charset=""utf-8""/>")
+            sb.AppendLine("<title>StrategyLab Batch Report</title>")
+            sb.AppendLine("<style>")
+            sb.AppendLine("body{font-family:'Malgun Gothic',sans-serif;margin:24px;color:#1f2937;background:#f8fafc;} h1,h2,h3{margin:0 0 12px;} .meta,.card{background:#fff;border:1px solid #dbe2ea;border-radius:10px;padding:16px;margin-bottom:16px;} .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;} .metric{background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:12px;} table{width:100%;border-collapse:collapse;margin-top:8px;} th,td{border:1px solid #dbe2ea;padding:8px;vertical-align:top;text-align:left;} th{background:#eef2f7;} .reinforce{color:#166534;font-weight:700;} .improve{color:#92400e;font-weight:700;} .rework{color:#991b1b;font-weight:700;} .small{color:#6b7280;font-size:12px;} .section-title{margin-top:24px;}")
+            sb.AppendLine("</style></head><body>")
+            sb.AppendLine("<h1>StrategyLab Batch Strategy Report</h1>")
+            sb.AppendLine("<div class=""meta"">")
+            sb.AppendLine($"<div><strong>Prompt:</strong> {HtmlEscape(prompt)}</div>")
+            sb.AppendLine($"<div><strong>Mode:</strong> {HtmlEscape(mode.ToString())}</div>")
+            Dim fromText = fromDate.ToString("yyyy-MM-dd")
+            sb.AppendLine($"<div><strong>From:</strong> {HtmlEscape(fromText)}</div>")
+            sb.AppendLine($"<div><strong>Target:</strong> {targetRate:P2}</div>")
+            sb.AppendLine($"<div><strong>Generated:</strong> {DateTime.Now:yyyy-MM-dd HH:mm:ss}</div>")
+            sb.AppendLine("</div>")
+
+            sb.AppendLine("<div class=""card"">")
+            sb.AppendLine("<h2>System Midpoint Check</h2>")
+            sb.AppendLine("<div class=""grid"">")
+            sb.AppendLine(BuildMetricHtml("Evaluated Symbols", rows.Count.ToString()))
+            sb.AppendLine(BuildMetricHtml("Successful", successful.Count.ToString()))
+            sb.AppendLine(BuildMetricHtml("Mean Avg Return", If(successful.Count > 0, successful.Average(Function(x) x.Result.Report.AverageReturnRate).ToString("P2"), "n/a")))
+            sb.AppendLine(BuildMetricHtml("Mean Target Hit", If(successful.Count > 0, successful.Average(Function(x) x.Result.Report.PrimaryMetric).ToString("P2"), "n/a")))
+            sb.AppendLine("</div>")
+            sb.AppendLine("</div>")
+
+            sb.AppendLine("<div class=""card""><h2>Portfolio Summary</h2><table><thead><tr><th>Symbol</th><th>Name</th><th>Decision</th><th>Avg Return</th><th>Primary KPI</th><th>Drawdown</th><th>Decision Reason</th></tr></thead><tbody>")
+            For Each outcome In rows
+                If outcome.Result Is Nothing OrElse outcome.Result.Report Is Nothing Then
+                    sb.AppendLine($"<tr><td>{HtmlEscape(outcome.Item.Code)}</td><td>{HtmlEscape(outcome.Item.Name)}</td><td class=""rework"">Improve</td><td>n/a</td><td>n/a</td><td>n/a</td><td>{HtmlEscape(outcome.ErrorMessage)}</td></tr>")
+                Else
+                    Dim decision = DetermineBatchDecision(outcome.Result)
+                    Dim decisionClass = decision.ToLowerInvariant()
+                    sb.AppendLine("<tr>")
+                    sb.AppendLine($"<td>{HtmlEscape(outcome.Item.Code)}</td>")
+                    sb.AppendLine($"<td>{HtmlEscape(outcome.Item.Name)}</td>")
+                    sb.AppendLine($"<td class=""{decisionClass}"">{HtmlEscape(decision)}</td>")
+                    sb.AppendLine($"<td>{outcome.Result.Report.AverageReturnRate:P2}</td>")
+                    sb.AppendLine($"<td>{outcome.Result.Report.PrimaryMetric:P2}</td>")
+                    sb.AppendLine($"<td>{outcome.Result.Report.MaxDrawdownRate:P2}</td>")
+                    sb.AppendLine($"<td>{HtmlEscape(BuildBatchDecisionReason(outcome.Result))}</td>")
+                    sb.AppendLine("</tr>")
+                End If
+            Next
+            sb.AppendLine("</tbody></table></div>")
+
+            For Each outcome In rows
+                sb.AppendLine("<div class=""card"">")
+                sb.AppendLine($"<h2 class=""section-title"">{HtmlEscape(outcome.Item.Code)} {HtmlEscape(outcome.Item.Name)}</h2>")
+                sb.AppendLine($"<div class=""small"">Source: {HtmlEscape(outcome.Item.SourceText())} / {HtmlEscape(outcome.Item.SourceDetail)}</div>")
+                If outcome.Result Is Nothing OrElse outcome.Result.Report Is Nothing OrElse outcome.Result.Definition Is Nothing Then
+                    sb.AppendLine($"<p><strong>Evaluation failed:</strong> {HtmlEscape(outcome.ErrorMessage)}</p>")
+                Else
+                    Dim report = outcome.Result.Report
+                    Dim suggestion = outcome.Result.ImprovementPlan?.Suggestions?.FirstOrDefault()
+                    Dim chartImage = CaptureBatchChartSnapshot(outcome, assetFolder)
+                    sb.AppendLine("<div class=""grid"">")
+                    sb.AppendLine(BuildMetricHtml("Decision", DetermineBatchDecision(outcome.Result)))
+                    sb.AppendLine(BuildMetricHtml("Avg Return", report.AverageReturnRate.ToString("P2")))
+                    sb.AppendLine(BuildMetricHtml("Primary KPI", report.PrimaryMetric.ToString("P2")))
+                    sb.AppendLine(BuildMetricHtml("Win Rate", report.WinRate.ToString("P2")))
+                    sb.AppendLine("</div>")
+                    If Not String.IsNullOrWhiteSpace(chartImage) Then
+                        sb.AppendLine($"<div style=""margin:16px 0;""><img src=""{HtmlEscape(chartImage)}"" style=""width:100%;border:1px solid #dbe2ea;border-radius:8px;"" /></div>")
+                    End If
+                    sb.AppendLine("<table><tbody>")
+                    sb.AppendLine($"<tr><th>Strategy</th><td>{HtmlEscape(outcome.Result.Definition.Name)}</td></tr>")
+                    Dim indicatorText = String.Join(" | ", outcome.Result.Definition.Indicators.Select(Function(ind) ind.IndicatorType))
+                    sb.AppendLine($"<tr><th>Indicators</th><td>{HtmlEscape(indicatorText)}</td></tr>")
+                    sb.AppendLine($"<tr><th>Strength</th><td>{HtmlEscape(report.StrengthSummary)}</td></tr>")
+                    sb.AppendLine($"<tr><th>Weakness</th><td>{HtmlEscape(report.WeaknessSummary)}</td></tr>")
+                    sb.AppendLine($"<tr><th>Failed Example</th><td>{HtmlEscape(report.FailedExampleSummary)}</td></tr>")
+                    sb.AppendLine($"<tr><th>Decision Reason</th><td>{HtmlEscape(BuildBatchDecisionReason(outcome.Result))}</td></tr>")
+                    sb.AppendLine($"<tr><th>Top Suggestion</th><td>{HtmlEscape(If(suggestion?.Title, ""))}</td></tr>")
+                    sb.AppendLine($"<tr><th>Suggestion Prompt</th><td>{HtmlEscape(If(suggestion?.PromptHint, ""))}</td></tr>")
+                    sb.AppendLine("</tbody></table>")
+                End If
+                sb.AppendLine("</div>")
+            Next
+
+            sb.AppendLine("</body></html>")
+            Return sb.ToString()
+        End Function
+
+        Private Shared Function BuildMetricHtml(title As String, value As String) As String
+            Return $"<div class=""metric""><div class=""small"">{HtmlEscape(title)}</div><div><strong>{HtmlEscape(value)}</strong></div></div>"
+        End Function
+
+        Private Function CaptureBatchChartSnapshot(outcome As BatchReportOutcome, assetFolder As String) As String
+            If outcome Is Nothing OrElse outcome.Result Is Nothing OrElse outcome.Result.Report Is Nothing Then
+                Return ""
+            End If
+
+            Dim previousResult = _lastResult
+            Dim previousSymbol = _txtSymbol.Text
+
+            Try
+                _lastResult = CloneResult(outcome.Result)
+                _txtSymbol.Text = outcome.Item.Code
+                RenderChart(_lastResult.Report)
+                Application.DoEvents()
+
+                Dim width = Math.Max(1, _panelLabChart.ClientSize.Width)
+                Dim height = Math.Max(1, _panelLabChart.ClientSize.Height)
+                If width <= 1 OrElse height <= 1 Then
+                    Return ""
+                End If
+
+                Dim fileName = $"{outcome.Item.Code}_{DateTime.Now:HHmmssfff}.png"
+                Dim fullPath = Path.Combine(assetFolder, fileName)
+                Using bmp As New Bitmap(width, height)
+                    _panelLabChart.DrawToBitmap(bmp, New Rectangle(0, 0, width, height))
+                    bmp.Save(fullPath, ImageFormat.Png)
+                End Using
+                Return Path.GetFileName(assetFolder) & "/" & fileName
+            Finally
+                _lastResult = previousResult
+                _txtSymbol.Text = previousSymbol
+                If _lastResult IsNot Nothing AndAlso _lastResult.Report IsNot Nothing Then
+                    RenderChart(_lastResult.Report)
+                End If
+            End Try
+        End Function
+
+        Private Shared Function HtmlEscape(value As String) As String
+            Dim text = If(value, "")
+            Return text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("""", "&quot;")
+        End Function
+
+        Private Shared Function TryCreatePdfFromHtml(htmlPath As String, pdfPath As String) As Boolean
+            Dim edgeCandidates = {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft\Edge\Application\msedge.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft\Edge\Application\msedge.exe")
+            }
+
+            Dim edgePath = edgeCandidates.FirstOrDefault(Function(path) File.Exists(path))
+            If String.IsNullOrWhiteSpace(edgePath) Then
+                Return False
+            End If
+
+            Dim psi As New ProcessStartInfo(edgePath) With {
+                .UseShellExecute = False,
+                .CreateNoWindow = True,
+                .Arguments = $"--headless --disable-gpu --print-to-pdf=""{pdfPath}"" ""{New Uri(htmlPath).AbsoluteUri}"""
+            }
+
+            Using proc = Process.Start(psi)
+                If proc Is Nothing Then Return False
+                proc.WaitForExit(30000)
+            End Using
+
+            Return File.Exists(pdfPath)
+        End Function
+
+        Private Shared Function BuildBatchReportHeader() As String
+            Dim columns = {
+                "EvaluatedAt",
+                "Symbol",
+                "Name",
+                "Source",
+                "SourceDetail",
+                "Prompt",
+                "Strategy",
+                "Mode",
+                "Timeframes",
+                "Indicators",
+                "TradeCount",
+                "TargetHits",
+                "MissedTargets",
+                "PrimaryKPI",
+                "SecondaryKPI",
+                "AvgReturn",
+                "MaxDrawdown",
+                "WinRate",
+                "Decision",
+                "DecisionReason",
+                "Strength",
+                "Weakness",
+                "FailedExample",
+                "TopSuggestion",
+                "SuggestionPrompt",
+                "Error"
+            }
+            Return String.Join(",", columns.Select(AddressOf CsvEscape))
+        End Function
+
+        Private Shared Function BuildBatchReportRow(item As StockInfoItem,
+                                                    prompt As String,
+                                                    result As StrategyLabResult,
+                                                    errorMessage As String) As String
+            If result Is Nothing OrElse result.Report Is Nothing OrElse result.Definition Is Nothing Then
+                Dim failedFields = {
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                    If(item?.Code, ""),
+                    If(item?.Name, ""),
+                    If(item?.SourceText(), ""),
+                    If(item?.SourceDetail, ""),
+                    prompt,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "Improve",
+                    "Evaluation failed",
+                    "",
+                    "",
+                    "",
+                    "",
+                    errorMessage
+                }
+                Return String.Join(",", failedFields.Select(AddressOf CsvEscape))
+            End If
+
+            Dim topSuggestion = result.ImprovementPlan?.Suggestions?.FirstOrDefault()
+            Dim decision = DetermineBatchDecision(result)
+            Dim decisionReason = BuildBatchDecisionReason(result)
+            Dim fields = {
+                result.Report.EvaluatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
+                item.Code,
+                item.Name,
+                item.SourceText(),
+                item.SourceDetail,
+                prompt,
+                result.Definition.Name,
+                result.Definition.TradeMode.ToString(),
+                String.Join(" | ", result.Definition.Timeframes),
+                String.Join(" | ", result.Definition.Indicators.Select(Function(ind) ind.IndicatorType)),
+                result.Report.TradeCount.ToString(),
+                $"{result.Report.TargetHitCount}/{Math.Max(0, result.Report.TradeCount)}",
+                result.Report.MissedTargetCount.ToString(),
+                result.Report.PrimaryMetric.ToString("P2"),
+                result.Report.SecondaryMetric.ToString("P2"),
+                result.Report.AverageReturnRate.ToString("P2"),
+                result.Report.MaxDrawdownRate.ToString("P2"),
+                result.Report.WinRate.ToString("P2"),
+                decision,
+                decisionReason,
+                result.Report.StrengthSummary,
+                result.Report.WeaknessSummary,
+                result.Report.FailedExampleSummary,
+                If(topSuggestion?.Title, ""),
+                If(topSuggestion?.PromptHint, ""),
+                errorMessage
+            }
+            Return String.Join(",", fields.Select(AddressOf CsvEscape))
+        End Function
+
+        Private Shared Function BuildBatchSummaryLines(outcomes As IEnumerable(Of BatchReportOutcome)) As List(Of String)
+            Dim rows = outcomes.ToList()
+            Dim lines As New List(Of String)()
+            lines.Add(String.Join(",", {
+                CsvEscape("Section"),
+                CsvEscape("Key"),
+                CsvEscape("Value"),
+                CsvEscape("Notes")
+            }))
+
+            Dim successful = rows.Where(Function(x) x.Result IsNot Nothing AndAlso x.Result.Report IsNot Nothing).ToList()
+            lines.Add(BuildSummaryRow("Overview", "EvaluatedSymbols", rows.Count.ToString(), ""))
+            lines.Add(BuildSummaryRow("Overview", "SuccessfulSymbols", successful.Count.ToString(), ""))
+            lines.Add(BuildSummaryRow("Overview", "FailedSymbols", rows.Where(Function(x) Not String.IsNullOrWhiteSpace(x.ErrorMessage)).Count().ToString(), ""))
+
+            If successful.Count > 0 Then
+                lines.Add(BuildSummaryRow("Metrics", "MeanPrimaryKPI", successful.Average(Function(x) x.Result.Report.PrimaryMetric).ToString("P2"), "Average target-hit ratio"))
+                lines.Add(BuildSummaryRow("Metrics", "MeanAvgReturn", successful.Average(Function(x) x.Result.Report.AverageReturnRate).ToString("P2"), "Average net return"))
+                lines.Add(BuildSummaryRow("Metrics", "MeanMaxDrawdown", successful.Average(Function(x) x.Result.Report.MaxDrawdownRate).ToString("P2"), "Average drawdown"))
+                lines.Add(BuildSummaryRow("Metrics", "MeanWinRate", successful.Average(Function(x) x.Result.Report.WinRate).ToString("P2"), "Average win rate"))
+
+                Dim best = successful.OrderByDescending(Function(x) x.Result.Report.AverageReturnRate).First()
+                Dim worst = successful.OrderBy(Function(x) x.Result.Report.AverageReturnRate).First()
+                lines.Add(BuildSummaryRow("BestSymbol", best.Item.Code, best.Result.Report.AverageReturnRate.ToString("P2"), best.Item.Name))
+                lines.Add(BuildSummaryRow("WorstSymbol", worst.Item.Code, worst.Result.Report.AverageReturnRate.ToString("P2"), worst.Item.Name))
+
+                For Each grp In successful.
+                    GroupBy(Function(x) DetermineBatchDecision(x.Result)).
+                    OrderBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
+                    lines.Add(BuildSummaryRow("Decision", grp.Key, grp.Count().ToString(), ""))
+                Next
+
+                For Each grp In successful.
+                    Select(Function(x) x.Result.ImprovementPlan?.Suggestions?.FirstOrDefault()).
+                    Where(Function(x) x IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(x.Title)).
+                    GroupBy(Function(x) x.Title).
+                    OrderByDescending(Function(g) g.Count()).
+                    Take(5)
+                    lines.Add(BuildSummaryRow("CommonSuggestion", grp.Key, grp.Count().ToString(), grp.First().PromptHint))
+                Next
+            End If
+
+            For Each failed In rows.Where(Function(x) Not String.IsNullOrWhiteSpace(x.ErrorMessage))
+                lines.Add(BuildSummaryRow("Failure", failed.Item.Code, failed.ErrorMessage, failed.Item.Name))
+            Next
+
+            Return lines
+        End Function
+
+        Private Shared Function BuildSummaryRow(section As String, key As String, value As String, notes As String) As String
+            Return String.Join(",", {
+                CsvEscape(section),
+                CsvEscape(key),
+                CsvEscape(value),
+                CsvEscape(notes)
+            })
+        End Function
+
+        Private Shared Function DetermineBatchDecision(result As StrategyLabResult) As String
+            If result Is Nothing OrElse result.Report Is Nothing Then
+                Return "Improve"
+            End If
+
+            Dim report = result.Report
+            If report.TradeCount = 0 Then
+                Return "Improve"
+            End If
+
+            If report.PrimaryMetric >= 0.6R AndAlso report.AverageReturnRate > 0 AndAlso report.MaxDrawdownRate > -0.03R Then
+                Return "Reinforce"
+            End If
+
+            If report.PrimaryMetric >= 0.35R AndAlso report.AverageReturnRate > 0 Then
+                Return "Improve"
+            End If
+
+            Return "Rework"
+        End Function
+
+        Private Shared Function BuildBatchDecisionReason(result As StrategyLabResult) As String
+            If result Is Nothing OrElse result.Report Is Nothing Then
+                Return "No evaluation result"
+            End If
+
+            Dim report = result.Report
+            If report.TradeCount = 0 Then
+                Return "No trade generated in the evaluation range"
+            End If
+
+            If report.PrimaryMetric >= 0.6R AndAlso report.AverageReturnRate > 0 AndAlso report.MaxDrawdownRate > -0.03R Then
+                Return $"Target hits {report.TargetHitCount}/{report.TradeCount}, avg {report.AverageReturnRate:P2}, drawdown {report.MaxDrawdownRate:P2}"
+            End If
+
+            If report.PrimaryMetric >= 0.35R AndAlso report.AverageReturnRate > 0 Then
+                Return $"Profitable but target hits are limited: {report.TargetHitCount}/{report.TradeCount}, failed example: {report.FailedExampleSummary}"
+            End If
+
+            Return $"Weak target attainment or negative expectancy: avg {report.AverageReturnRate:P2}, drawdown {report.MaxDrawdownRate:P2}"
+        End Function
+
+        Private Shared Function CsvEscape(value As String) As String
+            Dim text = If(value, "")
+            text = text.Replace("""", """""")
+            If text.Contains(",") OrElse text.Contains("""") OrElse text.Contains(vbCr) OrElse text.Contains(vbLf) Then
+                Return $"""{text}"""
+            End If
+            Return text
+        End Function
 
         Private Sub OnSaveSession(sender As Object, e As EventArgs)
             Dim session = BuildSession()
