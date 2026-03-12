@@ -5,6 +5,7 @@
 ' MainShell 코드를 수정할 필요 없음.
 ' ═══════════════════════════════════════════════════════════════
 
+Imports System.Diagnostics
 Imports System.Windows.Forms
 Imports [Shared]
 Imports WeifenLuo.WinFormsUI.Docking
@@ -13,6 +14,7 @@ Public Class MainShell
 
     ' ─── 도킹 폼 인스턴스 (싱글톤 관리) ───
     Private ReadOnly _dockForms As New Dictionary(Of String, DockFormBase)(StringComparer.OrdinalIgnoreCase)
+    Private _mnuStrategyLabTest As ToolStripMenuItem
 
     ' ─── 타이머 ───
     Private WithEvents _clockTimer As Timer
@@ -36,6 +38,7 @@ Public Class MainShell
         MessageBus.I.On(Topics.SYS_SERVER_STATUS, AddressOf OnServerStatus)
         MessageBus.I.On(Topics.SYS_AUTOTRADE, AddressOf OnAutoTradeStatus)
         MessageBus.I.On(Topics.UI_CHART_OPEN, AddressOf OnChartOpen)
+        EnsureStrategyLabTestMenu()
 
         ' ── 기본 폼 배치 ──
         ' 1) 로그 폼 (하단)
@@ -108,8 +111,8 @@ Public Class MainShell
 
         Try
             Dim logForm As LogForm = Nothing
-            If _dockForms.ContainsKey(NameOf(LogForm)) Then
-                logForm = TryCast(_dockForms(NameOf(LogForm)), LogForm)
+            If _dockForms.ContainsKey(NameOf(logForm)) Then
+                logForm = TryCast(_dockForms(NameOf(logForm)), LogForm)
             End If
 
             If logForm IsNot Nothing AndAlso logForm.Pane IsNot Nothing Then
@@ -255,6 +258,21 @@ Public Class MainShell
         AppLogger.I.Info($"새 차트 요청: {code}", "Shell")
 
         MessageBus.I.Emit(Topics.UI_CHART_OPEN, "code", code)
+    End Sub
+
+    Private Sub EnsureStrategyLabTestMenu()
+        If _mnuStrategyLabTest IsNot Nothing OrElse mnuTradeTest Is Nothing Then Return
+
+        _mnuStrategyLabTest = New ToolStripMenuItem("StrategyLab Test...")
+        AddHandler _mnuStrategyLabTest.Click, AddressOf OnStrategyLabTestClick
+
+        mnuTradeTest.DropDownItems.Add(New ToolStripSeparator())
+        mnuTradeTest.DropDownItems.Add(_mnuStrategyLabTest)
+    End Sub
+
+    Private Sub OnStrategyLabTestClick(sender As Object, e As EventArgs)
+        ShowDockForm(Of StrategyLabDockForm)(DockState.Document)
+        AppLogger.I.Info("StrategyLab opened inside MainApp.", "Shell")
     End Sub
 
     Private Sub OnChartOpen(m As Msg)
