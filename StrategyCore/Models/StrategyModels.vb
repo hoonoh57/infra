@@ -64,6 +64,19 @@ Namespace StrategyCore.Models
         Public Property Indicators As New List(Of StrategyIndicatorDefinition)()
         Public Property CostModel As New CostModel()
         Public Property Constraints As New ExecutionConstraints()
+        Public Property RequireJmaTurnUpEntry As Boolean
+        Public Property HoldBelowTargetWhileSuperTrendBullish As Boolean
+        Public Property ExitOnJmaTurnDownAfterTarget As Boolean
+        Public Property RequireObvAboveSignal As Boolean
+        Public Property RequireTickIntensityAboveMa5 As Boolean
+        Public Property MinimumTickIntensity As Double?
+        Public Property MinimumRsi As Double?
+        Public Property RequireRelativeStrengthFilter As Boolean
+        Public Property RelativeStrengthThreshold As Double?
+        Public Property RelativeStrengthBenchmark As String = ""
+        Public Property RequireLightOverheadResistance As Boolean
+        Public Property OverheadResistanceLookbackDays As Integer = 5
+        Public Property MaxOverheadResistanceRate As Double?
     End Class
 
     Public Class LabCandle
@@ -88,6 +101,14 @@ Namespace StrategyCore.Models
         Public Property ExitReason As String = ""
         Public Property MaxFavorableExcursionRate As Double
         Public Property MaxAdverseExcursionRate As Double
+        Public Property EntryRsi As Double?
+        Public Property EntryTickIntensity As Double?
+        Public Property EntryTickIntensityMa5 As Double?
+        Public Property EntryRelativeStrength As Double?
+        Public Property EntryObv As Double?
+        Public Property EntryObvSignal As Double?
+        Public Property ToxicClass As String = ""
+        Public Property ToxicReason As String = ""
         Public Property Notes As String = ""
     End Class
 
@@ -104,6 +125,7 @@ Namespace StrategyCore.Models
         Public Property TargetHitCount As Integer
         Public Property MissedTargetCount As Integer
         Public Property FailedExampleSummary As String = ""
+        Public Property ToxicTradeSummary As String = ""
         Public Property StrengthSummary As String = ""
         Public Property WeaknessSummary As String = ""
         Public Property Candles As New List(Of LabCandle)()
@@ -152,6 +174,22 @@ Namespace StrategyCore.Models
         Public Property Suggestions As New List(Of StrategyImprovementSuggestion)()
     End Class
 
+    Public Class PromptClauseValidation
+        Public Property SourceText As String = ""
+        Public Property Category As String = ""
+        Public Property Status As String = ""
+        Public Property Interpretation As String = ""
+        Public Property SuggestedRewrite As String = ""
+    End Class
+
+    Public Class PromptValidationReport
+        Public Property Summary As String = ""
+        Public Property IsFullySupported As Boolean
+        Public Property Clauses As New List(Of PromptClauseValidation)()
+        Public Property VisualTradePrinciples As New List(Of String)()
+        Public Property RecommendedPrompts As New List(Of String)()
+    End Class
+
     Public Class StrategyPackage
         Public Property PackageVersion As String = "1.0"
         Public Property StrategyId As String = ""
@@ -191,5 +229,6 @@ Namespace StrategyCore.Models
         Public Property Report As StrategyBaselineReport
         Public Property Diagnosis As StrategyDiagnosisReport
         Public Property ImprovementPlan As StrategyImprovementPlan
+        Public Property PromptValidation As PromptValidationReport
     End Class
 End Namespace

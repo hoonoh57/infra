@@ -10,6 +10,7 @@ Imports StrategyCore.Services
 Namespace Services
     Public Class StrategyLabCybosCandleProvider
         Implements ICandleDataProvider
+        Implements IStrategyIndicatorAuxDataProvider
 
         Private Const RequestTimeoutMs As Integer = 20000
 
@@ -83,6 +84,63 @@ Namespace Services
             End Try
         End Function
 
+        Public Function GetTickTimestamps(symbol As String,
+                                          timeframe As String,
+                                          fromDate As DateTime,
+                                          barCount As Integer) As IReadOnlyList(Of DateTime) Implements IStrategyIndicatorAuxDataProvider.GetTickTimestamps
+            Dim normalizedSymbol = SharedUtil.NormalizeChartCode(symbol)
+            If String.IsNullOrWhiteSpace(normalizedSymbol) Then Return Array.Empty(Of DateTime)()
+
+            Dim minuteUnit = ResolveMinuteUnit(timeframe)
+            If minuteUnit <= 0 Then Return Array.Empty(Of DateTime)()
+
+            Dim requestCount = Math.Max(RuntimeChartSettings.TickRequestMinCount,
+                                        Math.Min(RuntimeChartSettings.TickRequestMaxCount,
+                                                 Math.Max(barCount, 1) * minuteUnit * RuntimeChartSettings.TickRequestMultiplier))
+            Dim requestFrom = ResolveRequestFromDate(fromDate)
+            Dim response As Msg = Nothing
+            Dim completed As Boolean = False
+
+            Dim handler As Action(Of Msg) =
+                Sub(m As Msg)
+                    If m Is Nothing Then Return
+                    If Not String.Equals(SharedUtil.NormalizeChartCode(m.Str("code")), normalizedSymbol, StringComparison.OrdinalIgnoreCase) Then Return
+                    response = m.Clone()
+                    completed = True
+                End Sub
+
+            MessageBus.I.On(Topics.TICK_CANDLE_LOADED, handler)
+            Try
+                MessageBus.I.Emit(Topics.TICK_CANDLE_REQUEST,
+                                  "code", normalizedSymbol,
+                                  "provider", "cybos",
+                                  "count", requestCount,
+                                  "tickUnit", RuntimeChartSettings.DefaultTickUnit,
+                                  "timeframe", RuntimeChartSettings.TickTimeframe(RuntimeChartSettings.DefaultTickUnit))
+
+                Dim startedAt = Environment.TickCount
+                While Not completed AndAlso Environment.TickCount - startedAt < RequestTimeoutMs
+                    Application.DoEvents()
+                    Thread.Sleep(20)
+                End While
+
+                If Not completed OrElse response Is Nothing Then
+                    Return Array.Empty(Of DateTime)()
+                End If
+
+                Dim rows = response.DictList("rows")
+                If rows Is Nothing OrElse rows.Count = 0 Then Return Array.Empty(Of DateTime)()
+
+                Return rows.
+                    Select(Function(row) ParseCandleDateTime(row)).
+                    Where(Function(ts) ts <> DateTime.MinValue AndAlso ts >= requestFrom).
+                    OrderBy(Function(ts) ts).
+                    ToList()
+            Finally
+                MessageBus.I.Off(Topics.TICK_CANDLE_LOADED, handler)
+            End Try
+        End Function
+
         Private Shared Function ResolveRequestFromDate(fromDate As DateTime) As DateTime
             Dim businessDate = fromDate.Date
             If businessDate = DateTime.MinValue.Date Then businessDate = DateTime.Today
@@ -108,6 +166,16 @@ Namespace Services
                 Return RuntimeChartSettings.TickTimeframe(tickUnit)
             End If
             Return normalized
+        End Function
+
+        Private Shared Function ResolveMinuteUnit(timeframe As String) As Integer
+            Dim normalized = If(timeframe, "").Trim().ToLowerInvariant()
+            If normalized.StartsWith("m", StringComparison.OrdinalIgnoreCase) Then
+                Dim value As Integer = 1
+                If normalized.Length > 1 Then Integer.TryParse(normalized.Substring(1), value)
+                Return Math.Max(1, value)
+            End If
+            Return 0
         End Function
 
         Private Shared Function ParseCandles(rows As List(Of Dictionary(Of String, String))) As List(Of LabCandle)

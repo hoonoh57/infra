@@ -36,3 +36,5 @@ Desktop.ini
 .dotnet_cli/
 _obj_test/
 image/
+db.config
+out/

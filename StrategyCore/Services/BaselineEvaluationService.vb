@@ -7,15 +7,38 @@ Imports StrategyCore.Models
 Namespace StrategyCore.Services
     Public Class BaselineEvaluationService
         Private ReadOnly _candleProvider As ICandleDataProvider
+        Private ReadOnly _auxDataProvider As IStrategyIndicatorAuxDataProvider
 
-        Public Sub New(Optional candleProvider As ICandleDataProvider = Nothing)
+        Public Sub New(Optional candleProvider As ICandleDataProvider = Nothing,
+                       Optional auxDataProvider As IStrategyIndicatorAuxDataProvider = Nothing)
             _candleProvider = candleProvider
+            _auxDataProvider = auxDataProvider
         End Sub
 
         Private Class EvaluatedSignal
             Public Property Index As Integer
             Public Property Score As Integer
             Public Property Reasons As New List(Of String)()
+        End Class
+
+        Private Class EvaluationContext
+            Public Property Closes As List(Of Double)
+            Public Property Volumes As List(Of Double)
+            Public Property Jma As List(Of Double)
+            Public Property Vwap As List(Of Double)
+            Public Property VolumeMa20 As List(Of Double)
+            Public Property VolumeSlope As List(Of Double)
+            Public Property MacdLine As List(Of Double)
+            Public Property MacdSignal As List(Of Double)
+            Public Property Rsi As List(Of Double)
+            Public Property SuperTrend As List(Of Double)
+            Public Property Obv As List(Of Double)
+            Public Property ObvSignal As List(Of Double)
+            Public Property TickIntensity As List(Of Double)
+            Public Property TickIntensityMa5 As List(Of Double)
+            Public Property RelativeStrength As List(Of Double)
+            Public Property RelativeStrengthThreshold As List(Of Double)
+            Public Property OverheadResistanceRate As List(Of Double)
         End Class
 
         Public Function Evaluate(definition As StrategyDefinition,
@@ -40,12 +63,13 @@ Namespace StrategyCore.Services
             }
             report.Candles.AddRange(candles)
 
-            Dim signals = FindEntrySignals(definition, candles)
+            Dim context = BuildEvaluationContext(definition, symbol, candles, timeframe, fromDate, safeCount)
+            Dim signals = FindEntrySignals(definition, candles, context)
             Dim nextAllowedIndex As Integer = 0
             For Each signal In signals
                 If signal Is Nothing OrElse signal.Index < nextAllowedIndex Then Continue For
 
-                Dim trade = BuildTrade(definition, symbol, candles, signal)
+                Dim trade = BuildTrade(definition, symbol, candles, signal, context)
                 report.Trades.Add(trade)
                 nextAllowedIndex = ResolveNextAllowedIndex(candles, trade.ExitTime)
             Next
@@ -65,83 +89,140 @@ Namespace StrategyCore.Services
                 ThenByDescending(Function(trade) Math.Abs(trade.MaxAdverseExcursionRate)).
                 FirstOrDefault()
 
-            report.FailedExampleSummary = BuildFailedExampleSummary(failedExample)
+            report.FailedExampleSummary = BuildFailedExampleSummaryV2(failedExample)
+            report.ToxicTradeSummary = BuildToxicTradeSummaryV2(report.Trades)
             report.StrengthSummary = BuildStrengthSummary(definition, report)
-            report.WeaknessSummary = BuildWeaknessSummary(definition, report)
+            report.WeaknessSummary = BuildWeaknessSummaryV2(definition, report)
             Return report
         End Function
 
-        Private Shared Function FindEntrySignals(definition As StrategyDefinition, candles As List(Of LabCandle)) As List(Of EvaluatedSignal)
+        Private Shared Function FindEntrySignals(definition As StrategyDefinition,
+                                                 candles As List(Of LabCandle),
+                                                 context As EvaluationContext) As List(Of EvaluatedSignal)
             Dim results As New List(Of EvaluatedSignal)()
             If definition Is Nothing OrElse candles Is Nothing OrElse candles.Count < 5 Then Return results
 
-            Dim closes = candles.Select(Function(c) c.Close).ToList()
-            Dim volumes = candles.Select(Function(c) c.Volume).ToList()
-            Dim ema14 = ComputeEma(closes, 14)
-            Dim vwap = ComputeVwap(candles)
-            Dim volumeMa20 = ComputeSimpleMovingAverage(volumes, 20)
-            Dim volumeSlope = ComputeSlope(volumeMa20, 3)
-            Dim macd = ComputeMacd(closes, 12, 26, 9)
-            Dim rsi = ComputeRsi(closes, 14)
-            Dim superTrend = ComputeSuperTrendProxy(candles, 10, 3)
-            Dim requiredScore = Math.Max(1, definition.Indicators.Count)
-            Dim startIndex = Math.Max(5, candles.Count \ 8)
+            Dim startIndex = Math.Max(2, ResolveEntryWarmup(definition))
 
             For i = startIndex To candles.Count - 2
                 Dim reasons As New List(Of String)()
                 Dim score As Integer = 0
+                Dim qualified As Boolean = True
+
+                If definition.RequireJmaTurnUpEntry Then
+                    If IsJmaTurnUp(context.Jma, i) Then
+                        score += 2
+                        reasons.Add("JMA turn up")
+                    Else
+                        Continue For
+                    End If
+                End If
+
+                If definition.RequireRelativeStrengthFilter Then
+                    Dim rsThreshold = ResolveRelativeStrengthThreshold(definition, context, i)
+                    Dim previousRs = If(context.RelativeStrength IsNot Nothing AndAlso i > 0 AndAlso context.RelativeStrength.Count > i - 1, context.RelativeStrength(i - 1), Double.MinValue)
+                    If context.RelativeStrength Is Nothing OrElse context.RelativeStrength.Count <= i OrElse
+                       context.RelativeStrength(i) < rsThreshold OrElse
+                       previousRs < rsThreshold OrElse
+                       context.RelativeStrength(i) < previousRs Then
+                        Continue For
+                    End If
+                    score += 1
+                    reasons.Add($"RelativeStrength hold {context.RelativeStrength(i):P2} >= {rsThreshold:P2}")
+                End If
+
+                If definition.RequireLightOverheadResistance Then
+                    Dim maxResistance = If(definition.MaxOverheadResistanceRate.HasValue, definition.MaxOverheadResistanceRate.Value, 0.03R)
+                    If context.OverheadResistanceRate Is Nothing OrElse context.OverheadResistanceRate.Count <= i OrElse context.OverheadResistanceRate(i) > maxResistance Then
+                        Continue For
+                    End If
+                    score += 1
+                    reasons.Add($"OverheadResistance {context.OverheadResistanceRate(i):P2}")
+                End If
 
                 For Each indicator In definition.Indicators
                     If indicator Is Nothing OrElse Not indicator.Enabled Then Continue For
+                    Dim matched As Boolean = False
 
                     Select Case indicator.IndicatorType
                         Case "MACD"
-                            If macd.Item1(i) > macd.Item2(i) AndAlso macd.Item1(i - 1) <= macd.Item2(i - 1) Then
+                            If context.MacdLine(i) > context.MacdSignal(i) AndAlso context.MacdLine(i - 1) <= context.MacdSignal(i - 1) Then
                                 score += 2
                                 reasons.Add("MACD cross up")
-                            ElseIf macd.Item1(i) > macd.Item2(i) Then
+                                matched = True
+                            ElseIf context.MacdLine(i) > context.MacdSignal(i) Then
                                 score += 1
                                 reasons.Add("MACD above signal")
+                                matched = True
                             End If
                         Case "RSI"
-                            If rsi(i) >= 45 AndAlso rsi(i) <= 70 Then
+                            Dim minimumRsi = If(definition.MinimumRsi.HasValue, definition.MinimumRsi.Value, 45.0R)
+                            If context.Rsi(i) >= minimumRsi AndAlso context.Rsi(i) <= 80 Then
                                 score += 1
-                                reasons.Add($"RSI {rsi(i):N1}")
+                                reasons.Add($"RSI {context.Rsi(i):N1} >= {minimumRsi:N1}")
+                                matched = True
                             End If
                         Case "JMA"
-                            If closes(i) >= ema14(i) Then
+                            If candles(i).Close >= context.Jma(i) Then
                                 score += 1
                                 reasons.Add("JMA trend support")
+                                matched = True
                             End If
                         Case "SuperTrend"
-                            If closes(i) >= superTrend(i) Then
+                            If candles(i).Close >= context.SuperTrend(i) Then
                                 score += 1
                                 reasons.Add("SuperTrend bullish")
+                                matched = True
                             End If
                         Case "VWAP"
-                            If closes(i) >= vwap(i) Then
+                            If candles(i).Close >= context.Vwap(i) Then
                                 score += 1
                                 reasons.Add("VWAP reclaim")
+                                matched = True
                             End If
                         Case "Volume"
-                            If volumes(i) >= volumeMa20(i) Then
+                            If context.Volumes(i) >= context.VolumeMa20(i) Then
                                 score += 1
                                 reasons.Add("Volume above average")
+                                matched = True
                             End If
                         Case "VolumeMA"
-                            If volumes(i) >= volumeMa20(i) Then
+                            If context.Volumes(i) >= context.VolumeMa20(i) Then
                                 score += 1
                                 reasons.Add("Volume20 confirmed")
+                                matched = True
                             End If
                         Case "VolumeMASlope"
-                            If volumeSlope(i) > 0 Then
+                            If context.VolumeSlope(i) > 0 Then
                                 score += 1
                                 reasons.Add("Volume20 slope positive")
+                                matched = True
+                            End If
+                        Case "OBV"
+                            If context.Obv(i) >= context.ObvSignal(i) AndAlso context.Obv(i) > context.Obv(Math.Max(0, i - 1)) Then
+                                score += 1
+                                reasons.Add($"OBV {context.Obv(i):N0} >= Signal {context.ObvSignal(i):N0}")
+                                matched = True
+                            End If
+                        Case "TickIntensity"
+                            Dim minimumTickIntensity = If(definition.MinimumTickIntensity.HasValue, definition.MinimumTickIntensity.Value, 0.0R)
+                            If context.TickIntensity IsNot Nothing AndAlso context.TickIntensity.Count > i AndAlso
+                               context.TickIntensityMa5 IsNot Nothing AndAlso context.TickIntensityMa5.Count > i AndAlso
+                               context.TickIntensity(i) >= minimumTickIntensity AndAlso
+                               context.TickIntensity(i) > context.TickIntensityMa5(i) Then
+                                score += 1
+                                reasons.Add($"TickIntensity {context.TickIntensity(i):N2} >= {minimumTickIntensity:N2} and > Avg5")
+                                matched = True
                             End If
                     End Select
+
+                    If Not matched Then
+                        qualified = False
+                        Exit For
+                    End If
                 Next
 
-                If score >= requiredScore Then
+                If qualified AndAlso score > 0 Then
                     results.Add(New EvaluatedSignal With {
                         .Index = i,
                         .Score = score,
@@ -153,13 +234,44 @@ Namespace StrategyCore.Services
             Return results
         End Function
 
+        Private Shared Function ResolveEntryWarmup(definition As StrategyDefinition) As Integer
+            Dim warmup As Integer = 2
+            If definition Is Nothing OrElse definition.Indicators Is Nothing Then
+                Return warmup
+            End If
+
+            For Each indicator In definition.Indicators
+                If indicator Is Nothing OrElse Not indicator.Enabled Then Continue For
+
+                Select Case indicator.IndicatorType
+                    Case "MACD"
+                        warmup = Math.Max(warmup, 35)
+                    Case "RSI", "JMA"
+                        warmup = Math.Max(warmup, 14)
+                    Case "Volume", "VolumeMA", "VolumeMASlope", "OBV"
+                        warmup = Math.Max(warmup, 20)
+                    Case "TickIntensity"
+                        warmup = Math.Max(warmup, 5)
+                    Case "SuperTrend", "VWAP"
+                        warmup = Math.Max(warmup, 10)
+                End Select
+            Next
+
+            If definition.RequireLightOverheadResistance Then
+                warmup = Math.Max(warmup, 5)
+            End If
+
+            Return warmup
+        End Function
+
         Private Shared Function BuildTrade(definition As StrategyDefinition,
                                            symbol As String,
                                            candles As List(Of LabCandle),
-                                           entrySignal As EvaluatedSignal) As BacktestTrade
+                                           entrySignal As EvaluatedSignal,
+                                           context As EvaluationContext) As BacktestTrade
             Dim entryIdx = Math.Max(0, Math.Min(candles.Count - 2, entrySignal.Index))
             Dim entryPrice = candles(entryIdx).Close
-            Dim exitIdx = DetermineExitIndex(definition, candles, entryIdx)
+            Dim exitIdx = DetermineExitIndex(definition, candles, entryIdx, context)
             Dim exitPrice = candles(exitIdx).Close
             Dim grossReturn = If(entryPrice > 0, (exitPrice - entryPrice) / entryPrice, 0)
             Dim totalCost = definition.CostModel.BuyCommissionRate + definition.CostModel.SellCommissionRate + definition.CostModel.SellTaxRate + definition.CostModel.SlippageRate
@@ -179,28 +291,46 @@ Namespace StrategyCore.Services
                 .HitTargetProfit = hitTarget,
                 .EntryScore = entrySignal.Score,
                 .EntryReasons = New List(Of String)(entrySignal.Reasons),
+                .EntryRsi = SafeGet(context.Rsi, entryIdx),
+                .EntryTickIntensity = SafeGet(context.TickIntensity, entryIdx),
+                .EntryTickIntensityMa5 = SafeGet(context.TickIntensityMa5, entryIdx),
+                .EntryRelativeStrength = SafeGet(context.RelativeStrength, entryIdx),
+                .EntryObv = SafeGet(context.Obv, entryIdx),
+                .EntryObvSignal = SafeGet(context.ObvSignal, entryIdx),
                 .ExitReason = exitReason,
                 .MaxFavorableExcursionRate = mfe,
                 .MaxAdverseExcursionRate = mae,
-                .Notes = $"Entry[{String.Join(" + ", entrySignal.Reasons)}] | Exit[{exitReason}] | MFE[{mfe:P2}] | MAE[{mae:P2}]"
+                .ToxicClass = ResolveToxicClass(candles(entryIdx).Time, netReturn, mfe, mae, entrySignal.Reasons),
+                .ToxicReason = ResolveToxicReason(candles(entryIdx).Time, netReturn, mfe, mae, entrySignal.Reasons),
+                .Notes = BuildTradeNotes(entrySignal.Reasons, context, entryIdx, exitReason, mfe, mae)
             }
         End Function
 
         Private Shared Function DetermineExitIndex(definition As StrategyDefinition,
                                                    candles As List(Of LabCandle),
-                                                   entryIdx As Integer) As Integer
+                                                   entryIdx As Integer,
+                                                   context As EvaluationContext) As Integer
             Dim totalCost = definition.CostModel.BuyCommissionRate + definition.CostModel.SellCommissionRate + definition.CostModel.SellTaxRate + definition.CostModel.SlippageRate
             Dim targetGross = definition.TargetProfitRate + totalCost
             Dim entryPrice = candles(entryIdx).Close
-            Dim closes = candles.Select(Function(c) c.Close).ToList()
-            Dim macd = ComputeMacd(closes, 12, 26, 9)
-            Dim superTrend = ComputeSuperTrendProxy(candles, 10, 3)
 
             For i = entryIdx + 1 To candles.Count - 1
                 Dim grossReturn = If(entryPrice > 0, (candles(i).Close - entryPrice) / entryPrice, 0)
-                If grossReturn >= targetGross Then Return i
-                If candles(i).Close < superTrend(i) Then Return i
-                If macd.Item1(i) < macd.Item2(i) AndAlso macd.Item1(i - 1) >= macd.Item2(i - 1) Then Return i
+                Dim superTrendBullish = candles(i).Close >= context.SuperTrend(i)
+                Dim jmaTurnDown = IsJmaTurnDown(context.Jma, i)
+
+                If definition.ExitOnJmaTurnDownAfterTarget Then
+                    If grossReturn >= targetGross AndAlso jmaTurnDown Then Return i
+                    If definition.HoldBelowTargetWhileSuperTrendBullish AndAlso grossReturn < targetGross AndAlso superTrendBullish Then
+                        Continue For
+                    End If
+                    If jmaTurnDown AndAlso Not superTrendBullish Then Return i
+                Else
+                    If grossReturn >= targetGross Then Return i
+                End If
+
+                If candles(i).Close < context.SuperTrend(i) Then Return i
+                If context.MacdLine(i) < context.MacdSignal(i) AndAlso context.MacdLine(i - 1) >= context.MacdSignal(i - 1) Then Return i
             Next
 
             Return candles.Count - 1
@@ -220,6 +350,74 @@ Namespace StrategyCore.Services
             Return $"protective exit after signal fade ({candles(exitIdx).Time:HH:mm})"
         End Function
 
+        Private Function BuildEvaluationContext(definition As StrategyDefinition,
+                                                symbol As String,
+                                                candles As List(Of LabCandle),
+                                                timeframe As String,
+                                                fromDate As DateTime,
+                                                barCount As Integer) As EvaluationContext
+            Dim closes = candles.Select(Function(c) c.Close).ToList()
+            Dim volumes = candles.Select(Function(c) c.Volume).ToList()
+            Dim macd = ComputeMacd(closes, 12, 26, 9)
+            Dim obv = ComputeObv(candles)
+            Dim tickIntensity As List(Of Double) = Enumerable.Repeat(0.0R, candles.Count).ToList()
+            Dim tickIntensityMa5 As List(Of Double) = Enumerable.Repeat(0.0R, candles.Count).ToList()
+            Dim relativeStrength As List(Of Double) = Enumerable.Repeat(0.0R, candles.Count).ToList()
+            Dim relativeStrengthThreshold As List(Of Double) = Enumerable.Repeat(0.0R, candles.Count).ToList()
+            Dim overheadResistanceRate As List(Of Double) = Enumerable.Repeat(0.0R, candles.Count).ToList()
+
+            If definition IsNot Nothing AndAlso
+               definition.Indicators.Any(Function(ind) ind IsNot Nothing AndAlso String.Equals(ind.IndicatorType, "TickIntensity", StringComparison.OrdinalIgnoreCase)) AndAlso
+               _auxDataProvider IsNot Nothing Then
+                Dim tickTimestamps = _auxDataProvider.GetTickTimestamps(symbol, timeframe, fromDate, barCount)
+                tickIntensity = ComputeTickIntensity(candles, tickTimestamps, timeframe)
+                tickIntensityMa5 = ComputeSimpleMovingAverage(tickIntensity, 5)
+            End If
+
+            If definition IsNot Nothing AndAlso definition.RequireRelativeStrengthFilter AndAlso _candleProvider IsNot Nothing Then
+                Dim kospiCandles = _candleProvider.GetCandles("U001", timeframe, fromDate, barCount).ToList()
+                Dim kosdaqCandles = _candleProvider.GetCandles("U201", timeframe, fromDate, barCount).ToList()
+                relativeStrength = ComputeRelativeStrength(candles, kospiCandles, kosdaqCandles, definition.RelativeStrengthBenchmark)
+                relativeStrengthThreshold = ComputeRelativeStrengthThresholds(candles, kospiCandles, kosdaqCandles, definition.RelativeStrengthThreshold, definition.RelativeStrengthBenchmark)
+            End If
+
+            If definition IsNot Nothing AndAlso definition.RequireLightOverheadResistance AndAlso _candleProvider IsNot Nothing Then
+                Dim dailyFrom = fromDate.Date.AddDays(-20)
+                Dim dailyCandles = _candleProvider.GetCandles(symbol, "d", dailyFrom, Math.Max(30, definition.OverheadResistanceLookbackDays + 10)).ToList()
+                overheadResistanceRate = ComputeOverheadResistanceRates(candles, dailyCandles, Math.Max(1, definition.OverheadResistanceLookbackDays))
+            End If
+
+            Return New EvaluationContext With {
+                .Closes = closes,
+                .Volumes = volumes,
+                .Jma = ComputeEma(closes, 14),
+                .Vwap = ComputeVwap(candles),
+                .VolumeMa20 = ComputeSimpleMovingAverage(volumes, 20),
+                .VolumeSlope = ComputeSlope(ComputeSimpleMovingAverage(volumes, 20), 3),
+                .MacdLine = macd.Item1,
+                .MacdSignal = macd.Item2,
+                .Rsi = ComputeRsi(closes, 14),
+                .SuperTrend = ComputeSuperTrendProxy(candles, 10, 3),
+                .Obv = obv,
+                .ObvSignal = ComputeSimpleMovingAverage(obv, 20),
+                .TickIntensity = tickIntensity,
+                .TickIntensityMa5 = tickIntensityMa5,
+                .RelativeStrength = relativeStrength,
+                .RelativeStrengthThreshold = relativeStrengthThreshold,
+                .OverheadResistanceRate = overheadResistanceRate
+            }
+        End Function
+
+        Private Shared Function IsJmaTurnUp(values As List(Of Double), index As Integer) As Boolean
+            If values Is Nothing OrElse index < 2 OrElse index >= values.Count Then Return False
+            Return values(index) > values(index - 1) AndAlso values(index - 1) <= values(index - 2)
+        End Function
+
+        Private Shared Function IsJmaTurnDown(values As List(Of Double), index As Integer) As Boolean
+            If values Is Nothing OrElse index < 2 OrElse index >= values.Count Then Return False
+            Return values(index) < values(index - 1) AndAlso values(index - 1) >= values(index - 2)
+        End Function
+
         Private Shared Function ResolveNextAllowedIndex(candles As List(Of LabCandle), exitTime As DateTime) As Integer
             If candles Is Nothing OrElse candles.Count = 0 Then Return 0
             For i = 0 To candles.Count - 1
@@ -233,6 +431,258 @@ Namespace StrategyCore.Services
                 Return RuntimeChartSettings.DefaultCandleTimeframe
             End If
             Return definition.Timeframes(0)
+        End Function
+
+        Private Shared Function ResolveRelativeStrengthThreshold(definition As StrategyDefinition,
+                                                                 context As EvaluationContext,
+                                                                 index As Integer) As Double
+            If definition IsNot Nothing AndAlso definition.RelativeStrengthThreshold.HasValue Then
+                Return definition.RelativeStrengthThreshold.Value
+            End If
+
+            If context Is Nothing OrElse context.RelativeStrengthThreshold Is Nothing OrElse context.RelativeStrengthThreshold.Count <= index Then
+                Return 0.03R
+            End If
+
+            Return context.RelativeStrengthThreshold(index)
+        End Function
+
+        Private Shared Function ComputeRelativeStrength(stockCandles As List(Of LabCandle),
+                                                        kospiCandles As List(Of LabCandle),
+                                                        kosdaqCandles As List(Of LabCandle),
+                                                        benchmark As String) As List(Of Double)
+            Dim stockReturns = ComputeReturnsSinceCapture(stockCandles)
+            Dim kospiReturns = ComputeAlignedReturns(stockCandles, kospiCandles)
+            Dim kosdaqReturns = ComputeAlignedReturns(stockCandles, kosdaqCandles)
+            Dim results As New List(Of Double)(stockCandles.Count)
+
+            For i = 0 To stockCandles.Count - 1
+                Dim benchmarkReturn = ResolveBenchmarkReturn(benchmark, kospiReturns, kosdaqReturns, i)
+                results.Add(stockReturns(i) - benchmarkReturn)
+            Next
+
+            Return results
+        End Function
+
+        Private Shared Function ComputeRelativeStrengthThresholds(stockCandles As List(Of LabCandle),
+                                                                  kospiCandles As List(Of LabCandle),
+                                                                  kosdaqCandles As List(Of LabCandle),
+                                                                  fixedThreshold As Double?,
+                                                                  benchmark As String) As List(Of Double)
+            If fixedThreshold.HasValue Then
+                Return Enumerable.Repeat(fixedThreshold.Value, stockCandles.Count).ToList()
+            End If
+
+            Dim kospiReturns = ComputeAlignedReturns(stockCandles, kospiCandles)
+            Dim kosdaqReturns = ComputeAlignedReturns(stockCandles, kosdaqCandles)
+            Dim results As New List(Of Double)(stockCandles.Count)
+
+            For i = 0 To stockCandles.Count - 1
+                Dim benchmarkReturn = ResolveBenchmarkReturn(benchmark, kospiReturns, kosdaqReturns, i)
+                If benchmarkReturn >= 0.015R Then
+                    results.Add(0.05R)
+                ElseIf benchmarkReturn >= 0.005R Then
+                    results.Add(0.04R)
+                Else
+                    results.Add(0.03R)
+                End If
+            Next
+
+            Return results
+        End Function
+
+        Private Shared Function ComputeOverheadResistanceRates(stockCandles As List(Of LabCandle),
+                                                               dailyCandles As List(Of LabCandle),
+                                                               lookbackDays As Integer) As List(Of Double)
+            Dim orderedDaily = If(dailyCandles, New List(Of LabCandle)()).
+                OrderBy(Function(c) c.Time).
+                ToList()
+            Dim results As New List(Of Double)(stockCandles.Count)
+
+            For Each stockCandle In stockCandles
+                Dim priorDaily = orderedDaily.
+                    Where(Function(c) c.Time.Date < stockCandle.Time.Date).
+                    Reverse().
+                    Take(lookbackDays).
+                    ToList()
+
+                If priorDaily.Count = 0 OrElse stockCandle.Close <= 0 Then
+                    results.Add(0.0R)
+                    Continue For
+                End If
+
+                Dim maxHigh = priorDaily.Max(Function(c) c.High)
+                Dim overhead = Math.Max(0.0R, (maxHigh - stockCandle.Close) / stockCandle.Close)
+                results.Add(overhead)
+            Next
+
+            Return results
+        End Function
+
+        Private Shared Function SafeGet(values As List(Of Double), index As Integer) As Double?
+            If values Is Nothing OrElse index < 0 OrElse index >= values.Count Then Return Nothing
+            Return values(index)
+        End Function
+
+        Private Shared Function ComputeReturnsSinceCapture(candles As List(Of LabCandle)) As List(Of Double)
+            Dim results As New List(Of Double)(candles.Count)
+            If candles Is Nothing OrElse candles.Count = 0 Then Return results
+
+            Dim baseClose = Math.Max(0.0001R, candles(0).Close)
+            For Each candle In candles
+                results.Add((candle.Close - baseClose) / baseClose)
+            Next
+
+            Return results
+        End Function
+
+        Private Shared Function ComputeAlignedReturns(stockCandles As List(Of LabCandle),
+                                                      benchmarkCandles As List(Of LabCandle)) As List(Of Double)
+            Dim results As New List(Of Double)(stockCandles.Count)
+            If stockCandles Is Nothing OrElse stockCandles.Count = 0 Then Return results
+            If benchmarkCandles Is Nothing OrElse benchmarkCandles.Count = 0 Then
+                Return Enumerable.Repeat(0.0R, stockCandles.Count).ToList()
+            End If
+
+            Dim orderedBenchmark = benchmarkCandles.OrderBy(Function(c) c.Time).ToList()
+            Dim baseClose = Math.Max(0.0001R, orderedBenchmark(0).Close)
+            Dim benchmarkIndex = 0
+
+            For Each stockCandle In stockCandles
+                While benchmarkIndex < orderedBenchmark.Count - 1 AndAlso orderedBenchmark(benchmarkIndex + 1).Time <= stockCandle.Time
+                    benchmarkIndex += 1
+                End While
+
+                Dim benchmarkClose = orderedBenchmark(benchmarkIndex).Close
+                results.Add((benchmarkClose - baseClose) / baseClose)
+            Next
+
+            Return results
+        End Function
+
+        Private Shared Function ResolveBenchmarkReturn(benchmark As String,
+                                                       kospiReturns As List(Of Double),
+                                                       kosdaqReturns As List(Of Double),
+                                                       index As Integer) As Double
+            Dim safeKospi = If(kospiReturns IsNot Nothing AndAlso kospiReturns.Count > index, kospiReturns(index), 0.0R)
+            Dim safeKosdaq = If(kosdaqReturns IsNot Nothing AndAlso kosdaqReturns.Count > index, kosdaqReturns(index), 0.0R)
+
+            Select Case If(benchmark, "").ToUpperInvariant()
+                Case "U001"
+                    Return safeKospi
+                Case "U201"
+                    Return safeKosdaq
+                Case Else
+                    Return Math.Max(safeKospi, safeKosdaq)
+            End Select
+        End Function
+
+        Private Shared Function ResolveToxicClass(entryTime As DateTime,
+                                                  netReturn As Double,
+                                                  mfe As Double,
+                                                  mae As Double,
+                                                  reasons As List(Of String)) As String
+            If netReturn >= 0 Then Return ""
+
+            Dim hourMinute = entryTime.Hour * 60 + entryTime.Minute
+            Dim isOpenWindow = hourMinute <= (9 * 60 + 30)
+            Dim hasRelativeStrength = reasons IsNot Nothing AndAlso reasons.Any(Function(reason) reason.IndexOf("RelativeStrength", StringComparison.OrdinalIgnoreCase) >= 0)
+
+            If isOpenWindow AndAlso mfe < 0.01R AndAlso mae <= -0.02R Then Return "OpenWhipsaw"
+            If hasRelativeStrength AndAlso mfe < 0.01R Then Return "RelativeStrengthFade"
+            If mfe >= 0.01R AndAlso mae <= -0.03R Then Return "BreakoutFailure"
+            If mfe < 0.005R AndAlso mae <= -0.015R Then Return "WeakFollowThrough"
+            Return ""
+        End Function
+
+        Private Shared Function ResolveToxicReason(entryTime As DateTime,
+                                                   netReturn As Double,
+                                                   mfe As Double,
+                                                   mae As Double,
+                                                   reasons As List(Of String)) As String
+            Dim toxicClass = ResolveToxicClass(entryTime, netReturn, mfe, mae, reasons)
+            Select Case toxicClass
+                Case "OpenWhipsaw"
+                    Return "open-session entry failed without follow-through"
+                Case "RelativeStrengthFade"
+                    Return "relative strength was high but faded before extension"
+                Case "BreakoutFailure"
+                    Return "breakout excursion was reversed into deep adverse move"
+                Case "WeakFollowThrough"
+                    Return "entry never gained enough follow-through after trigger"
+                Case Else
+                    Return ""
+            End Select
+        End Function
+
+        Private Shared Function BuildTradeNotes(entryReasons As List(Of String),
+                                                context As EvaluationContext,
+                                                entryIndex As Integer,
+                                                exitReason As String,
+                                                mfe As Double,
+                                                mae As Double) As String
+            Dim entryText = If(entryReasons Is Nothing OrElse entryReasons.Count = 0,
+                               "Entry[none]",
+                               $"Entry[{String.Join(" + ", entryReasons)}]")
+            Dim metrics As New List(Of String)()
+
+            Dim rs = SafeGet(context.RelativeStrength, entryIndex)
+            If rs.HasValue Then metrics.Add($"RS={rs.Value:P2}")
+
+            Dim rsi = SafeGet(context.Rsi, entryIndex)
+            If rsi.HasValue Then metrics.Add($"RSI={rsi.Value:N1}")
+
+            Dim tick = SafeGet(context.TickIntensity, entryIndex)
+            If tick.HasValue Then metrics.Add($"Tick={tick.Value:N2}")
+
+            Dim tickAvg5 = SafeGet(context.TickIntensityMa5, entryIndex)
+            If tickAvg5.HasValue Then metrics.Add($"TickAvg5={tickAvg5.Value:N2}")
+
+            Dim obv = SafeGet(context.Obv, entryIndex)
+            Dim obvSignal = SafeGet(context.ObvSignal, entryIndex)
+            If obv.HasValue AndAlso obvSignal.HasValue Then
+                metrics.Add($"OBV={obv.Value:N0}")
+                metrics.Add($"OBVSignal={obvSignal.Value:N0}")
+            End If
+
+            Dim metricText = If(metrics.Count = 0, "", $" | Metrics[{String.Join(", ", metrics)}]")
+            Return $"{entryText}{metricText} | Exit[{exitReason}] | MFE[{mfe:P2}] | MAE[{mae:P2}]"
+        End Function
+
+        Private Shared Function BuildWeaknessSummaryV2(definition As StrategyDefinition, report As StrategyBaselineReport) As String
+            If report Is Nothing OrElse report.TradeCount = 0 Then
+                Return "진입 신호가 없어 조건이 과도하게 엄격하거나 현재 구간과 맞지 않을 수 있습니다."
+            End If
+
+            If report.TargetHitCount = report.TradeCount Then
+                Return "현재 평가구간에서는 모든 신호가 목표수익에 도달했지만, 다른 종목과 기간으로 확장 검증이 필요합니다."
+            End If
+
+            Dim exampleText = If(String.IsNullOrWhiteSpace(report.FailedExampleSummary), "", " " & report.FailedExampleSummary)
+            Dim toxicText = If(String.IsNullOrWhiteSpace(report.ToxicTradeSummary), "", " " & report.ToxicTradeSummary)
+            Return $"목표수익 {definition.TargetProfitRate:P1} 미달 신호가 {report.MissedTargetCount}건입니다. 평균 순수익 {report.AverageReturnRate:P2}.{exampleText}{toxicText}"
+        End Function
+
+        Private Shared Function BuildFailedExampleSummaryV2(trade As BacktestTrade) As String
+            If trade Is Nothing Then Return ""
+
+            Dim toxicSuffix = If(String.IsNullOrWhiteSpace(trade.ToxicClass), "", $", 독성유형 {trade.ToxicClass} ({trade.ToxicReason})")
+            Return $"예시 실패 구간: {trade.EntryTime:MM-dd HH:mm} 진입 후 {trade.ExitTime:HH:mm} 청산, 순수익 {trade.NetReturnRate:P2}, MFE {trade.MaxFavorableExcursionRate:P2}, MAE {trade.MaxAdverseExcursionRate:P2}, 이유 {String.Join(" + ", trade.EntryReasons)}{toxicSuffix}."
+        End Function
+
+        Private Shared Function BuildToxicTradeSummaryV2(trades As List(Of BacktestTrade)) As String
+            If trades Is Nothing OrElse trades.Count = 0 Then Return ""
+
+            Dim toxicTrades = trades.
+                Where(Function(trade) Not String.IsNullOrWhiteSpace(trade.ToxicClass)).
+                GroupBy(Function(trade) trade.ToxicClass).
+                OrderByDescending(Function(group) group.Count()).
+                ToList()
+
+            If toxicTrades.Count = 0 Then Return ""
+
+            Dim topGroup = toxicTrades(0)
+            Return $"주요 독성매매 유형은 {topGroup.Key} {topGroup.Count()}건입니다."
         End Function
 
         Private Shared Function ComputeMaxDrawdown(candles As List(Of LabCandle)) As Double
@@ -400,6 +850,74 @@ Namespace StrategyCore.Services
                 results.Add(emaValues(i) - bandOffset)
             Next
             Return results
+        End Function
+
+        Private Shared Function ComputeObv(candles As List(Of LabCandle)) As List(Of Double)
+            Dim results As New List(Of Double)
+            If candles Is Nothing OrElse candles.Count = 0 Then Return results
+
+            Dim current As Double = Math.Max(0.0R, candles(0).Volume)
+            results.Add(current)
+            For i = 1 To candles.Count - 1
+                If candles(i).Close > candles(i - 1).Close Then
+                    current += candles(i).Volume
+                ElseIf candles(i).Close < candles(i - 1).Close Then
+                    current -= candles(i).Volume
+                End If
+                results.Add(current)
+            Next
+            Return results
+        End Function
+
+        Private Shared Function ComputeTickIntensity(candles As List(Of LabCandle),
+                                                     tickTimestamps As IReadOnlyList(Of DateTime),
+                                                     timeframe As String) As List(Of Double)
+            Dim results As New List(Of Double)
+            If candles Is Nothing OrElse candles.Count = 0 Then Return results
+
+            Dim minuteUnit = ResolveMinuteUnit(timeframe)
+            If minuteUnit <= 0 Then
+                For i = 0 To candles.Count - 1
+                    results.Add(0.0R)
+                Next
+                Return results
+            End If
+
+            Dim rawTicks = If(tickTimestamps, Array.Empty(Of DateTime)()).
+                Where(Function(ts) ts <> DateTime.MinValue).
+                OrderBy(Function(ts) ts).
+                ToList()
+            Dim tickIndex As Integer = 0
+
+            For Each candle In candles
+                Dim startTime = candle.Time
+                Dim endTime = startTime.AddMinutes(minuteUnit)
+                Dim count As Integer = 0
+
+                While tickIndex < rawTicks.Count AndAlso rawTicks(tickIndex) < startTime
+                    tickIndex += 1
+                End While
+
+                Dim scanIndex = tickIndex
+                While scanIndex < rawTicks.Count AndAlso rawTicks(scanIndex) < endTime
+                    count += 1
+                    scanIndex += 1
+                End While
+
+                results.Add(count)
+            Next
+
+            Return results
+        End Function
+
+        Private Shared Function ResolveMinuteUnit(timeframe As String) As Integer
+            Dim normalized = If(timeframe, "").Trim().ToLowerInvariant()
+            If normalized.StartsWith("m", StringComparison.OrdinalIgnoreCase) Then
+                Dim value As Integer = 1
+                If normalized.Length > 1 Then Integer.TryParse(normalized.Substring(1), value)
+                Return Math.Max(1, value)
+            End If
+            Return 0
         End Function
     End Class
 End Namespace

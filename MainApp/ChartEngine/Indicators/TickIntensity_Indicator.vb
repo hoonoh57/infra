@@ -192,7 +192,7 @@ Public Class TickIntensity_Indicator
             Return r
         End If
 
-        Dim normalizedCnt = NormalizeRealtimeTickCount(cnt)
+        Dim normalizedCnt = CSng(cnt)
         If _completedRealtimeBars.ContainsKey(pStart) Then
             normalizedCnt = _completedRealtimeBars(pStart)
         ElseIf _currentRealtimeBarStart = pStart Then
@@ -232,10 +232,10 @@ Public Class TickIntensity_Indicator
         Return r
     End Function
 
-    Private Shared Function NormalizeRealtimeTickCount(rawTickCount As Integer) As Single
-        Dim tickUnit = Math.Max(1, RuntimeChartSettings.DefaultTickUnit)
-        Return CSng(rawTickCount / CSng(tickUnit))
-    End Function
+        Private Shared Function NormalizeRealtimeTickCount(rawTickCount As Integer) As Single
+            Dim tickUnit = Math.Max(1, RuntimeChartSettings.DefaultTickUnit)
+            Return CSng(rawTickCount / CSng(tickUnit))
+        End Function
 
     Private Function AlignToBarStart(ts As DateTime) As DateTime
         Dim minuteStep = Math.Max(1, _timeframeMinutes)

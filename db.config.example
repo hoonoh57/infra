@@ -1,0 +1,10 @@
+{
+  "Enabled": true,
+  "MySqlCliPath": "C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysql.exe",
+  "Host": "127.0.0.1",
+  "Port": 3306,
+  "DatabaseName": "strategy_research",
+  "UserName": "root",
+  "Password": "",
+  "Charset": "utf8mb4"
+}

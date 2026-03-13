@@ -39,23 +39,23 @@ Public Class CybosBridge
                                                                _client.분봉(code, interval, count, Sub(r)
                                                                                                      Dim rows = r.DictList("rows")
                                                                                                      If isIndexCode AndAlso (rows Is Nothing OrElse rows.Count = 0) Then
-                                                                                                         _client.일봉(code, Math.Max(count, 120), Sub(d) EmitCandle(d, code))
+                                                                                                         _client.일봉(code, Math.Max(count, 120), Sub(d) EmitCandle(d, code, m.Str("consumer", "")))
                                                                                                          Return
                                                                                                      End If
-                                                                                                     EmitCandle(r, code)
+                                                                                                     EmitCandle(r, code, m.Str("consumer", ""))
                                                                                                  End Sub)
                                                            Else
-                                                               _client.분봉기간(code, interval, stopTime, Sub(r) EmitCandle(r, code))
+                                                               _client.분봉기간(code, interval, stopTime, Sub(r) EmitCandle(r, code, m.Str("consumer", "")))
                                                            End If
 
                                                        Case tf = "d" OrElse tf = "daily"
-                                                           _client.일봉(code, count, Sub(r) EmitCandle(r, code))
+                                                           _client.일봉(code, count, Sub(r) EmitCandle(r, code, m.Str("consumer", "")))
 
                                                        Case tf = "w" OrElse tf = "weekly"
-                                                           _client.주봉(code, count, Sub(r) EmitCandle(r, code))
+                                                           _client.주봉(code, count, Sub(r) EmitCandle(r, code, m.Str("consumer", "")))
 
                                                        Case tf = "mo" OrElse tf = "monthly"
-                                                           _client.월봉(code, count, Sub(r) EmitCandle(r, code))
+                                                           _client.월봉(code, count, Sub(r) EmitCandle(r, code, m.Str("consumer", "")))
 
                                                        Case tf.StartsWith("t")
                                                            Dim tickUnit = RuntimeChartSettings.DefaultTickUnit
@@ -70,7 +70,7 @@ Public Class CybosBridge
                                                                                                  End Sub)
 
                                                        Case Else
-                                                           _client.분봉(code, 1, count, Sub(r) EmitCandle(r, code))
+                                                           _client.분봉(code, 1, count, Sub(r) EmitCandle(r, code, m.Str("consumer", "")))
                                                    End Select
                                                End Sub)
 
@@ -82,10 +82,59 @@ Public Class CybosBridge
                                                               Sub(r)
                                                                   r.Topic = Topics.CANDLE_PERIOD_LOADED
                                                                   If Not r.Has("code") Then r("code") = m.Str("code")
+                                                                  If m.Has("consumer") Then r("consumer") = m.Str("consumer")
                                                                   r("provider") = "cybos"
                                                                   MessageBus.I.EmitOnUI(r)
                                                               End Sub)
                                                       End Sub)
+        MessageBus.I.On(Topics.RESEARCH_CANDLE_REQUEST, Sub(m)
+                                                            Dim reqProvider = m.Str("provider", "")
+                                                            If reqProvider <> "" AndAlso Not String.Equals(reqProvider, "cybos", StringComparison.OrdinalIgnoreCase) Then Return
+                                                            _client.일봉(m.Str("code"), m.Int("count", 500), Sub(r)
+                                                                                                                 r.Topic = Topics.RESEARCH_CANDLE_LOADED
+                                                                                                                 If Not r.Has("code") Then r("code") = m.Str("code")
+                                                                                                                 r("provider") = "cybos"
+                                                                                                                 MessageBus.I.EmitOnUI(r)
+                                                                                                             End Sub)
+                                                        End Sub)
+        MessageBus.I.On(Topics.RESEARCH_CANDLE_PERIOD_REQUEST, Sub(m)
+                                                                   Dim reqProvider = m.Str("provider", "")
+                                                                   If reqProvider <> "" AndAlso Not String.Equals(reqProvider, "cybos", StringComparison.OrdinalIgnoreCase) Then Return
+                                                                   _client.기간캔들(m.Str("code"), m.Str("timeframe"), m.Str("from"), m.Str("to"),
+                                                                       Sub(r)
+                                                                           r.Topic = Topics.RESEARCH_CANDLE_PERIOD_LOADED
+                                                                           If Not r.Has("code") Then r("code") = m.Str("code")
+                                                                           r("provider") = "cybos"
+                                                                           MessageBus.I.EmitOnUI(r)
+                                                                       End Sub)
+                                                               End Sub)
+        MessageBus.I.On(Topics.RESEARCH_TICK_CANDLE_REQUEST, Sub(m)
+                                                                 Dim reqProvider = m.Str("provider", "")
+                                                                 If reqProvider <> "" AndAlso Not String.Equals(reqProvider, "cybos", StringComparison.OrdinalIgnoreCase) Then Return
+                                                                 Dim code = m.Str("code")
+                                                                 Dim tickUnit = RuntimeChartSettings.NormalizeTickUnit(m.Int("tickUnit", RuntimeChartSettings.DefaultTickUnit))
+                                                                 Dim stopTime = m.Str("stopTime", "")
+                                                                 If Not String.IsNullOrWhiteSpace(stopTime) Then
+                                                                     _client.틱차트기간(code, tickUnit, stopTime, Sub(r)
+                                                                                                                       r.Topic = Topics.RESEARCH_TICK_CANDLE_LOADED
+                                                                                                                       If Not r.Has("code") Then r("code") = code
+                                                                                                                       r("timeframe") = RuntimeChartSettings.TickTimeframe(tickUnit)
+                                                                                                                       r("stopTime") = stopTime
+                                                                                                                       r("provider") = "cybos"
+                                                                                                                       MessageBus.I.EmitOnUI(r)
+                                                                                                                   End Sub)
+                                                                 Else
+                                                                     Dim count = m.Int("count", RuntimeChartSettings.TickRequestMaxCount)
+                                                                     _client.틱차트(code, count, tickUnit, Sub(r)
+                                                                                                               r.Topic = Topics.RESEARCH_TICK_CANDLE_LOADED
+                                                                                                               If Not r.Has("code") Then r("code") = code
+                                                                                                               r("timeframe") = RuntimeChartSettings.TickTimeframe(tickUnit)
+                                                                                                               r("requestedCount") = count
+                                                                                                               r("provider") = "cybos"
+                                                                                                               MessageBus.I.EmitOnUI(r)
+                                                                                                           End Sub)
+                                                                 End If
+                                                             End Sub)
 
         MessageBus.I.On(Topics.TICK_CANDLE_REQUEST, Sub(m)
                                                         Dim reqProvider = m.Str("provider", "")
@@ -98,9 +147,10 @@ Public Class CybosBridge
                                                            _client.틱차트기간(code, tickUnit, stopTime, Sub(r)
                                                                                                   r.Topic = Topics.TICK_CANDLE_LOADED
                                                                                                   If Not r.Has("code") Then r("code") = code
-                                                                                                  r("timeframe") = RuntimeChartSettings.TickTimeframe(tickUnit)
-                                                                                                  r("stopTime") = stopTime
-                                                                                                  r("provider") = "cybos"
+                                                                                                   r("timeframe") = RuntimeChartSettings.TickTimeframe(tickUnit)
+                                                                                                   r("stopTime") = stopTime
+                                                                                                   If m.Has("consumer") Then r("consumer") = m.Str("consumer")
+                                                                                                   r("provider") = "cybos"
                                                                                                   MessageBus.I.EmitOnUI(r)
                                                                                               End Sub)
                                                         Else
@@ -108,15 +158,16 @@ Public Class CybosBridge
                                                             _client.틱차트(code, count, tickUnit, Sub(r)
                                                                                       r.Topic = Topics.TICK_CANDLE_LOADED
                                                                                       If Not r.Has("code") Then r("code") = code
-                                                                                      r("timeframe") = RuntimeChartSettings.TickTimeframe(tickUnit)
-                                                                                      r("requestedCount") = count
-                                                                                      r("provider") = "cybos"
+                                                                                       r("timeframe") = RuntimeChartSettings.TickTimeframe(tickUnit)
+                                                                                       r("requestedCount") = count
+                                                                                       If m.Has("consumer") Then r("consumer") = m.Str("consumer")
+                                                                                       r("provider") = "cybos"
                                                                                       MessageBus.I.EmitOnUI(r)
                                                                                   End Sub)
                                                         End If
                                                     End Sub)
 
-        MessageBus.I.On(Topics.DAILY_REQUEST, Sub(m) _client.일봉(m.Str("code"), m.Int("count", 500), Sub(r) EmitCandle(r, m.Str("code"))))
+        MessageBus.I.On(Topics.DAILY_REQUEST, Sub(m) _client.일봉(m.Str("code"), m.Int("count", 500), Sub(r) EmitCandle(r, m.Str("code"), m.Str("consumer", ""))))
         MessageBus.I.On(Topics.WEEKLY_REQUEST, Sub(m) _client.주봉(m.Str("code"), m.Int("count", 200), Sub(r)
                                                                                                          r.Topic = Topics.WEEKLY_LOADED
                                                                                                          MessageBus.I.EmitOnUI(r)
@@ -224,9 +275,10 @@ Public Class CybosBridge
         AddHandler _client.연결끊김, Sub() MessageBus.I.Emit(Topics.SYS_ERROR, "text", "[CybosBridge] 서버 연결 끊김")
     End Sub
 
-    Private Sub EmitCandle(r As Msg, code As String)
+    Private Sub EmitCandle(r As Msg, code As String, Optional consumer As String = "")
         r.Topic = Topics.CANDLE_LOADED
         If Not r.Has("code") Then r("code") = code
+        If Not String.IsNullOrWhiteSpace(consumer) Then r("consumer") = consumer
         r("provider") = "cybos"
         MessageBus.I.EmitOnUI(r)
     End Sub

@@ -607,7 +607,6 @@ Public Class FastChartControl
     End Sub
 
     Private Sub OnTickCandleLoaded(m As Msg)
-        If _isStaticChartContext Then Return
         Dim code = If(m.Has("stockCode"), m.Str("stockCode"), m.Str("code"))
         If code <> _stockCode Then Return
         ApplyTickRowsFromMsg(m)

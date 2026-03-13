@@ -11,7 +11,7 @@ Public Class StrategyLabDockForm
         Me.Text = "StrategyLab"
 
         Dim candleProvider As New StrategyLabCybosCandleProvider()
-        Dim facade As New StrategyLabFacade(candleProvider)
+        Dim facade As New StrategyLabFacade(candleProvider, candleProvider)
 
         _labForm = New MainApp.StrategyLabApp.StrategyLabForm(facade, embeddedMode:=True) With {
             .TopLevel = False,

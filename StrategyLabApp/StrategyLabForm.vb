@@ -24,6 +24,7 @@ Namespace StrategyLabApp
 
         Private ReadOnly _txtHistory As New TextBox()
         Private ReadOnly _txtPrompt As New TextBox()
+        Private ReadOnly _txtPromptValidation As New TextBox()
         Private ReadOnly _txtSymbol As New TextBox()
         Private ReadOnly _dtFrom As New DateTimePicker()
         Private ReadOnly _cboMode As New ComboBox()
@@ -84,6 +85,7 @@ Namespace StrategyLabApp
         Private _recommendedCandidateId As String = ""
         Private _promotionCandidateId As String = ""
         Private _candidateCounter As Integer = 0
+        Private _lastPromptValidation As PromptValidationReport
 
         Public Sub New(Optional labFacade As StrategyLabFacade = Nothing, Optional embeddedMode As Boolean = False)
             _labFacade = If(labFacade, New StrategyLabFacade())
@@ -171,13 +173,14 @@ Namespace StrategyLabApp
             Dim leftPanel As New TableLayoutPanel With {
                 .Dock = DockStyle.Fill,
                 .ColumnCount = 1,
-                .RowCount = 15,
+                .RowCount = 16,
                 .BackColor = Color.FromArgb(37, 39, 46)
             }
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 34))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 132))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Percent, 58.0F))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Percent, 42.0F))
+            leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 76))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 40))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 40))
             leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 40))
@@ -246,54 +249,64 @@ Namespace StrategyLabApp
             _txtPrompt.ForeColor = Color.White
             leftPanel.Controls.Add(_txtPrompt, 0, 3)
 
+            _txtPromptValidation.Dock = DockStyle.Fill
+            _txtPromptValidation.Multiline = True
+            _txtPromptValidation.ReadOnly = True
+            _txtPromptValidation.BackColor = Color.FromArgb(20, 22, 28)
+            _txtPromptValidation.ForeColor = Color.LightSkyBlue
+            _txtPromptValidation.Text = "Prompt Validation | no prompt"
+            leftPanel.Controls.Add(_txtPromptValidation, 0, 4)
+
+            AddHandler _txtPrompt.TextChanged, AddressOf OnPromptTextChanged
+
             _btnEvaluate.Dock = DockStyle.Fill
             _btnEvaluate.Text = "Evaluate Prompt"
             ApplyButtonTheme(_btnEvaluate, Color.FromArgb(52, 90, 150))
             AddHandler _btnEvaluate.Click, Sub() EvaluatePrompt(_txtPrompt.Text, True)
-            leftPanel.Controls.Add(_btnEvaluate, 0, 4)
+            leftPanel.Controls.Add(_btnEvaluate, 0, 5)
 
             _btnSetBaseline.Dock = DockStyle.Fill
             _btnSetBaseline.Text = "Save Base Version"
             ApplyButtonTheme(_btnSetBaseline)
             AddHandler _btnSetBaseline.Click, AddressOf OnSetBaseline
-            leftPanel.Controls.Add(_btnSetBaseline, 0, 5)
+            leftPanel.Controls.Add(_btnSetBaseline, 0, 6)
 
             _btnSaveCandidate.Dock = DockStyle.Fill
             _btnSaveCandidate.Text = "Save Derived Version"
             ApplyButtonTheme(_btnSaveCandidate)
             AddHandler _btnSaveCandidate.Click, AddressOf OnSaveCandidate
-            leftPanel.Controls.Add(_btnSaveCandidate, 0, 6)
+            leftPanel.Controls.Add(_btnSaveCandidate, 0, 7)
 
             _btnApplySuggestion.Dock = DockStyle.Fill
             _btnApplySuggestion.Text = "Apply Top Suggestion"
             ApplyButtonTheme(_btnApplySuggestion, Color.FromArgb(84, 92, 46))
             AddHandler _btnApplySuggestion.Click, AddressOf OnApplyTopSuggestion
-            leftPanel.Controls.Add(_btnApplySuggestion, 0, 7)
+            leftPanel.Controls.Add(_btnApplySuggestion, 0, 8)
 
             _btnPinPromotion.Dock = DockStyle.Fill
             _btnPinPromotion.Text = "Pin Promotion Candidate"
             ApplyButtonTheme(_btnPinPromotion, Color.FromArgb(48, 104, 62))
             AddHandler _btnPinPromotion.Click, AddressOf OnPinPromotionCandidate
-            leftPanel.Controls.Add(_btnPinPromotion, 0, 8)
+            leftPanel.Controls.Add(_btnPinPromotion, 0, 9)
 
             _btnExportBatchReport.Dock = DockStyle.Fill
             _btnExportBatchReport.Text = "Export Batch Report"
             ApplyButtonTheme(_btnExportBatchReport, Color.FromArgb(72, 70, 110))
             AddHandler _btnExportBatchReport.Click, AddressOf OnExportBatchReport
-            leftPanel.Controls.Add(_btnExportBatchReport, 0, 9)
+            leftPanel.Controls.Add(_btnExportBatchReport, 0, 10)
 
             _btnExportBatchPdfReport.Dock = DockStyle.Fill
             _btnExportBatchPdfReport.Text = "Export Batch PDF Report"
             ApplyButtonTheme(_btnExportBatchPdfReport, Color.FromArgb(92, 66, 110))
             AddHandler _btnExportBatchPdfReport.Click, AddressOf OnExportBatchPdfReport
-            leftPanel.Controls.Add(_btnExportBatchPdfReport, 0, 10)
+            leftPanel.Controls.Add(_btnExportBatchPdfReport, 0, 11)
 
             _lblRecommendation.Dock = DockStyle.Fill
             _lblRecommendation.ForeColor = Color.Gold
             _lblRecommendation.BackColor = Color.FromArgb(30, 33, 40)
             _lblRecommendation.Padding = New Padding(8, 6, 8, 6)
             _lblRecommendation.Text = "Recommended: none"
-            leftPanel.Controls.Add(_lblRecommendation, 0, 11)
+            leftPanel.Controls.Add(_lblRecommendation, 0, 12)
 
             _txtRecommendationReason.Dock = DockStyle.Fill
             _txtRecommendationReason.Multiline = True
@@ -301,20 +314,20 @@ Namespace StrategyLabApp
             _txtRecommendationReason.BackColor = Color.FromArgb(24, 26, 32)
             _txtRecommendationReason.ForeColor = Color.Gainsboro
             _txtRecommendationReason.Text = "Recommendation reason will appear here."
-            leftPanel.Controls.Add(_txtRecommendationReason, 0, 12)
+            leftPanel.Controls.Add(_txtRecommendationReason, 0, 13)
 
             _lblPromotionCandidate.Dock = DockStyle.Fill
             _lblPromotionCandidate.ForeColor = Color.LightGreen
             _lblPromotionCandidate.BackColor = Color.FromArgb(30, 33, 40)
             _lblPromotionCandidate.Padding = New Padding(8, 6, 8, 6)
             _lblPromotionCandidate.Text = "Promotion candidate: none"
-            leftPanel.Controls.Add(_lblPromotionCandidate, 0, 13)
+            leftPanel.Controls.Add(_lblPromotionCandidate, 0, 14)
 
             _lstCandidates.Dock = DockStyle.Fill
             _lstCandidates.BackColor = Color.FromArgb(26, 28, 34)
             _lstCandidates.ForeColor = Color.Gainsboro
             AddHandler _lstCandidates.SelectedIndexChanged, AddressOf OnCandidateSelected
-            leftPanel.Controls.Add(_lstCandidates, 0, 14)
+            leftPanel.Controls.Add(_lstCandidates, 0, 15)
 
             _btnSavePackage.Text = "Save Package"
             ApplyButtonTheme(_btnSavePackage, Color.FromArgb(90, 64, 128))
@@ -376,6 +389,55 @@ Namespace StrategyLabApp
 
         Private Sub OnHostSizeChanged(sender As Object, e As EventArgs)
             ApplyResponsiveLayout()
+        End Sub
+
+        Private Sub OnPromptTextChanged(sender As Object, e As EventArgs)
+            RefreshPromptValidationPreview()
+        End Sub
+
+        Private Sub RefreshPromptValidationPreview()
+            If _labFacade Is Nothing Then Return
+            Dim mode = If(_cboMode.SelectedItem IsNot Nothing, DirectCast(_cboMode.SelectedItem, TradeMode), TradeMode.Intraday)
+            Dim targetRate = CDbl(_numTarget.Value) / 100.0R
+            _lastPromptValidation = _labFacade.ValidatePrompt(_txtPrompt.Text, mode, targetRate)
+            RenderPromptValidation(_lastPromptValidation)
+        End Sub
+
+        Private Sub RenderPromptValidation(report As PromptValidationReport)
+            If report Is Nothing Then
+                _txtPromptValidation.Text = "Prompt Validation | unavailable"
+                Return
+            End If
+
+            Dim sb As New StringBuilder()
+            sb.AppendLine("Prompt Validation")
+            sb.AppendLine(report.Summary)
+            For Each clause In report.Clauses.Take(3)
+                sb.AppendLine($"[{clause.Status}] {clause.SourceText}")
+                If Not String.IsNullOrWhiteSpace(clause.SuggestedRewrite) AndAlso
+                   Not String.Equals(clause.SuggestedRewrite, clause.SourceText, StringComparison.OrdinalIgnoreCase) Then
+                    sb.AppendLine($" -> {clause.SuggestedRewrite}")
+                End If
+            Next
+
+            If report.VisualTradePrinciples IsNot Nothing AndAlso report.VisualTradePrinciples.Count > 0 Then
+                sb.AppendLine()
+                sb.AppendLine("What You See Is What You Trade")
+                For Each principle In report.VisualTradePrinciples.Take(4)
+                    sb.AppendLine($"- {principle}")
+                Next
+            End If
+
+            If report.RecommendedPrompts IsNot Nothing AndAlso report.RecommendedPrompts.Count > 0 Then
+                sb.AppendLine()
+                sb.AppendLine("Recommended Visual Setups")
+                For Each prompt In report.RecommendedPrompts.Take(3)
+                    sb.AppendLine($"- {prompt}")
+                Next
+            End If
+
+            _txtPromptValidation.Text = sb.ToString().Trim()
+            _txtPromptValidation.ForeColor = If(report.IsFullySupported, Color.LightGreen, Color.Gold)
         End Sub
 
         Private Sub ApplyResponsiveLayout()
@@ -582,6 +644,7 @@ Namespace StrategyLabApp
             _numTarget.Maximum = 20D
             _numTarget.Value = 2D
             _txtPrompt.Text = "m3 macd supertrend 거래량20 기울기 기준으로 목표 2% 전략을 평가해줘"
+            RefreshPromptValidationPreview()
             AppendHistory("System", "StrategyLabApp initialized. Prompt workspace is isolated from MainApp.")
         End Sub
 
@@ -597,6 +660,8 @@ Namespace StrategyLabApp
 
             Dim mode = DirectCast(_cboMode.SelectedItem, TradeMode)
             Dim targetRate = CDbl(_numTarget.Value) / 100.0R
+            _lastPromptValidation = _labFacade.ValidatePrompt(prompt, mode, targetRate)
+            RenderPromptValidation(_lastPromptValidation)
             Dim result As StrategyLabResult = Nothing
             Try
                 result = _labFacade.EvaluatePrompt(prompt, mode, _txtSymbol.Text.Trim(), _dtFrom.Value.Date, targetRate, 5000, New CostModel())
@@ -687,11 +752,19 @@ Namespace StrategyLabApp
 
             Dim added As New List(Of String)
             Dim usedNames As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            Dim primaryTimeframe = definition.Timeframes.FirstOrDefault()
+            Dim timeframeMinutes = ResolveIndicatorTimeframeMinutes(primaryTimeframe)
             For Each indicator In definition.Indicators
                 If indicator Is Nothing OrElse String.IsNullOrWhiteSpace(indicator.IndicatorType) Then Continue For
                 Dim mapped = MapIndicatorName(indicator.IndicatorType)
                 If String.IsNullOrWhiteSpace(mapped) OrElse usedNames.Contains(mapped) Then Continue For
-                _fastChart.AddIndicatorByName(mapped)
+
+                If String.Equals(mapped, "TickIntensity", StringComparison.OrdinalIgnoreCase) Then
+                    _fastChart.AddIndicator(New TickIntensity_Indicator(timeframeMinutes))
+                Else
+                    _fastChart.AddIndicatorByName(mapped)
+                End If
+
                 usedNames.Add(mapped)
                 added.Add(mapped)
             Next
@@ -705,11 +778,22 @@ Namespace StrategyLabApp
 
         Private Shared Function MapIndicatorName(indicatorType As String) As String
             Select Case If(indicatorType, "").Trim()
-                Case "JMA", "VWAP", "SuperTrend", "MACD", "RSI", "Volume"
+                Case "JMA", "VWAP", "SuperTrend", "MACD", "RSI", "Volume", "OBV", "TickIntensity"
                     Return indicatorType.Trim()
                 Case Else
                     Return ""
             End Select
+        End Function
+
+        Private Shared Function ResolveIndicatorTimeframeMinutes(timeframe As String) As Integer
+            Dim normalized = If(timeframe, "").Trim().ToLowerInvariant()
+            If normalized.StartsWith("m", StringComparison.OrdinalIgnoreCase) Then
+                Dim minutes As Integer = 1
+                If normalized.Length > 1 Then Integer.TryParse(normalized.Substring(1), minutes)
+                Return Math.Max(1, minutes)
+            End If
+
+            Return 1
         End Function
 
         Private Sub RenderKpi(result As StrategyLabResult)

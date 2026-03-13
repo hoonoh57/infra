@@ -19,6 +19,12 @@ Public Class Topics
     Public Const TICK_CANDLE_LOADED As String = "tickcandle.loaded"
     Public Const CANDLE_PERIOD_REQUEST As String = "candle.period.request"
     Public Const CANDLE_PERIOD_LOADED As String = "candle.period.loaded"
+    Public Const RESEARCH_CANDLE_REQUEST As String = "research.candle.request"
+    Public Const RESEARCH_CANDLE_LOADED As String = "research.candle.loaded"
+    Public Const RESEARCH_TICK_CANDLE_REQUEST As String = "research.tickcandle.request"
+    Public Const RESEARCH_TICK_CANDLE_LOADED As String = "research.tickcandle.loaded"
+    Public Const RESEARCH_CANDLE_PERIOD_REQUEST As String = "research.candle.period.request"
+    Public Const RESEARCH_CANDLE_PERIOD_LOADED As String = "research.candle.period.loaded"
 
     ' ═══ 실시간 틱 ═══
     Public Const TICK As String = "tick"

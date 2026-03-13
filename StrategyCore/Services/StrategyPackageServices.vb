@@ -118,12 +118,14 @@ Namespace StrategyCore.Services
 
     Public Class StrategyLabFacade
         Private ReadOnly _compiler As New StrategyPromptCompiler()
+        Private ReadOnly _validator As New StrategyPromptValidationService()
         Private ReadOnly _diagnoser As New StrategyDiagnosisService()
         Private ReadOnly _improver As New StrategyImprovementSuggestionService()
         Private ReadOnly _evaluator As BaselineEvaluationService
 
-        Public Sub New(Optional candleProvider As ICandleDataProvider = Nothing)
-            _evaluator = New BaselineEvaluationService(candleProvider)
+        Public Sub New(Optional candleProvider As ICandleDataProvider = Nothing,
+                       Optional auxDataProvider As IStrategyIndicatorAuxDataProvider = Nothing)
+            _evaluator = New BaselineEvaluationService(candleProvider, auxDataProvider)
         End Sub
 
         Public Function EvaluatePrompt(prompt As String,
@@ -135,6 +137,7 @@ Namespace StrategyCore.Services
                                        costModel As CostModel) As StrategyLabResult
             Dim definition = _compiler.Compile(prompt, mode, targetProfitRate, costModel)
             Dim draft = _compiler.CreateDraft(prompt, mode, targetProfitRate)
+            Dim validation = _validator.Validate(prompt, mode, targetProfitRate)
             Dim report = _evaluator.Evaluate(definition, symbol, fromDate, barCount)
             draft.StrategyId = definition.StrategyId
             draft.Name = definition.Name
@@ -144,9 +147,14 @@ Namespace StrategyCore.Services
                 .Draft = draft,
                 .Definition = definition,
                 .Report = report,
+                .PromptValidation = validation,
                 .Diagnosis = diagnosis,
                 .ImprovementPlan = _improver.BuildPlan(definition, report, diagnosis)
             }
+        End Function
+
+        Public Function ValidatePrompt(prompt As String, mode As TradeMode, targetProfitRate As Double) As PromptValidationReport
+            Return _validator.Validate(prompt, mode, targetProfitRate)
         End Function
     End Class
 End Namespace

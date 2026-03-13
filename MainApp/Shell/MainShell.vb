@@ -15,6 +15,7 @@ Public Class MainShell
     ' ─── 도킹 폼 인스턴스 (싱글톤 관리) ───
     Private ReadOnly _dockForms As New Dictionary(Of String, DockFormBase)(StringComparer.OrdinalIgnoreCase)
     Private _mnuStrategyLabTest As ToolStripMenuItem
+    Private _mnuResearchDbManager As ToolStripMenuItem
 
     ' ─── 타이머 ───
     Private WithEvents _clockTimer As Timer
@@ -39,6 +40,8 @@ Public Class MainShell
         MessageBus.I.On(Topics.SYS_AUTOTRADE, AddressOf OnAutoTradeStatus)
         MessageBus.I.On(Topics.UI_CHART_OPEN, AddressOf OnChartOpen)
         EnsureStrategyLabTestMenu()
+        EnsureResearchDbManagerMenu()
+        MainApp.Services.ResearchDbMaintenanceService.Instance.Start()
 
         ' ── 기본 폼 배치 ──
         ' 1) 로그 폼 (하단)
@@ -273,6 +276,23 @@ Public Class MainShell
     Private Sub OnStrategyLabTestClick(sender As Object, e As EventArgs)
         ShowDockForm(Of StrategyLabDockForm)(DockState.Document)
         AppLogger.I.Info("StrategyLab opened inside MainApp.", "Shell")
+    End Sub
+
+    Private Sub EnsureResearchDbManagerMenu()
+        If _mnuResearchDbManager IsNot Nothing OrElse mnuData Is Nothing Then Return
+
+        _mnuResearchDbManager = New ToolStripMenuItem("연구 DB 관리...")
+        AddHandler _mnuResearchDbManager.Click, AddressOf OnResearchDbManagerClick
+
+        mnuData.DropDownItems.Add(New ToolStripSeparator())
+        mnuData.DropDownItems.Add(_mnuResearchDbManager)
+    End Sub
+
+    Private Sub OnResearchDbManagerClick(sender As Object, e As EventArgs)
+        Using dlg As New ResearchDbManagerDialog()
+            dlg.ShowDialog(Me)
+        End Using
+        AppLogger.I.Info("Research DB manager dialog opened.", "Shell")
     End Sub
 
     Private Sub OnChartOpen(m As Msg)
