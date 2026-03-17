@@ -13,7 +13,6 @@ Imports System.Drawing
 Imports System.Windows.Forms
 Imports MainApp.SimTrade
 Imports [Shared]
-'Imports SimTrade
 
 Public Class SimTradeForm
     Inherits Form
@@ -122,7 +121,16 @@ Public Class SimTradeForm
         MessageBus.I.On(Topics.TRADE_ORDER_FILLED, AddressOf OnOrderFilled)
         MessageBus.I.On(Topics.TRADE_POSITION_UPDATED, AddressOf OnPositionUpdated)
 
-        ' ── 조건검색 시작 (실시간) ──
+        ' ── ① StockInfoManager에 이미 로드된 조건검색 종목 먼저 가져오기 ──
+        Dim existingItems = StockInfoManager.I.GetBySource(DataSourceType.조건검색)
+        If existingItems IsNot Nothing AndAlso existingItems.Count > 0 Then
+            Log($"기존 조건검색 종목 {existingItems.Count}건 로드 (StockInfoManager)")
+            For Each item In existingItems
+                AddWatchItem(item.Code)
+            Next
+        End If
+
+        ' ── ② 조건검색 시작 (실시간 편입/이탈 + 초기 결과) ──
         MessageBus.I.On(Topics.CONDITION_SEARCH_RESULT, AddressOf OnConditionSearchResult)
         MessageBus.I.Emit(Topics.CONDITION_START,
                           "name", _conditionName,
@@ -169,21 +177,34 @@ Public Class SimTradeForm
     End Sub
 
     ' ═══════════════════════════════════════
-    ' 조건검색 결과 수신
+    ' 조건검색 결과 수신 — 디버그 로그 강화
     ' ═══════════════════════════════════════
 
     Private Sub OnConditionSearchResult(m As Msg)
+        Log($"[DEBUG] CONDITION_SEARCH_RESULT 수신 — success={m.Bool("success")} message={m.Str("message")}")
+
         If Not m.Bool("success") Then
             Log($"[오류] 조건검색 실패: {m.Str("message")}")
+            ' ★ 실패(타임아웃 등) 시 StockInfoManager 종목으로 폴백
+            If _watchItems.Count = 0 Then
+                Dim fallbackItems = StockInfoManager.I.GetBySource(DataSourceType.조건검색)
+                If fallbackItems IsNot Nothing AndAlso fallbackItems.Count > 0 Then
+                    Log($"[폴백] StockInfoManager에서 {fallbackItems.Count}종목 로드")
+                    For Each item In fallbackItems
+                        AddWatchItem(item.Code)
+                    Next
+                End If
+            End If
             Return
         End If
+
         Dim codes = TryCast(m("codes"), String())
         If codes Is Nothing OrElse codes.Length = 0 Then
             Log("조건검색 결과: 0건")
             Return
         End If
 
-        Log($"조건검색 초기 결과: {codes.Length}건")
+        Log($"조건검색 초기 결과: {codes.Length}건 — {String.Join(",", codes.Take(5))}...")
         For Each code In codes
             AddWatchItem(code)
         Next
@@ -210,7 +231,7 @@ Public Class SimTradeForm
         If _watchItems.ContainsKey(code) Then Return False
         If _watchItems.Count >= 50 Then Return False  ' 감시 상한
 
-        Dim item As New WatchItem With {.code = code}
+        Dim item As New WatchItem With {.Code = code}
         RegisterIndicators(item.Engine)
         _watchItems(code) = item
 
@@ -222,6 +243,7 @@ Public Class SimTradeForm
         MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", code)
         item.IsSubscribed = True
 
+        Log($"[감시추가] {code} {item.Name} (총 {_watchItems.Count}종목)")
         Return True
     End Function
 
