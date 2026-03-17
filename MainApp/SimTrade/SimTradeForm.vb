@@ -40,6 +40,26 @@ Public Class SimTradeForm
     Private _tabControl As TabControl
     Private _pnlSettings As Panel
 
+    ' ─── 설정 UI 컨트롤 ───
+    Private _nudST_Period As NumericUpDown
+    Private _nudST_Multiplier As NumericUpDown
+    Private _nudRSI_Period As NumericUpDown
+    Private _nudRSI_Overbought As NumericUpDown
+    Private _chkVolumeConfirm As CheckBox
+    Private _nudMaxPosition As NumericUpDown
+    Private _nudPositionSize As NumericUpDown
+    Private _nudStopLoss As NumericUpDown
+    Private _nudTakeProfit As NumericUpDown
+    Private _nudTrailingStop As NumericUpDown
+    Private _chkTrailingStop As CheckBox
+    Private _nudCandleInterval As NumericUpDown
+    Private _nudMinCandles As NumericUpDown
+    Private _txtStartTime As TextBox
+    Private _txtNoNewBuy As TextBox
+    Private _txtForceClose As TextBox
+    Private _cboBuyOrder As ComboBox
+    Private _cboSellOrder As ComboBox
+
     ' ═══════════════════════════════════════
     ' 생성/소멸
     ' ═══════════════════════════════════════
@@ -100,6 +120,9 @@ Public Class SimTradeForm
             MessageBox.Show("먼저 조건식을 선택하세요.")
             Return
         End If
+
+        ' 설정 패널 → _settings 동기화
+        ApplySettingsFromUI()
         StartSim()
     End Sub
 
@@ -113,6 +136,10 @@ Public Class SimTradeForm
         _btnStart.Enabled = False
         _btnStop.Enabled = True
         _btnCondition.Enabled = False
+        SetSettingsEnabled(False)
+
+        ' 설정값 로그
+        LogCurrentSettings()
 
         ' ── MessageBus 구독 ──
         MessageBus.I.On(Topics.TICK, AddressOf OnTick)
@@ -171,9 +198,82 @@ Public Class SimTradeForm
         _btnStart.Enabled = True
         _btnStop.Enabled = False
         _btnCondition.Enabled = True
+        SetSettingsEnabled(True)
         _lblStatus.Text = "■ 중지됨"
         _lblStatus.ForeColor = Color.Gray
         Log("■ 모의매매 중지")
+    End Sub
+
+    ' ═══════════════════════════════════════
+    ' 설정 UI ↔ SimTradeSettings 동기화
+    ' ═══════════════════════════════════════
+
+    Private Sub ApplySettingsFromUI()
+        _settings.ST_Period = CInt(_nudST_Period.Value)
+        _settings.ST_Multiplier = CDbl(_nudST_Multiplier.Value)
+        _settings.RSI_Period = CInt(_nudRSI_Period.Value)
+        _settings.RSI_OverboughtLimit = CDbl(_nudRSI_Overbought.Value)
+        _settings.RequireVolumeConfirm = _chkVolumeConfirm.Checked
+        _settings.MaxPositionCount = CInt(_nudMaxPosition.Value)
+        _settings.PositionSizeRate = CDbl(_nudPositionSize.Value) / 100.0
+        _settings.StopLossRate = CDbl(_nudStopLoss.Value)
+        _settings.TakeProfitRate = CDbl(_nudTakeProfit.Value)
+        _settings.TrailingStopRate = CDbl(_nudTrailingStop.Value)
+        _settings.EnableTrailingStop = _chkTrailingStop.Checked
+        _settings.CandleIntervalSec = CInt(_nudCandleInterval.Value)
+        _settings.MinCandlesForSignal = CInt(_nudMinCandles.Value)
+
+        Dim ts As TimeSpan
+        If TimeSpan.TryParse(_txtStartTime.Text.Trim(), ts) Then _settings.TradingStartTime = ts
+        If TimeSpan.TryParse(_txtNoNewBuy.Text.Trim(), ts) Then _settings.NoNewBuyAfter = ts
+        If TimeSpan.TryParse(_txtForceClose.Text.Trim(), ts) Then _settings.ForceCloseTime = ts
+
+        _settings.BuyOrderType = CType(_cboBuyOrder.SelectedIndex, SimOrderType)
+        _settings.SellOrderType = CType(_cboSellOrder.SelectedIndex, SimOrderType)
+    End Sub
+
+    Private Sub LoadSettingsToUI()
+        _nudST_Period.Value = _settings.ST_Period
+        _nudST_Multiplier.Value = CDec(_settings.ST_Multiplier)
+        _nudRSI_Period.Value = _settings.RSI_Period
+        _nudRSI_Overbought.Value = CDec(_settings.RSI_OverboughtLimit)
+        _chkVolumeConfirm.Checked = _settings.RequireVolumeConfirm
+        _nudMaxPosition.Value = _settings.MaxPositionCount
+        _nudPositionSize.Value = CDec(_settings.PositionSizeRate * 100)
+        _nudStopLoss.Value = CDec(_settings.StopLossRate)
+        _nudTakeProfit.Value = CDec(_settings.TakeProfitRate)
+        _nudTrailingStop.Value = CDec(_settings.TrailingStopRate)
+        _chkTrailingStop.Checked = _settings.EnableTrailingStop
+        _nudCandleInterval.Value = _settings.CandleIntervalSec
+        _nudMinCandles.Value = _settings.MinCandlesForSignal
+        _txtStartTime.Text = _settings.TradingStartTime.ToString("hh\:mm")
+        _txtNoNewBuy.Text = _settings.NoNewBuyAfter.ToString("hh\:mm")
+        _txtForceClose.Text = _settings.ForceCloseTime.ToString("hh\:mm")
+        _cboBuyOrder.SelectedIndex = CInt(_settings.BuyOrderType)
+        _cboSellOrder.SelectedIndex = CInt(_settings.SellOrderType)
+    End Sub
+
+    Private Sub SetSettingsEnabled(enabled As Boolean)
+        If _pnlSettings Is Nothing Then Return
+        For Each ctrl As Control In _pnlSettings.Controls
+            If TypeOf ctrl Is NumericUpDown OrElse TypeOf ctrl Is TextBox OrElse
+               TypeOf ctrl Is ComboBox OrElse TypeOf ctrl Is CheckBox Then
+                ctrl.Enabled = enabled
+            End If
+        Next
+    End Sub
+
+    Private Sub LogCurrentSettings()
+        Log("─── 현재 설정 ───")
+        Log($"  SuperTrend: Period={_settings.ST_Period}, Multiplier={_settings.ST_Multiplier:F1}")
+        Log($"  RSI: Period={_settings.RSI_Period}, 과매수={_settings.RSI_OverboughtLimit:F0}")
+        Log($"  거래량확인={_settings.RequireVolumeConfirm}")
+        Log($"  포지션: 최대={_settings.MaxPositionCount}종목, 비중={_settings.PositionSizeRate * 100:F0}%")
+        Log($"  손절={_settings.StopLossRate:F1}%, 익절={_settings.TakeProfitRate:F1}%, 트레일링={_settings.TrailingStopRate:F1}%(사용={_settings.EnableTrailingStop})")
+        Log($"  캔들={_settings.CandleIntervalSec}초, 최소캔들={_settings.MinCandlesForSignal}")
+        Log($"  시간: 시작={_settings.TradingStartTime:hh\:mm}, 매수금지={_settings.NoNewBuyAfter:hh\:mm}, 강제청산={_settings.ForceCloseTime:hh\:mm}")
+        Log($"  주문: 매수={_settings.BuyOrderType}, 매도={_settings.SellOrderType}")
+        Log("──────────────")
     End Sub
 
     ' ═══════════════════════════════════════
@@ -341,7 +441,6 @@ Public Class SimTradeForm
         ' ── 시간 체크 ──
         If now < _settings.TradingStartTime Then Return
         If now >= _settings.ForceCloseTime AndAlso hasPosition Then
-            ' 장 마감 전 강제 청산
             DoSell(item, "장마감청산")
             Return
         End If
@@ -538,7 +637,7 @@ Public Class SimTradeForm
     ' ═══════════════════════════════════════
 
     Private Sub OnOrderFilled(m As Msg)
-        If m.Str("strategy") <> "SimTrade" Then Return  ' 다른 전략의 체결은 무시
+        If m.Str("strategy") <> "SimTrade" Then Return
         Log($"[체결] {m.Str("side")} {m.Str("code")} {m.Int("filledQty")}주 @{m.Int("filledPrice"):N0} [{m.Str("status")}]")
     End Sub
 
@@ -664,6 +763,12 @@ Public Class SimTradeForm
         tabPos.Controls.Add(_dgvPositions)
         _tabControl.TabPages.Add(tabPos)
 
+        ' 매매이력 탭
+        Dim tabHistory As New TabPage("매매이력")
+        _dgvHistory = MakeGrid({"시간", "구분", "코드", "종목명", "수량", "가격", "손익", "사유"})
+        tabHistory.Controls.Add(_dgvHistory)
+        _tabControl.TabPages.Add(tabHistory)
+
         ' 로그 탭
         Dim tabLog As New TabPage("로그")
         _rtbLog = New RichTextBox With {.Dock = DockStyle.Fill, .ReadOnly = True,
@@ -672,15 +777,174 @@ Public Class SimTradeForm
         tabLog.Controls.Add(_rtbLog)
         _tabControl.TabPages.Add(tabLog)
 
-        ' 매매이력 탭
-        Dim tabHistory As New TabPage("매매이력")
-        _dgvHistory = MakeGrid({"시간", "구분", "코드", "종목명", "수량", "가격", "손익", "사유"})
-        tabHistory.Controls.Add(_dgvHistory)
-        _tabControl.TabPages.Add(tabHistory)
+        ' ★ 설정 탭
+        Dim tabSettings As New TabPage("설정")
+        tabSettings.BackColor = Color.FromArgb(30, 30, 42)
+        tabSettings.AutoScroll = True
+        _pnlSettings = New Panel With {.Dock = DockStyle.Fill, .AutoScroll = True,
+            .BackColor = Color.FromArgb(30, 30, 42), .ForeColor = Color.White, .Padding = New Padding(15)}
+        BuildSettingsPanel(_pnlSettings)
+        tabSettings.Controls.Add(_pnlSettings)
+        _tabControl.TabPages.Add(tabSettings)
 
         Me.Controls.Add(_tabControl)
         Me.Controls.Add(pnlTop)
+
+        ' 설정값 → UI 초기화
+        LoadSettingsToUI()
     End Sub
+
+    ' ═══════════════════════════════════════
+    ' 설정 패널 빌드
+    ' ═══════════════════════════════════════
+
+    Private Sub BuildSettingsPanel(pnl As Panel)
+        Dim y As Integer = 10
+        Dim lblColor = Color.FromArgb(180, 180, 200)
+        Dim grpFont = New Font("맑은 고딕", 10, FontStyle.Bold)
+        Dim lblFont = New Font("맑은 고딕", 9)
+        Dim valFont = New Font("맑은 고딕", 9)
+        Dim colLabel As Integer = 15
+        Dim colValue As Integer = 220
+        Dim rowH As Integer = 32
+
+        ' ───── 지표 설정 ─────
+        y = AddGroupLabel(pnl, "▶ 지표 설정", y, grpFont, Color.FromArgb(100, 180, 255))
+
+        AddLabel(pnl, "SuperTrend Period:", colLabel, y, lblFont, lblColor)
+        _nudST_Period = AddNumeric(pnl, colValue, y, 1, 50, 10, 0, valFont) : y += rowH
+
+        AddLabel(pnl, "SuperTrend Multiplier:", colLabel, y, lblFont, lblColor)
+        _nudST_Multiplier = AddNumeric(pnl, colValue, y, 0.5D, 10D, 3D, 1, valFont) : y += rowH
+
+        AddLabel(pnl, "RSI Period:", colLabel, y, lblFont, lblColor)
+        _nudRSI_Period = AddNumeric(pnl, colValue, y, 2, 50, 14, 0, valFont) : y += rowH
+
+        AddLabel(pnl, "RSI 과매수 한계:", colLabel, y, lblFont, lblColor)
+        _nudRSI_Overbought = AddNumeric(pnl, colValue, y, 50, 100, 75, 0, valFont) : y += rowH
+
+        _chkVolumeConfirm = AddCheckBox(pnl, "거래량 확인 사용", colLabel, y, True, valFont) : y += rowH
+
+        ' ───── 캔들/신호 ─────
+        y += 5
+        y = AddGroupLabel(pnl, "▶ 캔들 / 신호", y, grpFont, Color.FromArgb(100, 180, 255))
+
+        AddLabel(pnl, "캔들 주기 (초):", colLabel, y, lblFont, lblColor)
+        _nudCandleInterval = AddNumeric(pnl, colValue, y, 3, 300, 10, 0, valFont) : y += rowH
+
+        AddLabel(pnl, "신호 판단 최소 캔들:", colLabel, y, lblFont, lblColor)
+        _nudMinCandles = AddNumeric(pnl, colValue, y, 5, 200, 30, 0, valFont) : y += rowH
+
+        ' ───── 포지션/리스크 ─────
+        y += 5
+        y = AddGroupLabel(pnl, "▶ 포지션 / 리스크", y, grpFont, Color.FromArgb(255, 180, 100))
+
+        AddLabel(pnl, "최대 보유 종목:", colLabel, y, lblFont, lblColor)
+        _nudMaxPosition = AddNumeric(pnl, colValue, y, 1, 20, 5, 0, valFont) : y += rowH
+
+        AddLabel(pnl, "종목당 비중 (%):", colLabel, y, lblFont, lblColor)
+        _nudPositionSize = AddNumeric(pnl, colValue, y, 1, 100, 15, 0, valFont) : y += rowH
+
+        AddLabel(pnl, "손절 (%):", colLabel, y, lblFont, lblColor)
+        _nudStopLoss = AddNumeric(pnl, colValue, y, -30D, 0D, -3D, 1, valFont) : y += rowH
+
+        AddLabel(pnl, "익절 (%):", colLabel, y, lblFont, lblColor)
+        _nudTakeProfit = AddNumeric(pnl, colValue, y, 0D, 100D, 5D, 1, valFont) : y += rowH
+
+        _chkTrailingStop = AddCheckBox(pnl, "트레일링 스톱 사용", colLabel, y, True, valFont) : y += rowH
+
+        AddLabel(pnl, "트레일링 스톱 (%):", colLabel, y, lblFont, lblColor)
+        _nudTrailingStop = AddNumeric(pnl, colValue, y, -20D, 0D, -1.5D, 1, valFont) : y += rowH
+
+        ' ───── 시간 ─────
+        y += 5
+        y = AddGroupLabel(pnl, "▶ 매매 시간", y, grpFont, Color.FromArgb(100, 255, 150))
+
+        AddLabel(pnl, "매매 시작 시간:", colLabel, y, lblFont, lblColor)
+        _txtStartTime = AddTextBox(pnl, colValue, y, "09:05", valFont) : y += rowH
+
+        AddLabel(pnl, "신규 매수 금지:", colLabel, y, lblFont, lblColor)
+        _txtNoNewBuy = AddTextBox(pnl, colValue, y, "14:30", valFont) : y += rowH
+
+        AddLabel(pnl, "강제 청산 시간:", colLabel, y, lblFont, lblColor)
+        _txtForceClose = AddTextBox(pnl, colValue, y, "15:15", valFont) : y += rowH
+
+        ' ───── 주문 방식 ─────
+        y += 5
+        y = AddGroupLabel(pnl, "▶ 주문 방식", y, grpFont, Color.FromArgb(255, 100, 100))
+
+        AddLabel(pnl, "매수 주문:", colLabel, y, lblFont, lblColor)
+        _cboBuyOrder = AddComboBox(pnl, colValue, y, {"시장가", "최우선매도호가 지정가", "현재가 지정가"}, 1, valFont) : y += rowH
+
+        AddLabel(pnl, "매도 주문:", colLabel, y, lblFont, lblColor)
+        _cboSellOrder = AddComboBox(pnl, colValue, y, {"시장가", "최우선매수호가 지정가", "현재가 지정가"}, 0, valFont) : y += rowH
+    End Sub
+
+    ' ═══════════════════════════════════════
+    ' 설정 패널 UI 헬퍼
+    ' ═══════════════════════════════════════
+
+    Private Shared Function AddGroupLabel(pnl As Panel, text As String, y As Integer, fnt As Font, clr As Color) As Integer
+        Dim lbl As New Label With {
+            .Text = text, .Location = New Point(10, y), .AutoSize = True,
+            .Font = fnt, .ForeColor = clr}
+        pnl.Controls.Add(lbl)
+        Return y + 28
+    End Function
+
+    Private Shared Sub AddLabel(pnl As Panel, text As String, x As Integer, y As Integer, fnt As Font, clr As Color)
+        Dim lbl As New Label With {
+            .Text = text, .Location = New Point(x, y + 3), .AutoSize = True,
+            .Font = fnt, .ForeColor = clr}
+        pnl.Controls.Add(lbl)
+    End Sub
+
+    Private Shared Function AddNumeric(pnl As Panel, x As Integer, y As Integer,
+                                        min As Decimal, max As Decimal, val As Decimal,
+                                        decimals As Integer, fnt As Font) As NumericUpDown
+        Dim nud As New NumericUpDown With {
+            .Location = New Point(x, y), .Size = New Size(100, 24),
+            .Minimum = min, .Maximum = max, .Value = Math.Max(min, Math.Min(max, val)),
+            .DecimalPlaces = decimals,
+            .Increment = If(decimals > 0, 0.1D, 1D),
+            .Font = fnt, .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White,
+            .BorderStyle = BorderStyle.FixedSingle}
+        pnl.Controls.Add(nud)
+        Return nud
+    End Function
+
+    Private Shared Function AddCheckBox(pnl As Panel, text As String, x As Integer, y As Integer,
+                                         checked As Boolean, fnt As Font) As CheckBox
+        Dim chk As New CheckBox With {
+            .Text = text, .Location = New Point(x, y), .AutoSize = True,
+            .Checked = checked, .Font = fnt, .ForeColor = Color.FromArgb(180, 180, 200)}
+        pnl.Controls.Add(chk)
+        Return chk
+    End Function
+
+    Private Shared Function AddTextBox(pnl As Panel, x As Integer, y As Integer,
+                                        defaultText As String, fnt As Font) As TextBox
+        Dim txt As New TextBox With {
+            .Location = New Point(x, y), .Size = New Size(100, 24),
+            .Text = defaultText, .Font = fnt,
+            .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White,
+            .BorderStyle = BorderStyle.FixedSingle}
+        pnl.Controls.Add(txt)
+        Return txt
+    End Function
+
+    Private Shared Function AddComboBox(pnl As Panel, x As Integer, y As Integer,
+                                         items As String(), selectedIndex As Integer, fnt As Font) As ComboBox
+        Dim cbo As New ComboBox With {
+            .Location = New Point(x, y), .Size = New Size(180, 24),
+            .DropDownStyle = ComboBoxStyle.DropDownList,
+            .Font = fnt, .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White,
+            .FlatStyle = FlatStyle.Flat}
+        cbo.Items.AddRange(items)
+        cbo.SelectedIndex = selectedIndex
+        pnl.Controls.Add(cbo)
+        Return cbo
+    End Function
 
     Private Shared Function MakeGrid(columns As String()) As DataGridView
         Dim dgv As New DataGridView With {
