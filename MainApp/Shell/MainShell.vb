@@ -15,7 +15,10 @@ Public Class MainShell
     ' ─── 도킹 폼 인스턴스 (싱글톤 관리) ───
     Private ReadOnly _dockForms As New Dictionary(Of String, DockFormBase)(StringComparer.OrdinalIgnoreCase)
     Private _mnuStrategyLabTest As ToolStripMenuItem
+    Private _mnuStrategySweep As ToolStripMenuItem
     Private _mnuResearchDbManager As ToolStripMenuItem
+    Private _mnuSrcKosdaq150 As ToolStripMenuItem
+    Private _mnuZeroLoss As ToolStripMenuItem
 
     ' ─── 타이머 ───
     Private WithEvents _clockTimer As Timer
@@ -40,12 +43,19 @@ Public Class MainShell
         MessageBus.I.On(Topics.SYS_AUTOTRADE, AddressOf OnAutoTradeStatus)
         MessageBus.I.On(Topics.UI_CHART_OPEN, AddressOf OnChartOpen)
         EnsureStrategyLabTestMenu()
+        EnsureStrategySweepMenu()
         EnsureResearchDbManagerMenu()
+        EnsureKosdaq150Menu()
+        EnsureZeroLossMenu()
         MainApp.Services.ResearchDbMaintenanceService.Instance.Start()
 
         ' ── 기본 폼 배치 ──
         ' 1) 로그 폼 (하단)
         ShowDockForm(Of LogForm)(DockState.DockBottom)
+
+        ' 2) 매매 모니터 (하단, 로그 옆)
+        '    로그인 전에도 표시 — TRADE_SYNC_COMPLETE 수신 시 초기 데이터 자동 채움
+        ShowDockForm(Of TradeMonitorForm)(DockState.DockBottom)
 
         ' 로그 시작 메시지
         AppLogger.I.Info("═══════════════════════════════════════", "MainShell")
@@ -155,6 +165,13 @@ Public Class MainShell
         End Using
     End Sub
 
+    ' 모의매매 메뉴 클릭 핸들러 (삭제 시 이 줄만 제거)
+    Private Sub OnSimTradeClick(sender As Object, e As EventArgs) Handles mnuSimTrade.Click
+        Dim f As New SimTradeForm()
+        f.Show()
+    End Sub
+
+
     Private Sub OnConditionSearchResult(m As Msg)
         MessageBus.I.Off(Topics.CONDITION_SEARCH_RESULT, AddressOf OnConditionSearchResult)
 
@@ -173,6 +190,9 @@ Public Class MainShell
 
         AppLogger.I.Info($"조건검색 결과: {codes.Length}종목 ({condName})", "DataSource")
         StockInfoManager.I.AddStocks(codes, DataSourceType.조건검색, condName)
+
+        ' 코스피 지수도 함께 추가 (전략 오버레이용)
+        StockInfoManager.I.AddStocks({"001"}, DataSourceType.조건검색, "코스피지수")
     End Sub
 
     Private Sub mnuSrcSector_Click(sender As Object, e As EventArgs) Handles mnuSrcSector.Click
@@ -278,6 +298,19 @@ Public Class MainShell
         AppLogger.I.Info("StrategyLab opened inside MainApp.", "Shell")
     End Sub
 
+    Private Sub EnsureStrategySweepMenu()
+        If _mnuStrategySweep IsNot Nothing OrElse mnuTradeTest Is Nothing Then Return
+
+        _mnuStrategySweep = New ToolStripMenuItem("Strategy Sweep...")
+        AddHandler _mnuStrategySweep.Click, AddressOf OnStrategySweepClick
+        mnuTradeTest.DropDownItems.Add(_mnuStrategySweep)
+    End Sub
+
+    Private Sub OnStrategySweepClick(sender As Object, e As EventArgs)
+        ShowDockForm(Of StrategySweepForm)(DockState.Document)
+        AppLogger.I.Info("Strategy Sweep opened.", "Shell")
+    End Sub
+
     Private Sub EnsureResearchDbManagerMenu()
         If _mnuResearchDbManager IsNot Nothing OrElse mnuData Is Nothing Then Return
 
@@ -293,6 +326,31 @@ Public Class MainShell
             dlg.ShowDialog(Me)
         End Using
         AppLogger.I.Info("Research DB manager dialog opened.", "Shell")
+    End Sub
+
+    Private Sub EnsureKosdaq150Menu()
+        If _mnuSrcKosdaq150 IsNot Nothing OrElse mnuDataSource Is Nothing Then Return
+
+        _mnuSrcKosdaq150 = New ToolStripMenuItem("KOSDAQ150...")
+        AddHandler _mnuSrcKosdaq150.Click, AddressOf OnKosdaq150Click
+        mnuDataSource.DropDownItems.Add(_mnuSrcKosdaq150)
+    End Sub
+
+    Private Sub OnKosdaq150Click(sender As Object, e As EventArgs)
+        ShowDockForm(Of StockInfoForm)(DockState.DockLeft)
+
+        Using dlg As New Kosdaq150SelectionDialog()
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+
+            Dim codes = dlg.SelectedCodes
+            If codes Is Nothing OrElse codes.Length = 0 Then
+                AppLogger.I.Warn("KOSDAQ150 후보 종목이 없습니다.", "DataSource")
+                Return
+            End If
+
+            StockInfoManager.I.AddStocks(codes, DataSourceType.수동추가, dlg.SourceDetail)
+            AppLogger.I.Info($"KOSDAQ150 종목 추가: {codes.Length}종목 / {dlg.SourceDetail}", "DataSource")
+        End Using
     End Sub
 
     Private Sub OnChartOpen(m As Msg)
@@ -413,18 +471,19 @@ Public Class MainShell
     End Sub
 
     Private Sub mnuShowBalance_Click(sender As Object, e As EventArgs) Handles mnuShowBalance.Click
-        ' TODO: ShowDockForm(Of BalanceForm)(DockState.DockBottom)
-        AppLogger.I.Warn("BalanceForm 미구현", "Shell")
+        ShowTradeMonitor()
     End Sub
 
     Private Sub mnuShowOrderLog_Click(sender As Object, e As EventArgs) Handles mnuShowOrderLog.Click
-        ' TODO: ShowDockForm(Of OrderLogForm)(DockState.DockBottom)
-        AppLogger.I.Warn("OrderLogForm 미구현", "Shell")
+        ShowTradeMonitor()
     End Sub
 
     Private Sub mnuShowOpenOrders_Click(sender As Object, e As EventArgs) Handles mnuShowOpenOrders.Click
-        ' TODO: ShowDockForm(Of OpenOrdersForm)(DockState.DockBottom)
-        AppLogger.I.Warn("OpenOrdersForm 미구현", "Shell")
+        ShowTradeMonitor()
+    End Sub
+
+    Private Sub ShowTradeMonitor()
+        ShowDockForm(Of TradeMonitorForm)(DockState.DockBottom)
     End Sub
 
     ' ════════════════════════════════════════
@@ -539,9 +598,17 @@ Public Class MainShell
                                                    AppLogger.I.Trade($"체결: {m.Str("종목명")} {m.Str("주문구분")} {m.Str("체결량")}주 @{m.Str("체결가")}", "Order")
                                                End Sub)
 
-        ' 조건검색 편입
+        ' 조건검색 실시간 편입/이탈
         MessageBus.I.On(Topics.CONDITION_HIT, Sub(m)
-                                                  AppLogger.I.Info($"조건편입: [{m.Str("condName")}] {m.Str("code")} ({m.Str("type")})", "Condition")
+                                                  Dim hitType = m.Str("type")
+                                                  Dim code = m.Str("code")
+                                                  Dim condName = m.Str("condName", "")
+                                                  AppLogger.I.Info($"조건편입: [{condName}] {code} ({hitType})", "Condition")
+
+                                                  ' 편입(I) → StockInfoManager에 추가 (정보→캔들→실시간 파이프라인)
+                                                  If hitType = "I" AndAlso Not String.IsNullOrEmpty(code) Then
+                                                      StockInfoManager.I.AddStocks({code}, DataSourceType.조건검색, condName)
+                                                  End If
                                               End Sub)
     End Sub
 
@@ -598,8 +665,110 @@ Public Class MainShell
         Return New DateTime(baseDt.Year, baseDt.Month, baseDt.Day, hh, mm, ss)
     End Function
 
+    ' ════════════════════════════════════════
+    ' ZeroLoss 전략 메뉴
+    ' ════════════════════════════════════════
+
+    Private Sub EnsureZeroLossMenu()
+        If _mnuZeroLoss IsNot Nothing OrElse mnuTradeTest Is Nothing Then Return
+
+        mnuTradeTest.DropDownItems.Add(New ToolStripSeparator())
+
+        _mnuZeroLoss = New ToolStripMenuItem("Zero Loss 전략 시작...")
+        AddHandler _mnuZeroLoss.Click, AddressOf OnZeroLossClick
+        mnuTradeTest.DropDownItems.Add(_mnuZeroLoss)
+
+        Dim mnuBatch As New ToolStripMenuItem("ZeroLoss 배치 분석...")
+        AddHandler mnuBatch.Click, AddressOf OnZeroLossBatchClick
+        mnuTradeTest.DropDownItems.Add(mnuBatch)
+
+        Dim mnuExperiment As New ToolStripMenuItem("ZeroLoss 파라미터 실험...")
+        AddHandler mnuExperiment.Click, Sub(s, ev) ShowDockForm(Of ZeroLossExperimentForm)(WeifenLuo.WinFormsUI.Docking.DockState.Document)
+        mnuTradeTest.DropDownItems.Add(mnuExperiment)
+    End Sub
+
+    Private Sub OnZeroLossClick(sender As Object, e As EventArgs)
+        Dim strategy = ZeroLossLiveStrategy.I
+
+        If strategy.IsRunning Then
+            If MessageBox.Show("Zero Loss 전략을 중지하시겠습니까?",
+                               "ZeroLoss", MessageBoxButtons.YesNo, MessageBoxIcon.Question) = DialogResult.Yes Then
+                strategy.Stop()
+                _mnuZeroLoss.Text = "Zero Loss 전략 시작..."
+                AppLogger.I.Info("ZeroLoss 전략 중지됨", "Shell")
+            End If
+            Return
+        End If
+
+        ' ── KOSDAQ150 선택 다이얼로그 ──
+        ShowDockForm(Of StockInfoForm)(DockState.DockLeft)
+
+        Using dlg As New Kosdaq150SelectionDialog()
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+
+            Dim codes = dlg.SelectedCodes
+            If codes Is Nothing OrElse codes.Length = 0 Then
+                AppLogger.I.Warn("KOSDAQ150 후보 종목이 없습니다.", "ZeroLoss")
+                Return
+            End If
+
+            ' ── StockInfoManager 파이프라인: 종목정보 → 캔들 → 실시간 구독 ──
+            StockInfoManager.I.AddStocks(codes, DataSourceType.수동추가, $"ZeroLoss {dlg.SourceDetail}")
+            AppLogger.I.Info($"ZeroLoss: KOSDAQ150 {codes.Length}종목 로드 시작", "ZeroLoss")
+
+            ' ── 유니버스 설정 + 전략 시작 ──
+            strategy.SetUniverse(codes)
+            strategy.Start()
+
+            _mnuZeroLoss.Text = $"Zero Loss 전략 중지 ({codes.Length}종목)"
+            AppLogger.I.Info($"ZeroLoss 전략 시작: {codes.Length}종목 모니터링 중", "ZeroLoss")
+        End Using
+    End Sub
+
+    Private Sub OnZeroLossBatchClick(sender As Object, e As EventArgs)
+        Dim fromDate = New DateTime(2025, 12, 1)
+        Dim toDate = DateTime.Today
+
+        AppLogger.I.Info($"ZeroLoss 배치 분석 시작: {fromDate:yyyy-MM-dd} ~ {toDate:yyyy-MM-dd}", "Batch")
+        Me.Cursor = Cursors.WaitCursor
+
+        Threading.Tasks.Task.Run(Of String)(
+            Function() As String
+                Try
+                    Dim analyzer As New Services.ZeroLossBatchAnalyzer()
+                    Return analyzer.RunBatchAnalysis(fromDate, toDate)
+                Catch ex As Exception
+                    Return $"ERROR: {ex.Message}{Environment.NewLine}{ex.StackTrace}"
+                End Try
+            End Function).ContinueWith(
+            Sub(t As Threading.Tasks.Task(Of String))
+                SafeUI(Sub()
+                           Me.Cursor = Cursors.Default
+                           Dim report = t.Result
+
+                           ' 리포트를 파일로 저장
+                           Dim reportPath = IO.Path.Combine(Application.StartupPath, $"ZeroLoss_Report_{DateTime.Now:yyyyMMdd_HHmmss}.txt")
+                           IO.File.WriteAllText(reportPath, report, System.Text.Encoding.UTF8)
+
+                           ' 리포트를 시스템로그에 출력
+                           AppLogger.I.Info($"ZeroLoss 배치 분석 완료 → {reportPath}", "Batch")
+
+                           ' 리포트 파일 열기
+                           Try
+                               Process.Start("notepad.exe", reportPath)
+                           Catch
+                           End Try
+                       End Sub)
+            End Sub)
+    End Sub
+
     Protected Overrides Sub OnFormClosing(e As FormClosingEventArgs)
         _clockTimer?.Stop()
+
+        ' ZeroLoss 전략 정리
+        If ZeroLossLiveStrategy.I.IsRunning Then
+            ZeroLossLiveStrategy.I.Stop()
+        End If
 
         ' 모든 도킹 폼 정리
         For Each kv In _dockForms

@@ -143,11 +143,11 @@ Namespace Services
 
         Private Shared Function ResolveRequestFromDate(fromDate As DateTime) As DateTime
             Dim businessDate = fromDate.Date
-            If businessDate = DateTime.MinValue.Date Then businessDate = DateTime.Today
-            If Not TradingCalendar.IsBusinessDay(businessDate) Then
-                businessDate = TradingCalendar.PreviousBusinessDay(businessDate)
+            If businessDate = DateTime.MinValue.Date Then
+                businessDate = DateTime.Today
             End If
-            Return businessDate
+
+            Return MarketTradingDayResolver.ResolveTradingDayOnOrBefore(businessDate)
         End Function
 
         Private Shared Function NormalizeTimeframe(timeframe As String) As String

@@ -23,8 +23,9 @@ Public Class CybosBridge
 
         MessageBus.I.On(Topics.CANDLE_REQUEST, Sub(m)
                                                    Dim reqProvider = m.Str("provider", "")
-                                                   If reqProvider <> "" AndAlso Not String.Equals(reqProvider, "cybos", StringComparison.OrdinalIgnoreCase) Then Return
-                                                   If Not RuntimeChartSettings.IsMarketDataProvider("cybos") Then Return
+                                                   Dim explicitCybos = String.Equals(reqProvider, "cybos", StringComparison.OrdinalIgnoreCase)
+                                                   If reqProvider <> "" AndAlso Not explicitCybos Then Return
+                                                   If Not explicitCybos AndAlso Not RuntimeChartSettings.IsMarketDataProvider("cybos") Then Return
                                                    Dim code = m.Str("code")
                                                    Dim tf = m.Str("timeframe", RuntimeChartSettings.DefaultCandleTimeframe).ToLower()
                                                    Dim count = m.Int("count", RuntimeChartSettings.DefaultCandleRequestCount)
@@ -33,20 +34,15 @@ Public Class CybosBridge
                                                        Case tf.StartsWith("m")
                                                            Dim interval = 1
                                                            If tf.Length > 1 Then Integer.TryParse(tf.Substring(1), interval)
-                                                           Dim stopTime = m.Str("stopTime", "")
                                                            Dim isIndexCode = code.StartsWith("U", StringComparison.OrdinalIgnoreCase)
-                                                           If String.IsNullOrWhiteSpace(stopTime) Then
-                                                               _client.분봉(code, interval, count, Sub(r)
-                                                                                                     Dim rows = r.DictList("rows")
-                                                                                                     If isIndexCode AndAlso (rows Is Nothing OrElse rows.Count = 0) Then
-                                                                                                         _client.일봉(code, Math.Max(count, 120), Sub(d) EmitCandle(d, code, m.Str("consumer", "")))
-                                                                                                         Return
-                                                                                                     End If
-                                                                                                     EmitCandle(r, code, m.Str("consumer", ""))
-                                                                                                 End Sub)
-                                                           Else
-                                                               _client.분봉기간(code, interval, stopTime, Sub(r) EmitCandle(r, code, m.Str("consumer", "")))
-                                                           End If
+                                                           _client.분봉(code, interval, count, Sub(r)
+                                                                                                 Dim rows = r.DictList("rows")
+                                                                                                 If isIndexCode AndAlso (rows Is Nothing OrElse rows.Count = 0) Then
+                                                                                                     _client.일봉(code, Math.Max(count, 120), Sub(d) EmitCandle(d, code, m.Str("consumer", "")))
+                                                                                                     Return
+                                                                                                 End If
+                                                                                                 EmitCandle(r, code, m.Str("consumer", ""))
+                                                                                             End Sub)
 
                                                        Case tf = "d" OrElse tf = "daily"
                                                            _client.일봉(code, count, Sub(r) EmitCandle(r, code, m.Str("consumer", "")))

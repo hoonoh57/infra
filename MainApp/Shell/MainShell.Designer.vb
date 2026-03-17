@@ -80,6 +80,11 @@ Partial Class MainShell
         Me.mnuAutoTradeToggle.Text = "자동매매 ON/OFF"
         Me.mnuAutoTradeToggle.CheckOnClick = True
 
+        ' 모의매매
+        Me.mnuSimTrade = New System.Windows.Forms.ToolStripMenuItem()
+        Me.mnuSimTrade.Text = "모의매매(&S)"
+
+
         ' ── 가혹 테스트 하위 메뉴 ──
         Me.mnuTradeTest = New ToolStripMenuItem()
         Me.mnuTradeTest.Text = "★ 가혹 테스트"
@@ -228,6 +233,9 @@ Partial Class MainShell
     Friend WithEvents mnuSrcKospiFollow As ToolStripMenuItem
     Friend WithEvents mnuSrcKosdaqFollow As ToolStripMenuItem
     Friend WithEvents mnuTrade As ToolStripMenuItem
+
+    Friend WithEvents mnuSimTrade As ToolStripMenuItem   '/////      
+
     Friend WithEvents mnuAutoTradeToggle As ToolStripMenuItem
     Friend WithEvents mnuTradeTest As ToolStripMenuItem
     Friend WithEvents mnuTestAll As ToolStripMenuItem

@@ -16,10 +16,18 @@ Public Class StrategyManagerForm
 
     Private _store As StrategyStore
     Private _onApply As Action(Of StrategyDefinition)
+    Private _onApplyHardcoded As Action(Of IStrategy)
     Private _selectedStrategyId As String = ""
 
-    Public Sub New(Optional onApply As Action(Of StrategyDefinition) = Nothing)
+    ' 하드코딩 IStrategy 목록
+    Private ReadOnly _builtInStrategies As New List(Of IStrategy) From {
+        New ZeroLossChartStrategy()
+    }
+
+    Public Sub New(Optional onApply As Action(Of StrategyDefinition) = Nothing,
+                   Optional onApplyHardcoded As Action(Of IStrategy) = Nothing)
         _onApply = onApply
+        _onApplyHardcoded = onApplyHardcoded
         _store = StrategyPersistenceService.LoadStore()
         EnsureDefaultData()
         InitializeUI()
@@ -183,6 +191,18 @@ Public Class StrategyManagerForm
             gNode.Expand()
         Next
 
+        ' ── 하드코딩 전략 그룹 ──
+        If _builtInStrategies.Count > 0 Then
+            Dim builtInNode = _tvStrategies.Nodes.Add("하드코딩 전략")
+            builtInNode.ForeColor = Color.Orange
+            For Each strat In _builtInStrategies
+                Dim sNode = builtInNode.Nodes.Add(strat.DisplayName)
+                sNode.Tag = strat  ' IStrategy 객체 직접 저장
+                sNode.ForeColor = Color.Gold
+            Next
+            builtInNode.Expand()
+        End If
+
         If _tvStrategies.SelectedNode Is Nothing AndAlso _tvStrategies.Nodes.Count > 0 Then
             Dim firstGroup = _tvStrategies.Nodes(0)
             If firstGroup.Nodes.Count > 0 Then
@@ -201,6 +221,19 @@ Public Class StrategyManagerForm
         _tvLogic.Nodes.Clear()
         Dim node = _tvStrategies.SelectedNode
         If node Is Nothing Then Return
+
+        ' ── 하드코딩 IStrategy 선택 ──
+        Dim hardcoded = TryCast(node.Tag, IStrategy)
+        If hardcoded IsNot Nothing Then
+            _txtPrompt.Text = ""
+            Dim root = _tvLogic.Nodes.Add(hardcoded.DisplayName)
+            root.Nodes.Add($"Type: 하드코딩 (IStrategy)")
+            root.Nodes.Add($"Name: {hardcoded.Name}")
+            Dim reqInd = hardcoded.RequiredIndicators()
+            root.Nodes.Add($"Required Indicators: {If(reqInd.Count = 0, "없음 (OHLCV만 사용)", String.Join(", ", reqInd))}")
+            root.ExpandAll()
+            Return
+        End If
 
         Dim s = TryCast(node.Tag, StrategyDefinition)
         If s Is Nothing Then
@@ -385,6 +418,15 @@ Public Class StrategyManagerForm
     Private Sub ApplySelected(sender As Object, e As EventArgs)
         Dim node = _tvStrategies.SelectedNode
         If node Is Nothing Then Return
+
+        ' 하드코딩 IStrategy 적용
+        Dim hardcoded = TryCast(node.Tag, IStrategy)
+        If hardcoded IsNot Nothing Then
+            _onApplyHardcoded?.Invoke(hardcoded)
+            Me.Close()
+            Return
+        End If
+
         Dim s = TryCast(node.Tag, StrategyDefinition)
         If s Is Nothing Then Return
         _onApply?.Invoke(s)

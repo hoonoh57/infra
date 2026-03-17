@@ -10,7 +10,7 @@ Public Class StrategyLabDockForm
     Public Sub New()
         Me.Text = "StrategyLab"
 
-        Dim candleProvider As New StrategyLabCybosCandleProvider()
+        Dim candleProvider As New ResearchDbCandleProvider()
         Dim facade As New StrategyLabFacade(candleProvider, candleProvider)
 
         _labForm = New MainApp.StrategyLabApp.StrategyLabForm(facade, embeddedMode:=True) With {

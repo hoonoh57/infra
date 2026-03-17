@@ -1501,6 +1501,7 @@ Public Class FastChartControl
         If _showPrevCloseLine Then DrawPrevCloseLine(canvas)
 
         DrawSignals(canvas)
+        DrawIndexOverlay(canvas)
         DrawAxisY(canvas)
         DrawAxisX(canvas)
 
@@ -2033,6 +2034,11 @@ Public Class FastChartControl
         If _signals.Count = 0 Then Return
         Dim s = Math.Max(0, _vs.StartIndex)
         Dim en = Math.Min(_candles.Count - 1, _vs.EndIndex)
+
+        ' ── 1) 매수~매도 구간별 진입가/목표/손절 라인 그리기 ──
+        DrawStrategyZones(canvas, s, en)
+
+        ' ── 2) 화살표 + 라벨 그리기 ──
         For Each sig In _signals
             Dim idx = FindCandleIndex(sig.Timestamp)
             If idx < s OrElse idx > en Then Continue For
@@ -2040,11 +2046,202 @@ Public Class FastChartControl
             Dim c = _candles(idx)
             Select Case sig.SignalType
                 Case SignalType.Buy, SignalType.StrongBuy
-                    DrawArrowUp(canvas, x, PriceToY(c.Low) + SIGNAL_ARROW_SIZE + 4, _paintSignalBuy, sig.SignalType = SignalType.StrongBuy)
+                    Dim arrowY = PriceToY(c.Low) + SIGNAL_ARROW_SIZE + 4
+                    DrawArrowUp(canvas, x, arrowY, _paintSignalBuy, sig.SignalType = SignalType.StrongBuy)
+                    ' 매수 라벨: 가격 + 사유
+                    DrawSignalLabel(canvas, x, arrowY + SIGNAL_ARROW_SIZE + 2, sig.Price, sig.Reason, New SKColor(255, 80, 80))
                 Case SignalType.Sell, SignalType.StrongSell
-                    DrawArrowDown(canvas, x, PriceToY(c.High) - SIGNAL_ARROW_SIZE - 4, _paintSignalSell, sig.SignalType = SignalType.StrongSell)
+                    Dim arrowY = PriceToY(c.High) - SIGNAL_ARROW_SIZE - 4
+                    DrawArrowDown(canvas, x, arrowY, _paintSignalSell, sig.SignalType = SignalType.StrongSell)
+                    ' 매도 라벨: 가격 + 사유
+                    DrawSignalLabel(canvas, x, arrowY - SIGNAL_ARROW_SIZE - 10, sig.Price, sig.Reason, New SKColor(80, 130, 255))
             End Select
         Next
+    End Sub
+
+    ''' <summary>매수~매도 구간에 진입가(노란), 목표가(빨간 점선), 손절가(파란 점선) 라인을 그림</summary>
+    Private Sub DrawStrategyZones(canvas As SKCanvas, visStart As Integer, visEnd As Integer)
+        ' 시그널을 시간순 정렬
+        Dim sorted = _signals.OrderBy(Function(x) x.Timestamp).ToList()
+        Dim i = 0
+        While i < sorted.Count
+            Dim buySig = sorted(i)
+            If buySig.SignalType <> SignalType.Buy AndAlso buySig.SignalType <> SignalType.StrongBuy Then
+                i += 1
+                Continue While
+            End If
+
+            ' 대응하는 매도 시그널 찾기
+            Dim sellSig As StrategySignal = Nothing
+            For j = i + 1 To sorted.Count - 1
+                If sorted(j).SignalType = SignalType.Sell OrElse sorted(j).SignalType = SignalType.StrongSell Then
+                    sellSig = sorted(j)
+                    Exit For
+                End If
+            Next
+
+            Dim buyIdx = FindCandleIndex(buySig.Timestamp)
+            Dim sellIdx = If(sellSig IsNot Nothing, FindCandleIndex(sellSig.Timestamp), _candles.Count - 1)
+
+            ' 화면에 보이는 구간과 겹치는지 확인
+            If buyIdx <= visEnd AndAlso sellIdx >= visStart Then
+                Dim entryPrice = buySig.Price
+                Dim targetPrice = entryPrice * 1.10F   ' +10%
+                Dim stopPrice = entryPrice * 0.97F     ' -3%
+
+                Dim x1 = IndexToX(Math.Max(buyIdx, visStart))
+                Dim x2 = IndexToX(Math.Min(sellIdx, visEnd))
+
+                ' 진입가 (노란색 실선)
+                DrawStrategyLine(canvas, x1, x2, entryPrice, New SKColor(255, 220, 50), $"진입 {entryPrice:N0}", False)
+                ' 목표가 (빨간색 점선)
+                DrawStrategyLine(canvas, x1, x2, targetPrice, New SKColor(255, 80, 80, 180), $"목표 +10% ({targetPrice:N0})", True)
+                ' 손절가 (파란색 점선)
+                DrawStrategyLine(canvas, x1, x2, stopPrice, New SKColor(80, 130, 255, 180), $"손절 -3% ({stopPrice:N0})", True)
+
+                ' 배경 음영 (진입~퇴출 구간)
+                Dim yTop = PriceToY(targetPrice)
+                Dim yBot = PriceToY(stopPrice)
+                If yTop < _mainRect.Top Then yTop = _mainRect.Top
+                If yBot > _mainRect.Bottom Then yBot = _mainRect.Bottom
+                Using bgPaint As New SKPaint()
+                    bgPaint.Color = New SKColor(255, 220, 50, 15)
+                    bgPaint.Style = SKPaintStyle.Fill
+                    canvas.DrawRect(x1, yTop, x2 - x1, yBot - yTop, bgPaint)
+                End Using
+            End If
+
+            ' 다음 매수 시그널로 이동
+            If sellSig IsNot Nothing Then
+                i = sorted.IndexOf(sellSig) + 1
+            Else
+                i += 1
+            End If
+        End While
+    End Sub
+
+    ''' <summary>전략 참조 라인 (진입가/목표가/손절가)</summary>
+    Private Sub DrawStrategyLine(canvas As SKCanvas, x1 As Single, x2 As Single, price As Single,
+                                  color As SKColor, label As String, isDashed As Boolean)
+        Dim py = PriceToY(price)
+        If py < _mainRect.Top OrElse py > _mainRect.Bottom Then Return
+
+        Using pp As New SKPaint()
+            pp.Style = SKPaintStyle.Stroke
+            pp.Color = color
+            pp.StrokeWidth = If(isDashed, 1, 1.5F)
+            If isDashed Then pp.PathEffect = SKPathEffect.CreateDash({5, 3}, 0)
+            canvas.DrawLine(x1, py, x2, py, pp)
+        End Using
+
+        Using tp As New SKPaint()
+            tp.Color = color
+            tp.TextSize = 9
+            tp.IsAntialias = True
+            tp.Typeface = SKTypeface.FromFamilyName("맑은 고딕")
+            canvas.DrawText(label, x2 + 4, py + 3, tp)
+        End Using
+    End Sub
+
+    ''' <summary>시그널 화살표 옆에 가격/사유 라벨 표시</summary>
+    Private Sub DrawSignalLabel(canvas As SKCanvas, x As Single, y As Single,
+                                 price As Single, reason As String, color As SKColor)
+        Using tp As New SKPaint()
+            tp.Color = color
+            tp.TextSize = 8
+            tp.IsAntialias = True
+            tp.Typeface = SKTypeface.FromFamilyName("맑은 고딕")
+            Dim txt = $"{price:N0}"
+            canvas.DrawText(txt, x + SIGNAL_ARROW_SIZE, y, tp)
+        End Using
+    End Sub
+
+    ''' <summary>코스피 지수 오버레이 (StockInfoManager 캐시에서 U001 캔들 사용)</summary>
+    Private Sub DrawIndexOverlay(canvas As SKCanvas)
+        If _candles.Count < 2 Then Return
+        Dim s = Math.Max(0, _vs.StartIndex)
+        Dim en = Math.Min(_candles.Count - 1, _vs.EndIndex)
+
+        ' StockInfoManager에서 코스피 캔들 가져오기
+        Dim indexCandles = StockInfoManager.I.GetCachedCandleItems("U001")
+        If indexCandles Is Nothing OrElse indexCandles.Count < 2 Then Return
+
+        ' 시간 → 코스피 종가 매핑 (정확한 시간 매칭 + 날짜 기반 보간)
+        Dim indexByTime As New Dictionary(Of Long, Single)()
+        Dim indexByDate As New Dictionary(Of Integer, Single)()  ' yyyyMMdd → 최신 종가
+        For Each ic In indexCandles
+            If ic.Close <= 0 Then Continue For
+            Dim key = ic.Dt.Ticks
+            If Not indexByTime.ContainsKey(key) Then
+                indexByTime(key) = ic.Close
+            End If
+            Dim dateKey = ic.Dt.Year * 10000 + ic.Dt.Month * 100 + ic.Dt.Day
+            indexByDate(dateKey) = ic.Close  ' 같은 날의 마지막(최신) 종가
+        Next
+        If indexByTime.Count = 0 AndAlso indexByDate.Count = 0 Then Return
+
+        ' 화면에 보이는 캔들과 매칭되는 코스피 값 수집
+        Dim matchedPoints As New List(Of Tuple(Of Single, Single))()  ' (x, indexClose)
+        For i = s To en
+            If i >= _candles.Count Then Exit For
+            Dim c = _candles(i)
+
+            ' 1) 정확한 시간 매칭 시도
+            Dim key = c.Dt.Ticks
+            If indexByTime.ContainsKey(key) Then
+                matchedPoints.Add(Tuple.Create(IndexToX(i), indexByTime(key)))
+                Continue For
+            End If
+
+            ' 2) 날짜 기반 매칭 (일봉 폴백 대응)
+            Dim dateKey = c.Dt.Year * 10000 + c.Dt.Month * 100 + c.Dt.Day
+            If indexByDate.ContainsKey(dateKey) Then
+                matchedPoints.Add(Tuple.Create(IndexToX(i), indexByDate(dateKey)))
+            End If
+        Next
+
+        If matchedPoints.Count < 2 Then Return
+
+        ' 코스피 값 범위 계산
+        Dim idxMin = matchedPoints.Min(Function(p) p.Item2)
+        Dim idxMax = matchedPoints.Max(Function(p) p.Item2)
+        If idxMax - idxMin < 0.01F Then Return
+
+        ' 코스피 값을 차트의 Y좌표로 변환 (차트의 30%~90% 영역에 매핑)
+        Dim yTop = _mainRect.Top + _mainRect.Height * 0.3F
+        Dim yBot = _mainRect.Top + _mainRect.Height * 0.9F
+
+        ' 선 그리기
+        Using linePaint As New SKPaint()
+            linePaint.Style = SKPaintStyle.Stroke
+            linePaint.Color = New SKColor(0, 200, 150, 120)  ' 청록색 반투명
+            linePaint.StrokeWidth = 1.5F
+            linePaint.IsAntialias = True
+
+            _reusePath.Reset()
+            Dim first = True
+            For Each pt In matchedPoints
+                Dim idxY = yBot - (pt.Item2 - idxMin) / (idxMax - idxMin) * (yBot - yTop)
+                If first Then
+                    _reusePath.MoveTo(pt.Item1, idxY)
+                    first = False
+                Else
+                    _reusePath.LineTo(pt.Item1, idxY)
+                End If
+            Next
+            canvas.DrawPath(_reusePath, linePaint)
+        End Using
+
+        ' 라벨 그리기
+        Dim lastPt = matchedPoints.Last()
+        Dim lastY = yBot - (lastPt.Item2 - idxMin) / (idxMax - idxMin) * (yBot - yTop)
+        Using tp As New SKPaint()
+            tp.Color = New SKColor(0, 200, 150, 180)
+            tp.TextSize = 9
+            tp.IsAntialias = True
+            tp.Typeface = SKTypeface.FromFamilyName("맑은 고딕")
+            canvas.DrawText($"코스피 {lastPt.Item2:N2}", lastPt.Item1 + 5, lastY - 3, tp)
+        End Using
     End Sub
 
     Private Sub DrawArrowUp(canvas As SKCanvas, cx As Single, cy As Single, paint As SKPaint, isStrong As Boolean)
@@ -2714,6 +2911,30 @@ Public Class FastChartControl
         _strategyEngine.Clear()
         _appliedStrategies.Add(strat)
         _strategyEngine.Register(strat)
+        EvaluateStrategies()
+        _needsRepaint = True
+    End Sub
+
+    ''' <summary>IStrategy 구현체(하드코딩 전략)를 차트에 적용</summary>
+    Public Sub ApplyStrategy(strat As IStrategy)
+        If strat Is Nothing Then Return
+        AppLogger.I.Info($"[Strategy] Apply IStrategy: {strat.DisplayName}")
+
+        _appliedStrategies.Clear()
+        _signals.Clear()
+        _strategyEngine.Clear()
+
+        _strategyEngine.Register(strat)
+
+        ' 범례 표시용 StrategyDefinition 추가
+        Dim placeholder As New StrategyDefinition With {
+            .Name = strat.Name,
+            .Description = strat.DisplayName,
+            .IsActive = True,
+            .Mode = "Test"
+        }
+        _appliedStrategies.Add(placeholder)
+
         EvaluateStrategies()
         _needsRepaint = True
     End Sub

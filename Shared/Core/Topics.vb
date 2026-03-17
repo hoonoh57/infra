@@ -165,6 +165,10 @@ Public Class Topics
     Public Const STOCKINFO_DATA_READY As String = "stockinfo.data.ready"
     Public Const STOCKINFO_CANDLE_PROGRESS As String = "stockinfo.candle.progress"
     Public Const STOCKINFO_FILTER_APPLIED As String = "stockinfo.filter.applied"
+    ' ═══ ZeroLoss 전략 ═══
+    Public Const ZEROLOSS_STATUS As String = "zeroloss.status"
+    Public Const ZEROLOSS_SIGNAL As String = "zeroloss.signal"
+
     ' ═══ 매매관리자 ═══
     Public Const TRADE_ORDER_REQUEST As String = "trade.order.request"
     Public Const TRADE_ORDER_ACCEPTED As String = "trade.order.accepted"

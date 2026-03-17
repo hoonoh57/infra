@@ -165,6 +165,9 @@ Namespace StrategyCore.Services
 
         Private Shared Function ResolveBusinessDate(fromDate As DateTime) As DateTime
             Dim businessDate = fromDate.Date
+            If businessDate = DateTime.MinValue.Date Then
+                businessDate = DateTime.Today
+            End If
             If Not TradingCalendar.IsBusinessDay(businessDate) Then
                 businessDate = TradingCalendar.PreviousBusinessDay(businessDate)
             End If

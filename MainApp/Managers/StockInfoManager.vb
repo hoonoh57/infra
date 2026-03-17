@@ -87,9 +87,21 @@ Public Class StockInfoManager
 
         AppLogger.I.Info($"종목 {result.Count}개 일괄 추가 [{source}] {sourceDetail}", "Manager")
 
-        ' 정보 조회 요청
-        If result.Count > 0 Then
-            RequestStockInfo(result.Select(Function(x) x.Code).ToArray())
+        ' 지수 코드(U로 시작)는 종목정보 API에서 빠지므로 바로 캔들 다운로드 시작
+        Dim indexCodes = result.Where(Function(x) x.Code.StartsWith("U", StringComparison.OrdinalIgnoreCase)).
+                                Select(Function(x) x.Code).ToArray()
+        Dim stockCodes = result.Where(Function(x) Not x.Code.StartsWith("U", StringComparison.OrdinalIgnoreCase)).
+                                Select(Function(x) x.Code).ToArray()
+
+        ' 일반 종목 → 종목정보 조회 (결과 수신 후 캔들 다운로드)
+        If stockCodes.Length > 0 Then
+            RequestStockInfo(stockCodes)
+        End If
+
+        ' 지수 코드 → 바로 캔들 다운로드 (종목정보 스킵)
+        If indexCodes.Length > 0 Then
+            AppLogger.I.Info($"지수 {indexCodes.Length}개 캔들 직접 요청: {String.Join(",", indexCodes)}", "Manager")
+            RequestCandles(indexCodes)
         End If
 
         ' 알림
@@ -243,9 +255,16 @@ Public Class StockInfoManager
         For Each code In codes
             If _candleRowsCache.ContainsKey(code) Then Continue For
             If Not _candleRequested.TryAdd(code, True) Then Continue For
+
+            ' 지수 코드(U로 시작)는 항상 cybos에서 다운로드 (키움은 지수 분봉 미지원)
+            Dim provider = RuntimeChartSettings.MarketDataProvider
+            If code.StartsWith("U", StringComparison.OrdinalIgnoreCase) Then
+                provider = "cybos"
+            End If
+
             MessageBus.I.Emit(Topics.CANDLE_REQUEST,
                               "code", code,
-                              "provider", RuntimeChartSettings.MarketDataProvider,
+                              "provider", provider,
                               "timeframe", RuntimeChartSettings.DefaultCandleTimeframe,
                               "count", RuntimeChartSettings.DefaultCandleRequestCount)
             requested += 1
@@ -372,6 +391,33 @@ Public Class StockInfoManager
         Return True
     End Function
 
+    ''' <summary>캐시에서 캔들 데이터를 CandleItem 리스트로 반환 (오버레이용)</summary>
+    Public Function GetCachedCandleItems(code As String) As List(Of CandleItem)
+        If String.IsNullOrWhiteSpace(code) Then Return Nothing
+
+        Dim rows As List(Of Dictionary(Of String, String)) = Nothing
+        If Not _candleRowsCache.TryGetValue(code, rows) Then Return Nothing
+        If rows Is Nothing OrElse rows.Count = 0 Then Return Nothing
+
+        Dim result As New List(Of CandleItem)(rows.Count)
+        For Each r In rows
+            Try
+                Dim ci As New CandleItem()
+                Dim dtStr = ""
+                If r.ContainsKey("dt") Then dtStr = r("dt")
+                If dtStr <> "" Then DateTime.TryParse(dtStr, ci.Dt)
+                If r.ContainsKey("open") Then Single.TryParse(r("open"), ci.Open)
+                If r.ContainsKey("high") Then Single.TryParse(r("high"), ci.High)
+                If r.ContainsKey("low") Then Single.TryParse(r("low"), ci.Low)
+                If r.ContainsKey("close") Then Single.TryParse(r("close"), ci.Close)
+                If r.ContainsKey("volume") Then Long.TryParse(r("volume"), ci.Volume)
+                result.Add(ci)
+            Catch
+            End Try
+        Next
+        Return result
+    End Function
+
     Public Function IsCandleRequested(code As String) As Boolean
         If String.IsNullOrWhiteSpace(code) Then Return False
         Return _candleRequested.ContainsKey(code)
@@ -391,6 +437,9 @@ Public Class StockInfoManager
 
         item.UpdateFromTick(m)
 
+        ' ── 캔들 캐시 실시간 빌드 (차트 열기 전에도 캔들 데이터 최신 유지) ──
+        UpdateCandleCache(code, m)
+
         ' UI 업데이트 알림 (스로틀링: 100ms 이내 중복 무시)
         Static lastEmit As New Dictionary(Of String, DateTime)()
         Dim now = DateTime.Now
@@ -401,6 +450,67 @@ Public Class StockInfoManager
         um("code") = code
         um("reason") = "tick"
         MessageBus.I.Emit(um)
+    End Sub
+
+    ''' <summary>
+    ''' 실시간 틱으로 캔들 캐시를 백그라운드 업데이트.
+    ''' 차트를 열지 않아도 캔들 데이터가 항상 최신 상태 유지.
+    ''' </summary>
+    Private Sub UpdateCandleCache(code As String, m As Msg)
+        Dim rows As List(Of Dictionary(Of String, String)) = Nothing
+        If Not _candleRowsCache.TryGetValue(code, rows) Then Return
+        If rows Is Nothing OrElse rows.Count = 0 Then Return
+
+        Dim price = Math.Abs(SharedUtil.SafeInt(m.Str("price", "0")))
+        If price <= 0 Then Return
+        Dim volume = Math.Abs(CLng(m.Dbl("volume")))
+
+        ' 틱 시간 → 분봉 바 시간 계산
+        Dim tickTime = DateTime.Now
+        Dim tf = RuntimeChartSettings.NormalizeMinuteTimeframe(RuntimeChartSettings.DefaultCandleTimeframe)
+        Dim minuteUnit As Integer = 1
+        If tf.Length > 1 Then Integer.TryParse(tf.Substring(1), minuteUnit)
+        If minuteUnit <= 0 Then minuteUnit = 1
+        Dim bucketMinute = (tickTime.Minute \ minuteUnit) * minuteUnit
+        Dim barTime As New DateTime(tickTime.Year, tickTime.Month, tickTime.Day, tickTime.Hour, bucketMinute, 0)
+        Dim barTimeStr = barTime.ToString("yyyyMMddHHmmss")
+
+        SyncLock rows
+            Dim lastRow = rows(rows.Count - 1)
+            Dim lastDt = If(lastRow.ContainsKey("dt"), lastRow("dt"), "")
+
+            ' 마지막 캔들과 같은 바 → 업데이트 (high/low/close/volume)
+            If lastDt = barTimeStr Then
+                Dim curHigh = SharedUtil.SafeInt(If(lastRow.ContainsKey("high"), lastRow("high"), "0"))
+                Dim curLow = SharedUtil.SafeInt(If(lastRow.ContainsKey("low"), lastRow("low"), "0"))
+                Dim curVol As Long = 0
+                Long.TryParse(If(lastRow.ContainsKey("volume"), lastRow("volume"), "0"), curVol)
+
+                If price > curHigh Then lastRow("high") = price.ToString()
+                If curLow <= 0 OrElse price < curLow Then lastRow("low") = price.ToString()
+                lastRow("close") = price.ToString()
+                lastRow("현재가") = price.ToString()
+                lastRow("volume") = (curVol + volume).ToString()
+                lastRow("거래량") = (curVol + volume).ToString()
+
+            ' 새 바 시작 (시간이 더 크면)
+            ElseIf String.Compare(barTimeStr, lastDt, StringComparison.Ordinal) > 0 Then
+                Dim newRow As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase) From {
+                    {"dt", barTimeStr},
+                    {"open", price.ToString()},
+                    {"high", price.ToString()},
+                    {"low", price.ToString()},
+                    {"close", price.ToString()},
+                    {"volume", volume.ToString()},
+                    {"시가", price.ToString()},
+                    {"고가", price.ToString()},
+                    {"저가", price.ToString()},
+                    {"현재가", price.ToString()},
+                    {"거래량", volume.ToString()}
+                }
+                rows.Add(newRow)
+            End If
+        End SyncLock
     End Sub
 
     ' ════════════════════════════════════════

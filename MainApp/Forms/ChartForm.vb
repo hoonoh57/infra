@@ -60,10 +60,9 @@ Public Class ChartForm
     End Sub
 
     Private Sub OnStrategySettingRequested(sender As Object, e As EventArgs)
-        Using f As New StrategyManagerForm(Sub(strat)
-                                               ' 전략 적용 로직
-                                               _chart.ApplyStrategy(strat)
-                                           End Sub)
+        Using f As New StrategyManagerForm(
+            Sub(strat) _chart.ApplyStrategy(strat),
+            Sub(hardcoded) _chart.ApplyStrategy(hardcoded))
             f.ShowDialog(Me)
         End Using
     End Sub

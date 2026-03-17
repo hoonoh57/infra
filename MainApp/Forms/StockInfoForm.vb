@@ -20,6 +20,8 @@ Public Class StockInfoForm
     Private _btnExport As ToolStripButton
     Private _lblCount As ToolStripLabel
     Private _cboSource As ToolStripComboBox
+    Private _topNFilterActive As Boolean = False
+    Private Const TOP_N_COUNT As Integer = 10
 
     ' 컬럼 인덱스 캐시
     Private _colCode As Integer = 0
@@ -56,15 +58,18 @@ Public Class StockInfoForm
 
         _cboSource = New ToolStripComboBox()
         _cboSource.Items.AddRange({"전체", "조건검색", "주도섹터", "프로그램순매수", "관심종목", "코스피추종", "코스닥추종"})
+        _cboSource.Items.Add("KOSDAQ150")
         _cboSource.SelectedIndex = 0
         _cboSource.DropDownStyle = ComboBoxStyle.DropDownList
         AddHandler _cboSource.SelectedIndexChanged, Sub(s, e) RefreshGrid()
 
-        _btnFilter = New ToolStripButton("필터 적용")
-        AddHandler _btnFilter.Click, Sub(s, e)
-                                         StockInfoManager.I.ApplyFilter()
-                                         RefreshGrid()
-                                     End Sub
+        _btnFilter = New ToolStripButton("TOP 10")
+        _btnFilter.CheckOnClick = True
+        AddHandler _btnFilter.CheckedChanged, Sub(s, e)
+                                                  _topNFilterActive = _btnFilter.Checked
+                                                  _btnFilter.Text = If(_topNFilterActive, "TOP 10 ✓", "TOP 10")
+                                                  RefreshGrid()
+                                              End Sub
 
         _btnClear = New ToolStripButton("전체 삭제")
         AddHandler _btnClear.Click, Sub(s, e)
@@ -179,9 +184,19 @@ Public Class StockInfoForm
 
         ' 소스 필터
         If filterSource <> "전체" Then
-            Dim src As DataSourceType = DataSourceType.수동추가
-            [Enum].TryParse(filterSource, True, src)
-            items = items.Where(Function(x) x.HasSource(src)).ToList()
+            If String.Equals(filterSource, "KOSDAQ150", StringComparison.OrdinalIgnoreCase) Then
+                items = items.Where(Function(x) Not String.IsNullOrWhiteSpace(x.SourceDetail) AndAlso
+                                                x.SourceDetail.IndexOf("KOSDAQ150", StringComparison.OrdinalIgnoreCase) >= 0).ToList()
+            Else
+                Dim src As DataSourceType = DataSourceType.수동추가
+                [Enum].TryParse(filterSource, True, src)
+                items = items.Where(Function(x) x.HasSource(src)).ToList()
+            End If
+        End If
+
+        ' TOP N 필터: 등락률 상위 N개만 표시
+        If _topNFilterActive Then
+            items = items.OrderByDescending(Function(x) x.ChangeRate).Take(TOP_N_COUNT).ToList()
         End If
 
         ' 행 수 맞추기
@@ -215,7 +230,12 @@ Public Class StockInfoForm
     Private Sub FillRow(row As DataGridViewRow, item As StockInfoItem)
         row.Cells(_colCode).Value = item.Code
         row.Cells(_colName).Value = item.Name
-        row.Cells(_colSource).Value = item.SourceText()
+        If Not String.IsNullOrWhiteSpace(item.SourceDetail) AndAlso
+           item.SourceDetail.IndexOf("KOSDAQ150", StringComparison.OrdinalIgnoreCase) >= 0 Then
+            row.Cells(_colSource).Value = "KOSDAQ150"
+        Else
+            row.Cells(_colSource).Value = item.SourceText()
+        End If
         row.Cells(_colPrice).Value = item.Price.ToString("N0")
         row.Cells(_colChange).Value = item.Change.ToString("N0")
         row.Cells(_colChangeRate).Value = item.ChangeRate.ToString("0.00")
