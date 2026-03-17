@@ -127,9 +127,10 @@ Partial Class MainShell
         Me.mnuTrade.DropDownItems.AddRange({
             Me.mnuAutoTradeToggle,
             New ToolStripSeparator(),
+            Me.mnuSimTrade,
+            New ToolStripSeparator(),
             Me.mnuTradeTest
         })
-
         ' 데이터
         Me.mnuData = New System.Windows.Forms.ToolStripMenuItem()
         Me.mnuData.Text = "데이터(&D)"
