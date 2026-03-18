@@ -60,6 +60,10 @@ Public Class SimTradeForm
     Private _cboBuyOrder As ComboBox
     Private _cboSellOrder As ComboBox
 
+    Private ReadOnly _lastTickTime As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+
+
+
     ' ═══════════════════════════════════════
     ' 생성/소멸
     ' ═══════════════════════════════════════
@@ -147,28 +151,58 @@ Public Class SimTradeForm
         MessageBus.I.On(Topics.CONDITION_HIT, AddressOf OnConditionHit)
         MessageBus.I.On(Topics.TRADE_ORDER_FILLED, AddressOf OnOrderFilled)
         MessageBus.I.On(Topics.TRADE_POSITION_UPDATED, AddressOf OnPositionUpdated)
-
-        ' ── ① StockInfoManager에 이미 로드된 조건검색 종목 먼저 가져오기 ──
-        Dim existingItems = StockInfoManager.I.GetBySource(DataSourceType.조건검색)
-        If existingItems IsNot Nothing AndAlso existingItems.Count > 0 Then
-            Log($"기존 조건검색 종목 {existingItems.Count}건 로드 (StockInfoManager)")
-            For Each item In existingItems
-                AddWatchItem(item.Code)
-            Next
-        End If
-
-        ' ── ② 조건검색 시작 (실시간 편입/이탈 + 초기 결과) ──
         MessageBus.I.On(Topics.CONDITION_SEARCH_RESULT, AddressOf OnConditionSearchResult)
-        MessageBus.I.Emit(Topics.CONDITION_START,
-                          "name", _conditionName,
-                          "index", _conditionIndex,
-                          "realtime", If(_settings.UseRealtimeCondition, 1, 0))
 
-        _tmrRefresh.Start()
         Log($"▶ 모의매매 시작 — 조건식: {_conditionName}")
         _lblStatus.Text = $"● 실행 중 | {_conditionName}"
         _lblStatus.ForeColor = Color.Lime
+
+        ' ── 비동기로 종목 로드 + 조건검색 시작 (UI 프리징 방지) ──
+        _tmrRefresh.Start()
+        Threading.ThreadPool.QueueUserWorkItem(Sub()
+                                                   Try
+                                                       ' ① StockInfoManager에 이미 로드된 조건검색 종목 가져오기
+                                                       Dim existingItems = StockInfoManager.I.GetBySource(DataSourceType.조건검색)
+                                                       If existingItems IsNot Nothing AndAlso existingItems.Count > 0 Then
+                                                           Log($"기존 조건검색 종목 {existingItems.Count}건 로드 (StockInfoManager)")
+                                                           For Each item In existingItems
+                                                               ' 종목간 간격을 두어 파이프 과부하 방지
+                                                               SafeUI(Sub() AddWatchItem(item.Code))
+                                                               Threading.Thread.Sleep(50)
+                                                           Next
+                                                       End If
+
+                                                       ' ② 조건검색 시작 (실시간 편입/이탈 + 초기 결과)
+                                                       Threading.Thread.Sleep(200)
+                                                       MessageBus.I.Emit(Topics.CONDITION_START,
+                              "name", _conditionName,
+                              "index", _conditionIndex,
+                              "realtime", If(_settings.UseRealtimeCondition, 1, 0))
+                                                   Catch ex As Exception
+                                                       Log($"[오류] StartSim 비동기 처리 실패: {ex.Message}")
+                                                   End Try
+
+                                                   ' ③ 실시간 구독 (감시 종목 일괄)
+                                                   Threading.Thread.Sleep(500)
+                                                   Dim watchCodes = ""
+                                                   SafeUI(Sub()
+                                                              watchCodes = String.Join(";", _watchItems.Keys)
+                                                          End Sub)
+                                                   Threading.Thread.Sleep(100)
+                                                   If watchCodes <> "" Then
+                                                       MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", watchCodes)
+                                                       Log($"실시간 일괄 구독: {watchCodes}")
+                                                   End If
+
+
+                                               End Sub)
+
+
+
+
+
     End Sub
+
 
     Private Sub StopSim()
         If Not _isRunning Then Return
@@ -312,24 +346,23 @@ Public Class SimTradeForm
 
     Private Sub OnConditionHit(m As Msg)
         Dim code = m.Str("code")
-        Dim hitType = m.Str("type")  ' "I"=편입, "D"=이탈
+        Dim hitType = m.Str("type")
 
         If hitType = "I" Then
             If AddWatchItem(code) Then
                 Log($"[편입] {code} — 조건식 실시간 편입")
             End If
         ElseIf hitType = "D" Then
-            ' 이탈 시 보유 중이 아니면 감시 제거
-            If _watchItems.ContainsKey(code) AndAlso Not TradeManager.I.HasPosition(code) Then
-                RemoveWatchItem(code)
-                Log($"[이탈] {code} — 감시 해제")
-            End If
+            ' ★ 이탈 시 제거하지 않음 — 빈번한 편입/이탈 반복으로 파이프 폭주 방지
+            ' 보유 중이 아니고 신호도 없으면 로그만 남김
+            Log($"[이탈] {code} — 무시 (감시 유지)")
         End If
     End Sub
 
+
     Private Function AddWatchItem(code As String) As Boolean
         If _watchItems.ContainsKey(code) Then Return False
-        If _watchItems.Count >= 50 Then Return False  ' 감시 상한
+        If _watchItems.Count >= 50 Then Return False
 
         Dim item As New WatchItem With {.Code = code}
         RegisterIndicators(item.Engine)
@@ -338,20 +371,38 @@ Public Class SimTradeForm
         ' 종목명 조회
         Dim si = StockInfoManager.I.GetItem(code)
         If si IsNot Nothing Then item.Name = si.Name
-
-        ' 실시간 구독
-        MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", code)
         item.IsSubscribed = True
 
         Log($"[감시추가] {code} {item.Name} (총 {_watchItems.Count}종목)")
+
+        ' 실시간 구독 (비동기로 파이프 부하 분산)
+        Threading.ThreadPool.QueueUserWorkItem(Sub()
+                                                   Threading.Thread.Sleep(100)
+                                                   MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", code)
+                                               End Sub)
+
         Return True
     End Function
+
+
 
     Private Sub RemoveWatchItem(code As String)
         If Not _watchItems.ContainsKey(code) Then Return
         _watchItems.Remove(code)
         MessageBus.I.Emit(Topics.REALTIME_UNSUBSCRIBE, "codes", code)
     End Sub
+
+    Private Sub SafeUI(action As Action)
+        If Me.InvokeRequired Then
+            Try
+                Me.Invoke(action)
+            Catch
+            End Try
+        Else
+            action()
+        End If
+    End Sub
+
 
     ' ═══════════════════════════════════════
     ' 실시간 틱 수신 → 캔들 빌딩 → 신호 판단
@@ -361,6 +412,13 @@ Public Class SimTradeForm
         If Not _isRunning Then Return
         Dim code = m.Str("code")
         If Not _watchItems.ContainsKey(code) Then Return
+
+        ' 종목당 최소 200ms 간격으로 처리 (초당 5회 제한)
+        Dim now = DateTime.Now
+        If _lastTickTime.ContainsKey(code) AndAlso (now - _lastTickTime(code)).TotalMilliseconds < 200 Then
+            Return
+        End If
+        _lastTickTime(code) = now
 
         Dim item = _watchItems(code)
         Dim price = Math.Abs(CInt(m.Dbl("price")))
@@ -657,17 +715,35 @@ Public Class SimTradeForm
     End Sub
 
     Private Sub RefreshWatchGrid()
-        _dgvWatch.SuspendLayout()
-        _dgvWatch.Rows.Clear()
-        For Each item In _watchItems.Values.OrderBy(Function(w) w.Code)
-            _dgvWatch.Rows.Add(
+        Dim items = _watchItems.Values.OrderBy(Function(w) w.Code).ToList()
+
+        ' 행 수가 다르면 재구성, 같으면 셀만 업데이트
+        If _dgvWatch.Rows.Count <> items.Count Then
+            _dgvWatch.SuspendLayout()
+            _dgvWatch.Rows.Clear()
+            For Each item In items
+                _dgvWatch.Rows.Add(
                 item.Code, item.Name, item.CurrentPrice.ToString("N0"),
                 item.ChangeRate.ToString("F2") & "%",
                 item.Volume.ToString("N0"), item.Strength.ToString("F1"),
                 item.Candles.Count, item.LastSignal)
-        Next
-        _dgvWatch.ResumeLayout()
+            Next
+            _dgvWatch.ResumeLayout()
+        Else
+            For i = 0 To items.Count - 1
+                Dim item = items(i)
+                Dim row = _dgvWatch.Rows(i)
+                row.Cells(1).Value = item.Name
+                row.Cells(2).Value = item.CurrentPrice.ToString("N0")
+                row.Cells(3).Value = item.ChangeRate.ToString("F2") & "%"
+                row.Cells(4).Value = item.Volume.ToString("N0")
+                row.Cells(5).Value = item.Strength.ToString("F1")
+                row.Cells(6).Value = item.Candles.Count
+                row.Cells(7).Value = item.LastSignal
+            Next
+        End If
     End Sub
+
 
     Private Sub RefreshPositionGrid()
         _dgvPositions.SuspendLayout()
