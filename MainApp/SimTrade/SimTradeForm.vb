@@ -7,6 +7,9 @@
 ' ★ 키움 모의매매 서버에 실제 주문 (지정가/시장가만)
 '   - TradeManager가 Chejan으로 체결/잔고 추적
 '   - 이 폼은 "언제, 무엇을, 얼마나" 결정하는 신호 로직만 담당
+'
+' ★ 캔들 다운로드: StockInfoManager 경유 → Cybos 일괄 고속 다운로드
+'   (Kiwoom 4초 타이머 방식 폐기)
 ' ═══════════════════════════════════════════════════════════════
 
 Imports System.Drawing
@@ -63,11 +66,6 @@ Public Class SimTradeForm
     ' ─── 틱 쓰로틀링 ───
     Private ReadOnly _lastTickTime As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
 
-    ' ─── ★ 캔들 다운로드 큐 (단독 실행 시 Kiwoom TR 제한 회피) ───
-    Private ReadOnly _candleDownloadQueue As New Queue(Of String)()
-    Private _candleDownloadTimer As Timer
-    Private _isCandleDownloading As Boolean = False
-
 
     ' ═══════════════════════════════════════
     ' 생성/소멸
@@ -81,6 +79,7 @@ Public Class SimTradeForm
     Private Sub SimTradeForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         Log("모의매매 폼 로드. 조건식을 선택한 뒤 [시작]을 누르세요.")
         Log("★ 키움 모의매매 서버 주문 — 중간가/스톱지정가 불가, 지정가/시장가만 사용")
+        Log("★ 캔들 다운로드: StockInfoManager → Cybos 일괄 고속")
     End Sub
 
     Private Sub SimTradeForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles MyBase.FormClosing
@@ -127,8 +126,6 @@ Public Class SimTradeForm
             MessageBox.Show("먼저 조건식을 선택하세요.")
             Return
         End If
-
-        ' 설정 패널 → _settings 동기화
         ApplySettingsFromUI()
         StartSim()
     End Sub
@@ -146,7 +143,6 @@ Public Class SimTradeForm
         _btnCondition.Enabled = False
         SetSettingsEnabled(False)
 
-        ' 설정값 로그
         LogCurrentSettings()
 
         ' ── MessageBus 구독 ──
@@ -156,23 +152,15 @@ Public Class SimTradeForm
         MessageBus.I.On(Topics.TRADE_ORDER_FILLED, AddressOf OnOrderFilled)
         MessageBus.I.On(Topics.TRADE_POSITION_UPDATED, AddressOf OnPositionUpdated)
         MessageBus.I.On(Topics.CONDITION_SEARCH_RESULT, AddressOf OnConditionSearchResult)
-
-        ' ★ 캔들 다운로드 결과 수신 구독
         MessageBus.I.On(Topics.CANDLE_LOADED, AddressOf OnCandleDownloaded)
-
-        ' ★ 캔들 다운로드 큐 타이머 (4초 간격 = Kiwoom TR 제한 회피)
-        _candleDownloadTimer = New Timer()
-        _candleDownloadTimer.Interval = 4000
-        AddHandler _candleDownloadTimer.Tick, AddressOf OnCandleDownloadTimerTick
-        _candleDownloadTimer.Start()
 
         Log($"▶ 모의매매 시작 — 조건식: {_conditionName}")
         _lblStatus.Text = $"● 실행 중 | {_conditionName}"
         _lblStatus.ForeColor = Color.Lime
 
-        ' ── 비동기로 종목 로드 + 조건검색 시작 (UI 프리징 방지) ──
         _tmrRefresh.Start()
 
+        ' ── 비동기로 종목 로드 + 조건검색 시작 (UI 프리징 방지) ──
         Threading.ThreadPool.QueueUserWorkItem(
             Sub()
                 Try
@@ -200,9 +188,7 @@ Public Class SimTradeForm
                 ' ③ 실시간 구독 (감시 종목 일괄)
                 Threading.Thread.Sleep(500)
                 Dim watchCodes = ""
-                SafeUI(Sub()
-                           watchCodes = String.Join(";", _watchItems.Keys)
-                       End Sub)
+                SafeUI(Sub() watchCodes = String.Join(";", _watchItems.Keys))
                 Threading.Thread.Sleep(100)
                 If watchCodes <> "" Then
                     MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", watchCodes)
@@ -224,17 +210,6 @@ Public Class SimTradeForm
         MessageBus.I.Off(Topics.TRADE_POSITION_UPDATED, AddressOf OnPositionUpdated)
         MessageBus.I.Off(Topics.CONDITION_SEARCH_RESULT, AddressOf OnConditionSearchResult)
         MessageBus.I.Off(Topics.CANDLE_LOADED, AddressOf OnCandleDownloaded)
-
-        ' ★ 캔들 다운로드 타이머 정리
-        If _candleDownloadTimer IsNot Nothing Then
-            _candleDownloadTimer.Stop()
-            RemoveHandler _candleDownloadTimer.Tick, AddressOf OnCandleDownloadTimerTick
-            _candleDownloadTimer.Dispose()
-            _candleDownloadTimer = Nothing
-        End If
-        SyncLock _candleDownloadQueue
-            _candleDownloadQueue.Clear()
-        End SyncLock
 
         ' ── 조건검색 중지 ──
         If _conditionIndex >= 0 Then
@@ -341,7 +316,6 @@ Public Class SimTradeForm
 
         If Not m.Bool("success") Then
             Log($"[오류] 조건검색 실패: {m.Str("message")}")
-            ' ★ 실패(타임아웃 등) 시 StockInfoManager 종목으로 폴백
             If _watchItems.Count = 0 Then
                 Dim fallbackItems = StockInfoManager.I.GetBySource(DataSourceType.조건검색)
                 If fallbackItems IsNot Nothing AndAlso fallbackItems.Count > 0 Then
@@ -375,14 +349,13 @@ Public Class SimTradeForm
                 Log($"[편입] {code} — 조건식 실시간 편입")
             End If
         ElseIf hitType = "D" Then
-            ' ★ 이탈 시 제거하지 않음 — 빈번한 편입/이탈 반복으로 파이프 폭주 방지
             Log($"[이탈] {code} — 무시 (감시 유지)")
         End If
     End Sub
 
 
     ' ═══════════════════════════════════════
-    ' ★ 종목 추가 — 캐시 캔들 로드 + 다운로드 큐
+    ' ★ 종목 추가 — StockInfoManager 경유 Cybos 일괄 캔들 다운로드
     ' ═══════════════════════════════════════
 
     Private Function AddWatchItem(code As String) As Boolean
@@ -407,18 +380,17 @@ Public Class SimTradeForm
                 item.Candles.Add(c)
             Next
             If item.Candles.Count > 0 Then
-                item.CurrentCandleStart = item.Candles.Last().Dt '.OpenTime'/////
+                item.CurrentCandleStart = item.Candles.Last().Dt
             End If
             item.Engine.CalculateAll(item.Candles)
-            Log($"[감시추가] {code} {item.Name} — 캐시캔들 {item.Candles.Count}개 로드 (총 {_watchItems.Count}종목)")
+            Log($"[감시추가] {code} {item.Name} — 캐시캔들 {item.Candles.Count}개 (총 {_watchItems.Count}종목)")
         Else
-            ' ★ 캐시 없음 → 다운로드 큐에 추가
-            SyncLock _candleDownloadQueue
-                If Not _candleDownloadQueue.Contains(code) Then
-                    _candleDownloadQueue.Enqueue(code)
-                End If
-            End SyncLock
-            Log($"[감시추가] {code} {item.Name} — 캔들 다운로드 대기 (총 {_watchItems.Count}종목)")
+            ' ★ 캐시 없음 → StockInfoManager에 등록 (메인 로직과 동일 경로)
+            '   StockInfoManager.AddStock → RequestStockInfo → OnMultiInfoResult
+            '   → RequestCandles(cybos provider) → CybosBridge → Cybos 분봉조회
+            '   → CANDLE_LOADED → OnCandleDownloaded
+            StockInfoManager.I.AddStock(code, DataSourceType.조건검색, "SimTrade")
+            Log($"[감시추가] {code} {item.Name} — Cybos 캔들 다운로드 요청 (총 {_watchItems.Count}종목)")
         End If
 
         ' 실시간 구독 (비동기로 파이프 부하 분산)
@@ -433,53 +405,10 @@ Public Class SimTradeForm
 
 
     ' ═══════════════════════════════════════
-    ' ★ 캔들 다운로드 큐 — 4초마다 1종목씩 Kiwoom 분봉조회
-    ' ═══════════════════════════════════════
-
-    Private Sub OnCandleDownloadTimerTick(sender As Object, e As EventArgs)
-        Dim code As String = Nothing
-
-        SyncLock _candleDownloadQueue
-            ' 큐가 비었으면 대기
-            If _candleDownloadQueue.Count = 0 Then Return
-            code = _candleDownloadQueue.Dequeue()
-        End SyncLock
-
-        If String.IsNullOrEmpty(code) Then Return
-        If Not _watchItems.ContainsKey(code) Then Return
-
-        ' 이미 캔들이 충분하면 스킵
-        If _watchItems(code).Candles.Count >= _settings.MinCandlesForSignal Then Return
-
-        _isCandleDownloading = True
-
-        Dim remaining As Integer
-        SyncLock _candleDownloadQueue
-            remaining = _candleDownloadQueue.Count
-        End SyncLock
-
-        Log($"[캔들요청] {code} 분봉 다운로드 시작 (대기 {remaining}건)")
-
-        ' CANDLE_REQUEST emit → KiwoomBridge가 수신하여 분봉조회 실행
-        Dim msg As New Msg(Topics.CANDLE_REQUEST)
-        msg("code") = code
-        msg("timeframe") = "1"          ' 1분봉
-        msg("count") = 200              ' 최근 200개
-        msg("provider") = "kiwoom"
-        msg("consumer") = "simtrade"    ' ★ SimTrade 전용 태그
-        MessageBus.I.Emit(msg)
-    End Sub
-
-
-    ' ═══════════════════════════════════════
-    ' ★ 캔들 다운로드 완료 수신
+    ' ★ 캔들 다운로드 완료 수신 (StockInfoManager → CybosBridge 경유)
     ' ═══════════════════════════════════════
 
     Private Sub OnCandleDownloaded(m As Msg)
-        ' SimTrade가 요청한 것만 처리 (다른 폼의 캔들 로드와 충돌 방지)
-        Dim consumer = m.Str("consumer")
-        If consumer <> "simtrade" AndAlso consumer <> "" Then Return
-
         Dim code = m.Str("code")
         If String.IsNullOrEmpty(code) Then Return
         If Not _watchItems.ContainsKey(code) Then Return
@@ -489,30 +418,33 @@ Public Class SimTradeForm
         ' 이미 캔들이 충분하면 무시
         If item.Candles.Count >= _settings.MinCandlesForSignal Then Return
 
-        Dim rows = TryCast(m("rows"), List(Of Dictionary(Of String, String)))
+        ' rows 파싱 (StockInfoManager.GetCachedCandleItems와 동일 방식)
+        Dim rows = m.DictList("rows")
         If rows Is Nothing OrElse rows.Count = 0 Then
             Log($"[캔들수신] {code} — 데이터 없음")
-            _isCandleDownloading = False
             Return
         End If
 
-        ' rows → CandleItem 변환
         Dim downloaded As New List(Of CandleItem)()
         For Each row In rows
-            Dim candle As New CandleItem()
-            candle.Dt = If(row.ContainsKey("time"),
-                                 DateTime.ParseExact(row("time"), "yyyyMMddHHmmss",
-                                                     Globalization.CultureInfo.InvariantCulture),
-                                 DateTime.Now)
-            candle.Open = If(row.ContainsKey("open"), Math.Abs(CSng(row("open"))), 0)
-            candle.High = If(row.ContainsKey("high"), Math.Abs(CSng(row("high"))), 0)
-            candle.Low = If(row.ContainsKey("low"), Math.Abs(CSng(row("low"))), 0)
-            candle.Close = If(row.ContainsKey("close"), Math.Abs(CSng(row("close"))), 0)
-            candle.Volume = If(row.ContainsKey("volume"), Math.Abs(CLng(row("volume"))), 0)
-            downloaded.Add(candle)
+            Try
+                Dim candle As New CandleItem()
+                Dim dtStr = ""
+                If row.ContainsKey("dt") Then dtStr = row("dt")
+                If dtStr <> "" Then DateTime.TryParse(dtStr, candle.Dt)
+                If row.ContainsKey("open") Then Single.TryParse(row("open"), candle.Open)
+                If row.ContainsKey("high") Then Single.TryParse(row("high"), candle.High)
+                If row.ContainsKey("low") Then Single.TryParse(row("low"), candle.Low)
+                If row.ContainsKey("close") Then Single.TryParse(row("close"), candle.Close)
+                If row.ContainsKey("volume") Then Long.TryParse(row("volume"), candle.Volume)
+                downloaded.Add(candle)
+            Catch
+            End Try
         Next
 
-        ' 시간순 정렬 (오래된 것 먼저)
+        If downloaded.Count = 0 Then Return
+
+        ' 시간순 정렬
         downloaded.Sort(Function(a, b) a.Dt.CompareTo(b.Dt))
 
         ' 기존 실시간 캔들 앞에 삽입
@@ -532,13 +464,17 @@ Public Class SimTradeForm
                 item.Engine.CalculateAll(item.Candles)
 
                 If item.Candles.Count > 0 Then
-                    item.CurrentCandleStart = item.Candles.Last().Dt '///.OpenTime
+                    item.CurrentCandleStart = item.Candles.Last().Dt
                 End If
 
-                Log($"[캔들수신] {code} {item.Name} — 다운로드 {downloaded.Count}개 + 기존 {existingCandles.Count}개 = 총 {item.Candles.Count}개")
-            End Sub)
+                ' 종목명 업데이트
+                If item.Name = "" Then
+                    Dim siName = StockInfoManager.I.GetItem(code)
+                    If siName IsNot Nothing Then item.Name = siName.Name
+                End If
 
-        _isCandleDownloading = False
+                Log($"[캔들수신] {code} {item.Name} — {downloaded.Count}개 다운로드 완료 (총 {item.Candles.Count}개)")
+            End Sub)
     End Sub
 
 
@@ -551,7 +487,7 @@ Public Class SimTradeForm
         Dim code = m.Str("code")
         If Not _watchItems.ContainsKey(code) Then Return
 
-        ' 종목당 최소 200ms 간격으로 처리 (초당 5회 제한)
+        ' 종목당 최소 200ms 간격으로 처리
         Dim now = DateTime.Now
         If _lastTickTime.ContainsKey(code) AndAlso (now - _lastTickTime(code)).TotalMilliseconds < 200 Then
             Return
@@ -615,10 +551,10 @@ Public Class SimTradeForm
             item.CurrentCandleStart = candleStart
             item.Candles.Add(CandleItem.Create(candleStart, price))
 
-            ' 캔들 수 제한 (최근 500개)
+            ' 캔들 수 제한
             If item.Candles.Count > 500 Then item.Candles.RemoveAt(0)
 
-            ' 새 캔들이면 전체 지표 재계산
+            ' 전체 지표 재계산
             item.Engine.CalculateAll(item.Candles)
         Else
             ' 기존 캔들 업데이트
@@ -637,7 +573,6 @@ Public Class SimTradeForm
         Dim now = DateTime.Now.TimeOfDay
         Dim hasPosition = TradeManager.I.HasPosition(item.Code)
 
-        ' ── 시간 체크 ──
         If now < _settings.TradingStartTime Then
             item.LastSignal = "시간전"
             Return
@@ -648,19 +583,16 @@ Public Class SimTradeForm
             Return
         End If
 
-        ' ── 보유 중이면 매도 판단 ──
         If hasPosition Then
             EvaluateSell(item)
             Return
         End If
 
-        ' ── 신규 매수 금지 시간 ──
         If now >= _settings.NoNewBuyAfter Then
             item.LastSignal = "매수금지시간"
             Return
         End If
 
-        ' ── 매수 판단 ──
         EvaluateBuy(item)
     End Sub
 
@@ -673,7 +605,7 @@ Public Class SimTradeForm
             Return
         End If
 
-        ' ── SuperTrend 매수 신호 ──
+        ' ── SuperTrend ──
         Dim stResults As List(Of IndicatorResult) = Nothing
         If Not results.TryGetValue("SuperTrend", stResults) Then
             item.LastSignal = "ST없음"
@@ -686,12 +618,10 @@ Public Class SimTradeForm
 
         Dim stNow = stResults(idx)
         Dim stPrev = stResults(idx - 1)
-        Dim trendNow = stNow.Val("Trend")       ' 1=상승, -1=하락
+        Dim trendNow = stNow.Val("Trend")
         Dim trendPrev = stPrev.Val("Trend")
 
-        ' 조건1: SuperTrend 상승 전환 (CrossUp)
         Dim isCrossUp = (trendNow > 0 AndAlso trendPrev <= 0)
-        ' 또는 이미 상승 중이고 가격이 SuperTrend 위
         Dim isAboveST = (trendNow > 0 AndAlso item.Candles(idx).Close > stNow.Val("SuperTrend"))
 
         If Not (isCrossUp OrElse isAboveST) Then
@@ -740,7 +670,6 @@ Public Class SimTradeForm
             Return
         End If
 
-        ' ── 매수 주문 ──
         item.LastSignal = "★매수신호!"
         Dim reason = If(isCrossUp, "ST_CrossUp", "ST_Above")
         DoBuy(item, price, qty, reason)
@@ -750,7 +679,6 @@ Public Class SimTradeForm
         Dim pos = TradeManager.I.GetPosition(item.Code)
         If pos Is Nothing OrElse pos.Quantity <= 0 Then Return
 
-        ' 최고가 추적 (트레일링용)
         If item.CurrentPrice > item.HighSinceBuy Then
             item.HighSinceBuy = item.CurrentPrice
         End If
@@ -779,7 +707,7 @@ Public Class SimTradeForm
             End If
         End If
 
-        ' ── SuperTrend 하락 전환 시 매도 ──
+        ' ── SuperTrend 하락 전환 ──
         Dim results = item.Engine.Results
         Dim idx = item.Candles.Count - 1
         If idx < 1 Then Return
@@ -796,7 +724,7 @@ Public Class SimTradeForm
 
 
     ' ═══════════════════════════════════════
-    ' 주문 실행 (TradeManager 경유 → 키움 모의매매 서버)
+    ' 주문 실행 (TradeManager → 키움 모의매매 서버)
     ' ═══════════════════════════════════════
 
     Private Sub DoBuy(item As WatchItem, price As Integer, qty As Integer, reason As String)
@@ -878,7 +806,6 @@ Public Class SimTradeForm
     Private Sub RefreshWatchGrid()
         Dim items = _watchItems.Values.OrderBy(Function(w) w.Code).ToList()
 
-        ' 행 수가 다르면 재구성, 같으면 셀만 업데이트
         If _dgvWatch.Rows.Count <> items.Count Then
             _dgvWatch.SuspendLayout()
             _dgvWatch.Rows.Clear()
@@ -1050,7 +977,6 @@ Public Class SimTradeForm
         Me.Controls.Add(_tabControl)
         Me.Controls.Add(pnlTop)
 
-        ' 설정값 → UI 초기화
         LoadSettingsToUI()
     End Sub
 
