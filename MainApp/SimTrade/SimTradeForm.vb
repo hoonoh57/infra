@@ -60,8 +60,13 @@ Public Class SimTradeForm
     Private _cboBuyOrder As ComboBox
     Private _cboSellOrder As ComboBox
 
+    ' ─── 틱 쓰로틀링 ───
     Private ReadOnly _lastTickTime As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
 
+    ' ─── ★ 캔들 다운로드 큐 (단독 실행 시 Kiwoom TR 제한 회피) ───
+    Private ReadOnly _candleDownloadQueue As New Queue(Of String)()
+    Private _candleDownloadTimer As Timer
+    Private _isCandleDownloading As Boolean = False
 
 
     ' ═══════════════════════════════════════
@@ -71,7 +76,6 @@ Public Class SimTradeForm
     Public Sub New()
         InitializeUI()
         _tmrRefresh.Interval = 1000
-        RegisterIndicators()
     End Sub
 
     Private Sub SimTradeForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
@@ -82,6 +86,7 @@ Public Class SimTradeForm
     Private Sub SimTradeForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles MyBase.FormClosing
         StopSim()
     End Sub
+
 
     ' ═══════════════════════════════════════
     ' 지표 등록 (종목별 IndicatorEngine에 공통 적용)
@@ -95,9 +100,6 @@ Public Class SimTradeForm
         engine.Register(New TickIntensity_Indicator())
     End Sub
 
-    Private Sub RegisterIndicators()
-        ' 초기화 시 호출 — 종목 추가 시 개별 엔진에 적용
-    End Sub
 
     ' ═══════════════════════════════════════
     ' 조건검색
@@ -114,6 +116,7 @@ Public Class SimTradeForm
             _lblStatus.Text = $"조건식: {_conditionName} | 대기 중"
         End If
     End Sub
+
 
     ' ═══════════════════════════════════════
     ' 시작 / 중지
@@ -134,6 +137,7 @@ Public Class SimTradeForm
         StopSim()
     End Sub
 
+
     Private Sub StartSim()
         If _isRunning Then Return
         _isRunning = True
@@ -153,54 +157,58 @@ Public Class SimTradeForm
         MessageBus.I.On(Topics.TRADE_POSITION_UPDATED, AddressOf OnPositionUpdated)
         MessageBus.I.On(Topics.CONDITION_SEARCH_RESULT, AddressOf OnConditionSearchResult)
 
+        ' ★ 캔들 다운로드 결과 수신 구독
+        MessageBus.I.On(Topics.CANDLE_LOADED, AddressOf OnCandleDownloaded)
+
+        ' ★ 캔들 다운로드 큐 타이머 (4초 간격 = Kiwoom TR 제한 회피)
+        _candleDownloadTimer = New Timer()
+        _candleDownloadTimer.Interval = 4000
+        AddHandler _candleDownloadTimer.Tick, AddressOf OnCandleDownloadTimerTick
+        _candleDownloadTimer.Start()
+
         Log($"▶ 모의매매 시작 — 조건식: {_conditionName}")
         _lblStatus.Text = $"● 실행 중 | {_conditionName}"
         _lblStatus.ForeColor = Color.Lime
 
         ' ── 비동기로 종목 로드 + 조건검색 시작 (UI 프리징 방지) ──
         _tmrRefresh.Start()
-        Threading.ThreadPool.QueueUserWorkItem(Sub()
-                                                   Try
-                                                       ' ① StockInfoManager에 이미 로드된 조건검색 종목 가져오기
-                                                       Dim existingItems = StockInfoManager.I.GetBySource(DataSourceType.조건검색)
-                                                       If existingItems IsNot Nothing AndAlso existingItems.Count > 0 Then
-                                                           Log($"기존 조건검색 종목 {existingItems.Count}건 로드 (StockInfoManager)")
-                                                           For Each item In existingItems
-                                                               ' 종목간 간격을 두어 파이프 과부하 방지
-                                                               SafeUI(Sub() AddWatchItem(item.Code))
-                                                               Threading.Thread.Sleep(50)
-                                                           Next
-                                                       End If
 
-                                                       ' ② 조건검색 시작 (실시간 편입/이탈 + 초기 결과)
-                                                       Threading.Thread.Sleep(200)
-                                                       MessageBus.I.Emit(Topics.CONDITION_START,
-                              "name", _conditionName,
-                              "index", _conditionIndex,
-                              "realtime", If(_settings.UseRealtimeCondition, 1, 0))
-                                                   Catch ex As Exception
-                                                       Log($"[오류] StartSim 비동기 처리 실패: {ex.Message}")
-                                                   End Try
+        Threading.ThreadPool.QueueUserWorkItem(
+            Sub()
+                Try
+                    ' ① StockInfoManager에 이미 로드된 조건검색 종목 가져오기
+                    Dim existingItems = StockInfoManager.I.GetBySource(DataSourceType.조건검색)
+                    If existingItems IsNot Nothing AndAlso existingItems.Count > 0 Then
+                        Log($"기존 조건검색 종목 {existingItems.Count}건 로드 (StockInfoManager)")
+                        For Each item In existingItems
+                            SafeUI(Sub() AddWatchItem(item.Code))
+                            Threading.Thread.Sleep(50)
+                        Next
+                    End If
 
-                                                   ' ③ 실시간 구독 (감시 종목 일괄)
-                                                   Threading.Thread.Sleep(500)
-                                                   Dim watchCodes = ""
-                                                   SafeUI(Sub()
-                                                              watchCodes = String.Join(";", _watchItems.Keys)
-                                                          End Sub)
-                                                   Threading.Thread.Sleep(100)
-                                                   If watchCodes <> "" Then
-                                                       MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", watchCodes)
-                                                       Log($"실시간 일괄 구독: {watchCodes}")
-                                                   End If
+                    ' ② 조건검색 시작 (실시간 편입/이탈 + 초기 결과)
+                    Threading.Thread.Sleep(200)
+                    MessageBus.I.Emit(Topics.CONDITION_START,
+                                      "name", _conditionName,
+                                      "index", _conditionIndex,
+                                      "realtime", If(_settings.UseRealtimeCondition, 1, 0))
 
+                Catch ex As Exception
+                    Log($"[오류] StartSim 비동기 처리 실패: {ex.Message}")
+                End Try
 
-                                               End Sub)
-
-
-
-
-
+                ' ③ 실시간 구독 (감시 종목 일괄)
+                Threading.Thread.Sleep(500)
+                Dim watchCodes = ""
+                SafeUI(Sub()
+                           watchCodes = String.Join(";", _watchItems.Keys)
+                       End Sub)
+                Threading.Thread.Sleep(100)
+                If watchCodes <> "" Then
+                    MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", watchCodes)
+                    Log($"실시간 일괄 구독: {watchCodes}")
+                End If
+            End Sub)
     End Sub
 
 
@@ -215,6 +223,18 @@ Public Class SimTradeForm
         MessageBus.I.Off(Topics.TRADE_ORDER_FILLED, AddressOf OnOrderFilled)
         MessageBus.I.Off(Topics.TRADE_POSITION_UPDATED, AddressOf OnPositionUpdated)
         MessageBus.I.Off(Topics.CONDITION_SEARCH_RESULT, AddressOf OnConditionSearchResult)
+        MessageBus.I.Off(Topics.CANDLE_LOADED, AddressOf OnCandleDownloaded)
+
+        ' ★ 캔들 다운로드 타이머 정리
+        If _candleDownloadTimer IsNot Nothing Then
+            _candleDownloadTimer.Stop()
+            RemoveHandler _candleDownloadTimer.Tick, AddressOf OnCandleDownloadTimerTick
+            _candleDownloadTimer.Dispose()
+            _candleDownloadTimer = Nothing
+        End If
+        SyncLock _candleDownloadQueue
+            _candleDownloadQueue.Clear()
+        End SyncLock
 
         ' ── 조건검색 중지 ──
         If _conditionIndex >= 0 Then
@@ -237,6 +257,7 @@ Public Class SimTradeForm
         _lblStatus.ForeColor = Color.Gray
         Log("■ 모의매매 중지")
     End Sub
+
 
     ' ═══════════════════════════════════════
     ' 설정 UI ↔ SimTradeSettings 동기화
@@ -310,8 +331,9 @@ Public Class SimTradeForm
         Log("──────────────")
     End Sub
 
+
     ' ═══════════════════════════════════════
-    ' 조건검색 결과 수신 — 디버그 로그 강화
+    ' 조건검색 결과 수신
     ' ═══════════════════════════════════════
 
     Private Sub OnConditionSearchResult(m As Msg)
@@ -354,53 +376,169 @@ Public Class SimTradeForm
             End If
         ElseIf hitType = "D" Then
             ' ★ 이탈 시 제거하지 않음 — 빈번한 편입/이탈 반복으로 파이프 폭주 방지
-            ' 보유 중이 아니고 신호도 없으면 로그만 남김
             Log($"[이탈] {code} — 무시 (감시 유지)")
         End If
     End Sub
 
 
+    ' ═══════════════════════════════════════
+    ' ★ 종목 추가 — 캐시 캔들 로드 + 다운로드 큐
+    ' ═══════════════════════════════════════
+
     Private Function AddWatchItem(code As String) As Boolean
+        If String.IsNullOrEmpty(code) Then Return False
         If _watchItems.ContainsKey(code) Then Return False
         If _watchItems.Count >= 50 Then Return False
 
         Dim item As New WatchItem With {.Code = code}
         RegisterIndicators(item.Engine)
-        _watchItems(code) = item
 
         ' 종목명 조회
         Dim si = StockInfoManager.I.GetItem(code)
         If si IsNot Nothing Then item.Name = si.Name
         item.IsSubscribed = True
+        _watchItems(code) = item
 
-        Log($"[감시추가] {code} {item.Name} (총 {_watchItems.Count}종목)")
+        ' ★ StockInfoManager 캔들 캐시 시도
+        Dim cached = StockInfoManager.I.GetCachedCandleItems(code)
+        If cached IsNot Nothing AndAlso cached.Count > 0 Then
+            ' 캐시 있음 → 즉시 로드
+            For Each c In cached
+                item.Candles.Add(c)
+            Next
+            If item.Candles.Count > 0 Then
+                item.CurrentCandleStart = item.Candles.Last().Dt '.OpenTime'/////
+            End If
+            item.Engine.CalculateAll(item.Candles)
+            Log($"[감시추가] {code} {item.Name} — 캐시캔들 {item.Candles.Count}개 로드 (총 {_watchItems.Count}종목)")
+        Else
+            ' ★ 캐시 없음 → 다운로드 큐에 추가
+            SyncLock _candleDownloadQueue
+                If Not _candleDownloadQueue.Contains(code) Then
+                    _candleDownloadQueue.Enqueue(code)
+                End If
+            End SyncLock
+            Log($"[감시추가] {code} {item.Name} — 캔들 다운로드 대기 (총 {_watchItems.Count}종목)")
+        End If
 
         ' 실시간 구독 (비동기로 파이프 부하 분산)
-        Threading.ThreadPool.QueueUserWorkItem(Sub()
-                                                   Threading.Thread.Sleep(100)
-                                                   MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", code)
-                                               End Sub)
+        Threading.ThreadPool.QueueUserWorkItem(
+            Sub()
+                Threading.Thread.Sleep(100)
+                MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", code)
+            End Sub)
 
         Return True
     End Function
 
 
+    ' ═══════════════════════════════════════
+    ' ★ 캔들 다운로드 큐 — 4초마다 1종목씩 Kiwoom 분봉조회
+    ' ═══════════════════════════════════════
 
-    Private Sub RemoveWatchItem(code As String)
+    Private Sub OnCandleDownloadTimerTick(sender As Object, e As EventArgs)
+        Dim code As String = Nothing
+
+        SyncLock _candleDownloadQueue
+            ' 큐가 비었으면 대기
+            If _candleDownloadQueue.Count = 0 Then Return
+            code = _candleDownloadQueue.Dequeue()
+        End SyncLock
+
+        If String.IsNullOrEmpty(code) Then Return
         If Not _watchItems.ContainsKey(code) Then Return
-        _watchItems.Remove(code)
-        MessageBus.I.Emit(Topics.REALTIME_UNSUBSCRIBE, "codes", code)
+
+        ' 이미 캔들이 충분하면 스킵
+        If _watchItems(code).Candles.Count >= _settings.MinCandlesForSignal Then Return
+
+        _isCandleDownloading = True
+
+        Dim remaining As Integer
+        SyncLock _candleDownloadQueue
+            remaining = _candleDownloadQueue.Count
+        End SyncLock
+
+        Log($"[캔들요청] {code} 분봉 다운로드 시작 (대기 {remaining}건)")
+
+        ' CANDLE_REQUEST emit → KiwoomBridge가 수신하여 분봉조회 실행
+        Dim msg As New Msg(Topics.CANDLE_REQUEST)
+        msg("code") = code
+        msg("timeframe") = "1"          ' 1분봉
+        msg("count") = 200              ' 최근 200개
+        msg("provider") = "kiwoom"
+        msg("consumer") = "simtrade"    ' ★ SimTrade 전용 태그
+        MessageBus.I.Emit(msg)
     End Sub
 
-    Private Sub SafeUI(action As Action)
-        If Me.InvokeRequired Then
-            Try
-                Me.Invoke(action)
-            Catch
-            End Try
-        Else
-            action()
+
+    ' ═══════════════════════════════════════
+    ' ★ 캔들 다운로드 완료 수신
+    ' ═══════════════════════════════════════
+
+    Private Sub OnCandleDownloaded(m As Msg)
+        ' SimTrade가 요청한 것만 처리 (다른 폼의 캔들 로드와 충돌 방지)
+        Dim consumer = m.Str("consumer")
+        If consumer <> "simtrade" AndAlso consumer <> "" Then Return
+
+        Dim code = m.Str("code")
+        If String.IsNullOrEmpty(code) Then Return
+        If Not _watchItems.ContainsKey(code) Then Return
+
+        Dim item = _watchItems(code)
+
+        ' 이미 캔들이 충분하면 무시
+        If item.Candles.Count >= _settings.MinCandlesForSignal Then Return
+
+        Dim rows = TryCast(m("rows"), List(Of Dictionary(Of String, String)))
+        If rows Is Nothing OrElse rows.Count = 0 Then
+            Log($"[캔들수신] {code} — 데이터 없음")
+            _isCandleDownloading = False
+            Return
         End If
+
+        ' rows → CandleItem 변환
+        Dim downloaded As New List(Of CandleItem)()
+        For Each row In rows
+            Dim candle As New CandleItem()
+            candle.Dt = If(row.ContainsKey("time"),
+                                 DateTime.ParseExact(row("time"), "yyyyMMddHHmmss",
+                                                     Globalization.CultureInfo.InvariantCulture),
+                                 DateTime.Now)
+            candle.Open = If(row.ContainsKey("open"), Math.Abs(CSng(row("open"))), 0)
+            candle.High = If(row.ContainsKey("high"), Math.Abs(CSng(row("high"))), 0)
+            candle.Low = If(row.ContainsKey("low"), Math.Abs(CSng(row("low"))), 0)
+            candle.Close = If(row.ContainsKey("close"), Math.Abs(CSng(row("close"))), 0)
+            candle.Volume = If(row.ContainsKey("volume"), Math.Abs(CLng(row("volume"))), 0)
+            downloaded.Add(candle)
+        Next
+
+        ' 시간순 정렬 (오래된 것 먼저)
+        downloaded.Sort(Function(a, b) a.Dt.CompareTo(b.Dt))
+
+        ' 기존 실시간 캔들 앞에 삽입
+        SafeUI(
+            Sub()
+                Dim existingCandles = New List(Of CandleItem)(item.Candles)
+                item.Candles.Clear()
+                item.Candles.AddRange(downloaded)
+                item.Candles.AddRange(existingCandles)
+
+                ' 최대 500개 제한
+                While item.Candles.Count > 500
+                    item.Candles.RemoveAt(0)
+                End While
+
+                ' 지표 재계산
+                item.Engine.CalculateAll(item.Candles)
+
+                If item.Candles.Count > 0 Then
+                    item.CurrentCandleStart = item.Candles.Last().Dt '///.OpenTime
+                End If
+
+                Log($"[캔들수신] {code} {item.Name} — 다운로드 {downloaded.Count}개 + 기존 {existingCandles.Count}개 = 총 {item.Candles.Count}개")
+            End Sub)
+
+        _isCandleDownloading = False
     End Sub
 
 
@@ -448,6 +586,8 @@ Public Class SimTradeForm
         ' ── 신호 판단 ──
         If item.Candles.Count >= _settings.MinCandlesForSignal Then
             EvaluateSignal(item)
+        Else
+            item.LastSignal = $"캔들수집중({item.Candles.Count}/{_settings.MinCandlesForSignal})"
         End If
     End Sub
 
@@ -488,8 +628,9 @@ Public Class SimTradeForm
         End If
     End Sub
 
+
     ' ═══════════════════════════════════════
-    ' ★ 핵심: 신호 판단 (실험 로직 — 이 부분만 격리된 실험)
+    ' ★ 핵심: 신호 판단
     ' ═══════════════════════════════════════
 
     Private Sub EvaluateSignal(item As WatchItem)
@@ -497,7 +638,11 @@ Public Class SimTradeForm
         Dim hasPosition = TradeManager.I.HasPosition(item.Code)
 
         ' ── 시간 체크 ──
-        If now < _settings.TradingStartTime Then Return
+        If now < _settings.TradingStartTime Then
+            item.LastSignal = "시간전"
+            Return
+        End If
+
         If now >= _settings.ForceCloseTime AndAlso hasPosition Then
             DoSell(item, "장마감청산")
             Return
@@ -522,12 +667,22 @@ Public Class SimTradeForm
     Private Sub EvaluateBuy(item As WatchItem)
         Dim results = item.Engine.Results
         Dim idx = item.Candles.Count - 1
-        If idx < 1 Then Return
+
+        If idx < 2 Then
+            item.LastSignal = $"캔들부족({idx + 1})"
+            Return
+        End If
 
         ' ── SuperTrend 매수 신호 ──
         Dim stResults As List(Of IndicatorResult) = Nothing
-        If Not results.TryGetValue("SuperTrend", stResults) Then Return
-        If stResults.Count <= idx Then Return
+        If Not results.TryGetValue("SuperTrend", stResults) Then
+            item.LastSignal = "ST없음"
+            Return
+        End If
+        If stResults.Count <= idx Then
+            item.LastSignal = "ST미산출"
+            Return
+        End If
 
         Dim stNow = stResults(idx)
         Dim stPrev = stResults(idx - 1)
@@ -540,7 +695,7 @@ Public Class SimTradeForm
         Dim isAboveST = (trendNow > 0 AndAlso item.Candles(idx).Close > stNow.Val("SuperTrend"))
 
         If Not (isCrossUp OrElse isAboveST) Then
-            item.LastSignal = "신호없음"
+            item.LastSignal = $"ST하락(T={trendNow:F0})"
             Return
         End If
 
@@ -560,7 +715,7 @@ Public Class SimTradeForm
             If results.TryGetValue("Volume", volResults) AndAlso volResults.Count > idx Then
                 Dim volRatio = volResults(idx).Val("VolumeRatio")
                 If Not Single.IsNaN(volRatio) AndAlso volRatio < 1.0F Then
-                    item.LastSignal = "거래량부족"
+                    item.LastSignal = $"거래량부족({volRatio:F2})"
                     Return
                 End If
             End If
@@ -580,10 +735,13 @@ Public Class SimTradeForm
         Dim price = GetBuyPrice(item)
         If price <= 0 Then Return
         Dim qty = CInt(maxAmount \ price)
-        If qty <= 0 Then Return
+        If qty <= 0 Then
+            item.LastSignal = "매수금액부족"
+            Return
+        End If
 
         ' ── 매수 주문 ──
-        item.LastSignal = "매수신호!"
+        item.LastSignal = "★매수신호!"
         Dim reason = If(isCrossUp, "ST_CrossUp", "ST_Above")
         DoBuy(item, price, qty, reason)
     End Sub
@@ -635,6 +793,7 @@ Public Class SimTradeForm
             End If
         End If
     End Sub
+
 
     ' ═══════════════════════════════════════
     ' 주문 실행 (TradeManager 경유 → 키움 모의매매 서버)
@@ -690,8 +849,9 @@ Public Class SimTradeForm
         End Select
     End Function
 
+
     ' ═══════════════════════════════════════
-    ' 체결/포지션 이벤트 (TradeManager가 발행, 여기서 표시)
+    ' 체결/포지션 이벤트
     ' ═══════════════════════════════════════
 
     Private Sub OnOrderFilled(m As Msg)
@@ -702,6 +862,7 @@ Public Class SimTradeForm
     Private Sub OnPositionUpdated(m As Msg)
         ' UI 갱신은 타이머에서 처리
     End Sub
+
 
     ' ═══════════════════════════════════════
     ' 타이머: UI 갱신
@@ -723,16 +884,17 @@ Public Class SimTradeForm
             _dgvWatch.Rows.Clear()
             For Each item In items
                 _dgvWatch.Rows.Add(
-                item.Code, item.Name, item.CurrentPrice.ToString("N0"),
-                item.ChangeRate.ToString("F2") & "%",
-                item.Volume.ToString("N0"), item.Strength.ToString("F1"),
-                item.Candles.Count, item.LastSignal)
+                    item.Code, item.Name, item.CurrentPrice.ToString("N0"),
+                    item.ChangeRate.ToString("F2") & "%",
+                    item.Volume.ToString("N0"), item.Strength.ToString("F1"),
+                    item.Candles.Count, item.LastSignal)
             Next
             _dgvWatch.ResumeLayout()
         Else
             For i = 0 To items.Count - 1
                 Dim item = items(i)
                 Dim row = _dgvWatch.Rows(i)
+                row.Cells(0).Value = item.Code
                 row.Cells(1).Value = item.Name
                 row.Cells(2).Value = item.CurrentPrice.ToString("N0")
                 row.Cells(3).Value = item.ChangeRate.ToString("F2") & "%"
@@ -743,7 +905,6 @@ Public Class SimTradeForm
             Next
         End If
     End Sub
-
 
     Private Sub RefreshPositionGrid()
         _dgvPositions.SuspendLayout()
@@ -765,6 +926,7 @@ Public Class SimTradeForm
                            $"총자산: {cash + evalTotal:N0} | 평가손익: {pnl:N0} | " &
                            $"감시: {_watchItems.Count}종목 | 보유: {TradeManager.I.PositionCount}종목"
     End Sub
+
 
     ' ═══════════════════════════════════════
     ' 로그
@@ -792,6 +954,18 @@ Public Class SimTradeForm
         _rtbLog.ScrollToCaret()
     End Sub
 
+    Private Sub SafeUI(action As Action)
+        If Me.InvokeRequired Then
+            Try
+                Me.Invoke(action)
+            Catch
+            End Try
+        Else
+            action()
+        End If
+    End Sub
+
+
     ' ═══════════════════════════════════════
     ' UI 구성
     ' ═══════════════════════════════════════
@@ -803,14 +977,20 @@ Public Class SimTradeForm
         Me.BackColor = Color.FromArgb(25, 25, 35)
         Me.ForeColor = Color.White
 
-        ' ── 상단 ──
-        Dim pnlTop As New Panel With {.Dock = DockStyle.Top, .Height = 70,
+        ' ── 상단 패널 ──
+        Dim pnlTop As New Panel With {
+            .Dock = DockStyle.Top, .Height = 70,
             .BackColor = Color.FromArgb(30, 30, 45), .Padding = New Padding(10)}
 
-        _lblStatus = New Label With {.Text = "대기 중", .Location = New Point(10, 8),
-            .AutoSize = True, .Font = New Font("맑은 고딕", 11, FontStyle.Bold), .ForeColor = Color.Gray}
-        _lblSummary = New Label With {.Text = "", .Location = New Point(10, 38),
-            .AutoSize = True, .Font = New Font("맑은 고딕", 9), .ForeColor = Color.Silver}
+        _lblStatus = New Label With {
+            .Text = "대기 중", .Location = New Point(10, 8),
+            .AutoSize = True, .Font = New Font("맑은 고딕", 11, FontStyle.Bold),
+            .ForeColor = Color.Gray}
+
+        _lblSummary = New Label With {
+            .Text = "", .Location = New Point(10, 38),
+            .AutoSize = True, .Font = New Font("맑은 고딕", 9),
+            .ForeColor = Color.Silver}
 
         _btnCondition = MakeButton("조건식 선택", 820, 10, Color.FromArgb(60, 80, 120))
         AddHandler _btnCondition.Click, AddressOf OnConditionClick
@@ -824,7 +1004,7 @@ Public Class SimTradeForm
 
         pnlTop.Controls.AddRange({_lblStatus, _lblSummary, _btnCondition, _btnStart, _btnStop})
 
-        ' ── 탭 ──
+        ' ── 탭 컨트롤 ──
         _tabControl = New TabControl With {.Dock = DockStyle.Fill}
 
         ' 감시 탭
@@ -847,8 +1027,10 @@ Public Class SimTradeForm
 
         ' 로그 탭
         Dim tabLog As New TabPage("로그")
-        _rtbLog = New RichTextBox With {.Dock = DockStyle.Fill, .ReadOnly = True,
-            .BackColor = Color.FromArgb(20, 20, 30), .ForeColor = Color.FromArgb(200, 200, 200),
+        _rtbLog = New RichTextBox With {
+            .Dock = DockStyle.Fill, .ReadOnly = True,
+            .BackColor = Color.FromArgb(20, 20, 30),
+            .ForeColor = Color.FromArgb(200, 200, 200),
             .Font = New Font("Consolas", 9), .BorderStyle = BorderStyle.None}
         tabLog.Controls.Add(_rtbLog)
         _tabControl.TabPages.Add(tabLog)
@@ -857,8 +1039,10 @@ Public Class SimTradeForm
         Dim tabSettings As New TabPage("설정")
         tabSettings.BackColor = Color.FromArgb(30, 30, 42)
         tabSettings.AutoScroll = True
-        _pnlSettings = New Panel With {.Dock = DockStyle.Fill, .AutoScroll = True,
-            .BackColor = Color.FromArgb(30, 30, 42), .ForeColor = Color.White, .Padding = New Padding(15)}
+        _pnlSettings = New Panel With {
+            .Dock = DockStyle.Fill, .AutoScroll = True,
+            .BackColor = Color.FromArgb(30, 30, 42),
+            .ForeColor = Color.White, .Padding = New Padding(15)}
         BuildSettingsPanel(_pnlSettings)
         tabSettings.Controls.Add(_pnlSettings)
         _tabControl.TabPages.Add(tabSettings)
@@ -869,6 +1053,7 @@ Public Class SimTradeForm
         ' 설정값 → UI 초기화
         LoadSettingsToUI()
     End Sub
+
 
     ' ═══════════════════════════════════════
     ' 설정 패널 빌드
@@ -897,154 +1082,166 @@ Public Class SimTradeForm
         _nudRSI_Period = AddNumeric(pnl, colValue, y, 2, 50, 14, 0, valFont) : y += rowH
 
         AddLabel(pnl, "RSI 과매수 한계:", colLabel, y, lblFont, lblColor)
-        _nudRSI_Overbought = AddNumeric(pnl, colValue, y, 50, 100, 75, 0, valFont) : y += rowH
+        _nudRSI_Overbought = AddNumeric(pnl, colValue, y, 50, 95, 75, 0, valFont) : y += rowH
 
-        _chkVolumeConfirm = AddCheckBox(pnl, "거래량 확인 사용", colLabel, y, True, valFont) : y += rowH
+        AddLabel(pnl, "거래량 확인:", colLabel, y, lblFont, lblColor)
+        _chkVolumeConfirm = New CheckBox With {
+            .Location = New Point(colValue, y), .Checked = True,
+            .AutoSize = True, .ForeColor = Color.White}
+        pnl.Controls.Add(_chkVolumeConfirm) : y += rowH
 
         ' ───── 캔들/신호 ─────
-        y += 5
+        y += 10
         y = AddGroupLabel(pnl, "▶ 캔들 / 신호", y, grpFont, Color.FromArgb(100, 180, 255))
 
         AddLabel(pnl, "캔들 주기 (초):", colLabel, y, lblFont, lblColor)
-        _nudCandleInterval = AddNumeric(pnl, colValue, y, 3, 300, 10, 0, valFont) : y += rowH
+        _nudCandleInterval = AddNumeric(pnl, colValue, y, 5, 300, 60, 0, valFont) : y += rowH
 
-        AddLabel(pnl, "신호 판단 최소 캔들:", colLabel, y, lblFont, lblColor)
+        AddLabel(pnl, "최소 캔들 수:", colLabel, y, lblFont, lblColor)
         _nudMinCandles = AddNumeric(pnl, colValue, y, 5, 200, 30, 0, valFont) : y += rowH
 
         ' ───── 포지션/리스크 ─────
-        y += 5
+        y += 10
         y = AddGroupLabel(pnl, "▶ 포지션 / 리스크", y, grpFont, Color.FromArgb(255, 180, 100))
 
         AddLabel(pnl, "최대 보유 종목:", colLabel, y, lblFont, lblColor)
         _nudMaxPosition = AddNumeric(pnl, colValue, y, 1, 20, 5, 0, valFont) : y += rowH
 
         AddLabel(pnl, "종목당 비중 (%):", colLabel, y, lblFont, lblColor)
-        _nudPositionSize = AddNumeric(pnl, colValue, y, 1, 100, 15, 0, valFont) : y += rowH
+        _nudPositionSize = AddNumeric(pnl, colValue, y, 1, 50, 15, 0, valFont) : y += rowH
 
-        AddLabel(pnl, "손절 (%):", colLabel, y, lblFont, lblColor)
-        _nudStopLoss = AddNumeric(pnl, colValue, y, -30D, 0D, -3D, 1, valFont) : y += rowH
+        AddLabel(pnl, "손절률 (%):", colLabel, y, lblFont, lblColor)
+        _nudStopLoss = AddNumeric(pnl, colValue, y, -20D, 0D, -3D, 1, valFont) : y += rowH
 
-        AddLabel(pnl, "익절 (%):", colLabel, y, lblFont, lblColor)
-        _nudTakeProfit = AddNumeric(pnl, colValue, y, 0D, 100D, 5D, 1, valFont) : y += rowH
+        AddLabel(pnl, "익절률 (%):", colLabel, y, lblFont, lblColor)
+        _nudTakeProfit = AddNumeric(pnl, colValue, y, 1, 50, 5, 1, valFont) : y += rowH
 
-        _chkTrailingStop = AddCheckBox(pnl, "트레일링 스톱 사용", colLabel, y, True, valFont) : y += rowH
+        AddLabel(pnl, "트레일링 스톱:", colLabel, y, lblFont, lblColor)
+        _chkTrailingStop = New CheckBox With {
+            .Location = New Point(colValue, y), .Checked = True,
+            .AutoSize = True, .ForeColor = Color.White}
+        pnl.Controls.Add(_chkTrailingStop) : y += rowH
 
-        AddLabel(pnl, "트레일링 스톱 (%):", colLabel, y, lblFont, lblColor)
-        _nudTrailingStop = AddNumeric(pnl, colValue, y, -20D, 0D, -1.5D, 1, valFont) : y += rowH
+        AddLabel(pnl, "트레일링 (%):", colLabel, y, lblFont, lblColor)
+        _nudTrailingStop = AddNumeric(pnl, colValue, y, -10D, 0D, -1.5D, 1, valFont) : y += rowH
 
-        ' ───── 시간 ─────
-        y += 5
-        y = AddGroupLabel(pnl, "▶ 매매 시간", y, grpFont, Color.FromArgb(100, 255, 150))
+        ' ───── 시간 설정 ─────
+        y += 10
+        y = AddGroupLabel(pnl, "▶ 매매 시간", y, grpFont, Color.FromArgb(180, 255, 100))
 
-        AddLabel(pnl, "매매 시작 시간:", colLabel, y, lblFont, lblColor)
-        _txtStartTime = AddTextBox(pnl, colValue, y, "09:05", valFont) : y += rowH
+        AddLabel(pnl, "매매 시작:", colLabel, y, lblFont, lblColor)
+        _txtStartTime = New TextBox With {
+            .Location = New Point(colValue, y), .Size = New Size(80, 24),
+            .Text = "09:05", .Font = valFont,
+            .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White}
+        pnl.Controls.Add(_txtStartTime) : y += rowH
 
-        AddLabel(pnl, "신규 매수 금지:", colLabel, y, lblFont, lblColor)
-        _txtNoNewBuy = AddTextBox(pnl, colValue, y, "14:30", valFont) : y += rowH
+        AddLabel(pnl, "신규매수 금지:", colLabel, y, lblFont, lblColor)
+        _txtNoNewBuy = New TextBox With {
+            .Location = New Point(colValue, y), .Size = New Size(80, 24),
+            .Text = "14:30", .Font = valFont,
+            .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White}
+        pnl.Controls.Add(_txtNoNewBuy) : y += rowH
 
-        AddLabel(pnl, "강제 청산 시간:", colLabel, y, lblFont, lblColor)
-        _txtForceClose = AddTextBox(pnl, colValue, y, "15:15", valFont) : y += rowH
+        AddLabel(pnl, "강제 청산:", colLabel, y, lblFont, lblColor)
+        _txtForceClose = New TextBox With {
+            .Location = New Point(colValue, y), .Size = New Size(80, 24),
+            .Text = "15:15", .Font = valFont,
+            .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White}
+        pnl.Controls.Add(_txtForceClose) : y += rowH
 
         ' ───── 주문 방식 ─────
-        y += 5
-        y = AddGroupLabel(pnl, "▶ 주문 방식", y, grpFont, Color.FromArgb(255, 100, 100))
+        y += 10
+        y = AddGroupLabel(pnl, "▶ 주문 방식", y, grpFont, Color.FromArgb(255, 100, 180))
 
         AddLabel(pnl, "매수 주문:", colLabel, y, lblFont, lblColor)
-        _cboBuyOrder = AddComboBox(pnl, colValue, y, {"시장가", "최우선매도호가 지정가", "현재가 지정가"}, 1, valFont) : y += rowH
+        _cboBuyOrder = New ComboBox With {
+            .Location = New Point(colValue, y), .Size = New Size(160, 24),
+            .DropDownStyle = ComboBoxStyle.DropDownList, .Font = valFont,
+            .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White}
+        _cboBuyOrder.Items.AddRange({"시장가", "최우선매도호가 지정가", "현재가 지정가"})
+        _cboBuyOrder.SelectedIndex = 1
+        pnl.Controls.Add(_cboBuyOrder) : y += rowH
 
         AddLabel(pnl, "매도 주문:", colLabel, y, lblFont, lblColor)
-        _cboSellOrder = AddComboBox(pnl, colValue, y, {"시장가", "최우선매수호가 지정가", "현재가 지정가"}, 0, valFont) : y += rowH
+        _cboSellOrder = New ComboBox With {
+            .Location = New Point(colValue, y), .Size = New Size(160, 24),
+            .DropDownStyle = ComboBoxStyle.DropDownList, .Font = valFont,
+            .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White}
+        _cboSellOrder.Items.AddRange({"시장가", "최우선매수호가 지정가", "현재가 지정가"})
+        _cboSellOrder.SelectedIndex = 0
+        pnl.Controls.Add(_cboSellOrder)
     End Sub
 
+
     ' ═══════════════════════════════════════
-    ' 설정 패널 UI 헬퍼
+    ' UI 헬퍼
     ' ═══════════════════════════════════════
 
-    Private Shared Function AddGroupLabel(pnl As Panel, text As String, y As Integer, fnt As Font, clr As Color) As Integer
+    Private Function AddGroupLabel(pnl As Panel, text As String, y As Integer,
+                                   font As Font, foreColor As Color) As Integer
         Dim lbl As New Label With {
-            .Text = text, .Location = New Point(10, y), .AutoSize = True,
-            .Font = fnt, .ForeColor = clr}
+            .Text = text, .Location = New Point(10, y),
+            .AutoSize = True, .Font = font, .ForeColor = foreColor}
         pnl.Controls.Add(lbl)
         Return y + 28
     End Function
 
-    Private Shared Sub AddLabel(pnl As Panel, text As String, x As Integer, y As Integer, fnt As Font, clr As Color)
+    Private Sub AddLabel(pnl As Panel, text As String, x As Integer, y As Integer,
+                         font As Font, foreColor As Color)
         Dim lbl As New Label With {
-            .Text = text, .Location = New Point(x, y + 3), .AutoSize = True,
-            .Font = fnt, .ForeColor = clr}
+            .Text = text, .Location = New Point(x, y + 2),
+            .AutoSize = True, .Font = font, .ForeColor = foreColor}
         pnl.Controls.Add(lbl)
     End Sub
 
-    Private Shared Function AddNumeric(pnl As Panel, x As Integer, y As Integer,
-                                        min As Decimal, max As Decimal, val As Decimal,
-                                        decimals As Integer, fnt As Font) As NumericUpDown
+    Private Function AddNumeric(pnl As Panel, x As Integer, y As Integer,
+                                min As Decimal, max As Decimal, value As Decimal,
+                                decimals As Integer, font As Font) As NumericUpDown
         Dim nud As New NumericUpDown With {
             .Location = New Point(x, y), .Size = New Size(100, 24),
-            .Minimum = min, .Maximum = max, .Value = Math.Max(min, Math.Min(max, val)),
-            .DecimalPlaces = decimals,
-            .Increment = If(decimals > 0, 0.1D, 1D),
-            .Font = fnt, .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White,
-            .BorderStyle = BorderStyle.FixedSingle}
+            .Minimum = min, .Maximum = max, .Value = value,
+            .DecimalPlaces = decimals, .Font = font,
+            .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White}
+        If decimals > 0 Then nud.Increment = 0.1D
         pnl.Controls.Add(nud)
         Return nud
     End Function
 
-    Private Shared Function AddCheckBox(pnl As Panel, text As String, x As Integer, y As Integer,
-                                         checked As Boolean, fnt As Font) As CheckBox
-        Dim chk As New CheckBox With {
-            .Text = text, .Location = New Point(x, y), .AutoSize = True,
-            .Checked = checked, .Font = fnt, .ForeColor = Color.FromArgb(180, 180, 200)}
-        pnl.Controls.Add(chk)
-        Return chk
+    Private Function MakeButton(text As String, x As Integer, y As Integer,
+                                bgColor As Color) As Button
+        Return New Button With {
+            .Text = text, .Location = New Point(x, y),
+            .Size = New Size(100, 32), .FlatStyle = FlatStyle.Flat,
+            .BackColor = bgColor, .ForeColor = Color.White,
+            .Font = New Font("맑은 고딕", 9, FontStyle.Bold)}
     End Function
 
-    Private Shared Function AddTextBox(pnl As Panel, x As Integer, y As Integer,
-                                        defaultText As String, fnt As Font) As TextBox
-        Dim txt As New TextBox With {
-            .Location = New Point(x, y), .Size = New Size(100, 24),
-            .Text = defaultText, .Font = fnt,
-            .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White,
-            .BorderStyle = BorderStyle.FixedSingle}
-        pnl.Controls.Add(txt)
-        Return txt
-    End Function
-
-    Private Shared Function AddComboBox(pnl As Panel, x As Integer, y As Integer,
-                                         items As String(), selectedIndex As Integer, fnt As Font) As ComboBox
-        Dim cbo As New ComboBox With {
-            .Location = New Point(x, y), .Size = New Size(180, 24),
-            .DropDownStyle = ComboBoxStyle.DropDownList,
-            .Font = fnt, .BackColor = Color.FromArgb(45, 45, 60), .ForeColor = Color.White,
-            .FlatStyle = FlatStyle.Flat}
-        cbo.Items.AddRange(items)
-        cbo.SelectedIndex = selectedIndex
-        pnl.Controls.Add(cbo)
-        Return cbo
-    End Function
-
-    Private Shared Function MakeGrid(columns As String()) As DataGridView
+    Private Function MakeGrid(columns As String()) As DataGridView
         Dim dgv As New DataGridView With {
             .Dock = DockStyle.Fill, .ReadOnly = True, .AllowUserToAddRows = False,
+            .AllowUserToDeleteRows = False, .AllowUserToResizeRows = False,
             .SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-            .BackgroundColor = Color.FromArgb(30, 30, 40),
+            .BackgroundColor = Color.FromArgb(25, 25, 35),
+            .GridColor = Color.FromArgb(50, 50, 65),
             .DefaultCellStyle = New DataGridViewCellStyle With {
-                .BackColor = Color.FromArgb(30, 30, 40), .ForeColor = Color.White,
-                .SelectionBackColor = Color.FromArgb(50, 50, 70)},
+                .BackColor = Color.FromArgb(30, 30, 42),
+                .ForeColor = Color.White,
+                .SelectionBackColor = Color.FromArgb(60, 60, 80),
+                .Font = New Font("맑은 고딕", 9)},
             .ColumnHeadersDefaultCellStyle = New DataGridViewCellStyle With {
-                .BackColor = Color.FromArgb(40, 40, 55), .ForeColor = Color.White},
+                .BackColor = Color.FromArgb(40, 40, 55),
+                .ForeColor = Color.FromArgb(200, 200, 220),
+                .Font = New Font("맑은 고딕", 9, FontStyle.Bold)},
             .EnableHeadersVisualStyles = False, .RowHeadersVisible = False,
-            .BorderStyle = BorderStyle.None
-        }
+            .AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            .BorderStyle = BorderStyle.None}
+
         For Each col In columns
             dgv.Columns.Add(col, col)
         Next
-        Return dgv
-    End Function
 
-    Private Shared Function MakeButton(text As String, x As Integer, y As Integer, color As Color) As Button
-        Return New Button With {
-            .Text = text, .Location = New Point(x, y), .Size = New Size(100, 32),
-            .FlatStyle = FlatStyle.Flat, .BackColor = color, .ForeColor = Color.White}
+        Return dgv
     End Function
 
 End Class
