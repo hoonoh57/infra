@@ -1,4 +1,0 @@
-# KRX holidays (yyyyMMdd), optional
-# Example:
-# 20260101
-# 20260216
