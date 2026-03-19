@@ -513,7 +513,7 @@ Public Class SimTradeForm
 
 
     ' ═══════════════════════════════════════
-    ' ★ v4.0 신호 판단 — 엔진 위임
+    ' ★ v4.0 신호 판단 — 7조건 상세 로그 포함
     ' ═══════════════════════════════════════
 
     Private Sub EvaluateSignal(state As StockState)
@@ -527,9 +527,10 @@ Public Class SimTradeForm
         If state.HasPosition Then
             ' P8: 장마감 강제청산
             If now >= _settings.ForceCloseTime Then
-                Dim forceResult As New SellSignalResult() With {
-                    .ShouldSell = True, .Priority = "P8",
-                    .Reason = $"장마감강제청산(수익{state.CurrentPnLRate:F1}%)"}
+                Dim forceResult As New SellSignalResult()
+                forceResult.ShouldSell = True
+                forceResult.Priority = "P8"
+                forceResult.Reason = $"장마감강제청산(수익{state.CurrentPnLRate:F1}%)"
                 _orderSimulator.ExecuteSell(state, forceResult)
                 state.LastSignal = forceResult.Reason
                 Log($"[매도-P8] {state.Code} {state.Name} — {forceResult.Reason}")
@@ -558,7 +559,6 @@ Public Class SimTradeForm
             state.LastSignal = $"필터차단:{filterResult.BlockedBy}"
             Return
         End If
-        ' Observe 경고 로그
         For Each warn In filterResult.ObserveWarnings
             Log($"[필터경고] {state.Code} {warn.FilterId}: {warn.Detail}")
         Next
@@ -571,11 +571,52 @@ Public Class SimTradeForm
         Dim buyResult = _signalEvaluator.EvaluateBuy(state, holdingCount, cash, equity)
         state.LastSignal = buyResult.Reason
 
+        ' ★★★ 7조건 상세 로그 출력 ★★★
+        Log7ConditionDetail(state, buyResult)
+
         If buyResult.ShouldBuy Then
             _orderSimulator.ExecuteBuy(state, buyResult)
             Log($"[매수-{buyResult.Profile}] {state.Code} {state.Name} {buyResult.SuggestedQty}주 @{buyResult.SuggestedPrice:N0} — {buyResult.Reason}")
         End If
     End Sub
+
+    ''' <summary>7조건 상세 로그 — 캔들 완성 시마다 조건별 충족 상태 출력</summary>
+    Private Sub Log7ConditionDetail(state As StockState, result As BuySignalResult)
+        ' 이미 보유/시간전/쿨다운 등 사전 차단된 경우는 상세 로그 생략
+        If state.HasPosition Then Return
+        If result.Reason.StartsWith("시간전") OrElse
+           result.Reason.StartsWith("매수금지") OrElse
+           result.Reason.StartsWith("쿨다운") OrElse
+           result.Reason.StartsWith("캔들수집중") OrElse
+           result.Reason.StartsWith("최대종목") OrElse
+           result.Reason.StartsWith("보유중") OrElse
+           result.Reason.StartsWith("제외") Then
+            Return
+        End If
+
+        Dim c1 = If(result.C1_ST, "●", "○")
+        Dim c2 = If(result.C2_JMA, "●", "○")
+        Dim c3 = If(result.C3_TickSum, "●", "○")
+        Dim c4 = If(result.C4_OBV, "●", "○")
+        Dim c5 = If(result.C5_Confirm, "●", "○")
+        Dim c6 = If(result.C6_MACD, "●", "○")
+        Dim c7 = If(result.C7_Volume, "●", "○")
+
+        Dim met = result.ConditionsMet
+        Dim tag = If(met = 7, "★★★", If(met >= 5, "★★", If(met >= 3, "★", "")))
+
+        Log($"[7조건] {state.Code} {state.Name} [{met}/7]{tag} " &
+            $"C1:ST{c1} C2:JMA{c2} C3:Tick{c3} C4:OBV{c4} C5:동시{c5} C6:MACD{c6} C7:Vol{c7}" &
+            $" | ST={state.ST_Direction:F0} JMA={state.JMA_Direction:F0}(턴{state.JMA_TurnBar}) " &
+            $"Tick={state.TickSum_Normalized:F1} OBV={state.OBV_Direction:F0} " &
+            $"RSI={state.RSI_Value:F0} MACD_H={state.MACD_Histogram:F2} VolR={state.Volume_Ratio:F0}%")
+
+        ' 미충족 사유 출력 (3개까지)
+        If result.RejectReasons.Count > 0 AndAlso met < 7 Then
+            Log($"  → 미충족: {String.Join(", ", result.RejectReasons.Take(5))}")
+        End If
+    End Sub
+
 
 
     ' ═══════════════════════════════════════
@@ -982,6 +1023,45 @@ Public Class SimTradeForm
         _cboSellOrder.Items.AddRange({"시장가", "최우선매수", "현재가"})
         _cboSellOrder.SelectedIndex = 0
         pnl.Controls.Add(_cboSellOrder)
+
+        ' ── v4.0 증분 계산 검증 버튼 ──
+        y += 40
+        Dim btnTest As New Button With {
+            .Text = "지표 증분 검증", .Location = New Point(10, y),
+            .Size = New Size(150, 30), .FlatStyle = FlatStyle.Flat,
+            .BackColor = Color.FromArgb(80, 60, 120), .ForeColor = Color.White,
+            .Font = New Font("맑은 고딕", 9, FontStyle.Bold)}
+        AddHandler btnTest.Click, Sub(s, ev)
+                                      Log("증분 계산 검증 테스트 시작...")
+                                      Dim result = IndicatorIncrementalTest.RunAll()
+                                      For Each line In result.Split({Environment.NewLine}, StringSplitOptions.None)
+                                          Log(line)
+                                      Next
+                                      Log("증분 계산 검증 테스트 완료.")
+                                  End Sub
+        pnl.Controls.Add(btnTest)
+
+        ' ── v4.0 7조건 로그 테스트 버튼 ──
+        y += 35
+        Dim btnSignalTest As New Button With {
+    .Text = "7조건 로그 테스트",
+    .Location = New Point(170, y - 35),
+    .Size = New Size(150, 30),
+    .FlatStyle = FlatStyle.Flat,
+    .BackColor = Color.FromArgb(120, 60, 60),
+    .ForeColor = Color.White,
+    .Font = New Font("맑은 고딕", 9, FontStyle.Bold)}
+        AddHandler btnSignalTest.Click, Sub(s, ev)
+                                            Log("7조건 신호 판단 테스트 시작...")
+                                            Dim testResult = SignalLogTest.RunAll(_settings)
+                                            For Each line In testResult.Split({Environment.NewLine}, StringSplitOptions.None)
+                                                Log(line)
+                                            Next
+                                            Log("7조건 신호 판단 테스트 완료.")
+                                        End Sub
+        pnl.Controls.Add(btnSignalTest)
+
+
     End Sub
 
     ' ─── UI 헬퍼 ───
