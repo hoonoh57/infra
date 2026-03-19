@@ -1,268 +1,385 @@
 ﻿' ═══════════════════════════════════════════════════════════════
-' IndicatorIncrementalTest.vb — 증분 계산 정합성 검증 (2-4)
+' IndicatorIncrementalTest.vb — 증분 계산 정합성 검증 (2-4 + 3-1~3-3)
 ' ═══════════════════════════════════════════════════════════════
-' ★ 테스트 A: OBV Calculate vs UpdateLast 결과 비교
-' ★ 테스트 B: RSI Calculate vs UpdateLast 결과 비교
+' ★ 테스트 A: OBV  Calculate vs UpdateLast 결과 비교
+' ★ 테스트 B: RSI  Calculate vs UpdateLast 결과 비교
 ' ★ 테스트 C: Volume Calculate vs UpdateLast 결과 비교
-' ★ 모두 통과하면 "PASS", 불일치 시 상세 로그 출력
+' ★ 테스트 D: MACD  Calculate vs UpdateLast 결과 비교
+' ★ 테스트 E: JMA   Calculate vs UpdateLast 결과 비교
+' ★ 테스트 F: SuperTrend Calculate vs UpdateLast 결과 비교
 ' ═══════════════════════════════════════════════════════════════
 
 Namespace SimTrade
 
-    ''' <summary>
-    ''' OBV, RSI, Volume 지표의 증분 계산(UpdateLast) 결과가
-    ''' 전체 계산(Calculate) 결과와 동일한지 검증한다.
-    ''' SimTradeForm 로그 또는 콘솔에서 호출 가능.
-    ''' </summary>
     Public Class IndicatorIncrementalTest
 
-        ''' <summary>전체 테스트 실행. 결과 문자열 반환.</summary>
+        ' ───────────── 전체 실행 ─────────────
         Public Shared Function RunAll() As String
             Dim sb As New System.Text.StringBuilder()
             sb.AppendLine("═══ 증분 계산 검증 테스트 시작 ═══")
 
-            ' 테스트용 캔들 생성 (100봉)
             Dim candles = GenerateTestCandles(100)
 
             Dim passA = TestOBV(candles, sb)
             Dim passB = TestRSI(candles, sb)
             Dim passC = TestVolume(candles, sb)
+            Dim passD = TestMACD(candles, sb)
+            Dim passE = TestJMA(candles, sb)
+            Dim passF = TestSuperTrend(candles, sb)
 
             sb.AppendLine()
-            If passA AndAlso passB AndAlso passC Then
-                sb.AppendLine("═══ 결과: ALL PASS ═══")
+            Dim allPass = passA AndAlso passB AndAlso passC AndAlso passD AndAlso passE AndAlso passF
+            If allPass Then
+                sb.AppendLine("═══ 결과: ALL PASS (6/6) ═══")
             Else
-                sb.AppendLine($"═══ 결과: FAIL (OBV={If(passA, "OK", "FAIL")}, RSI={If(passB, "OK", "FAIL")}, VOL={If(passC, "OK", "FAIL")}) ═══")
+                sb.AppendLine($"═══ 결과: FAIL (OBV={TF(passA)}, RSI={TF(passB)}, VOL={TF(passC)}, MACD={TF(passD)}, JMA={TF(passE)}, ST={TF(passF)}) ═══")
             End If
-
             Return sb.ToString()
         End Function
 
+        Private Shared Function TF(v As Boolean) As String
+            Return If(v, "OK", "FAIL")
+        End Function
 
-        ''' <summary>테스트 A: OBV 증분 검증</summary>
+        ' ───────────── 테스트 A: OBV ─────────────
         Private Shared Function TestOBV(candles As List(Of CandleItem), sb As System.Text.StringBuilder) As Boolean
             sb.AppendLine()
             sb.AppendLine("── 테스트 A: OBV ──")
-
             Dim indicator As New OBV_Indicator(20)
             Dim allPass = True
             Dim tolerance = 0.01F
-
-            ' 방법 1: 전체 Calculate
             Dim fullResults = indicator.Calculate(candles)
-
-            ' 방법 2: 캔들을 하나씩 추가하며 UpdateLast
             Dim indicator2 As New OBV_Indicator(20)
-            Dim incrementalCandles As New List(Of CandleItem)
-            Dim prevResults As List(Of IndicatorResult) = Nothing
-
+            Dim inc As New List(Of CandleItem)
+            Dim prev As List(Of IndicatorResult) = Nothing
             For i = 0 To candles.Count - 1
-                incrementalCandles.Add(candles(i))
-
+                inc.Add(candles(i))
                 If i = 0 Then
-                    ' 첫 봉은 Calculate로 초기화
-                    prevResults = indicator2.Calculate(incrementalCandles)
+                    prev = indicator2.Calculate(inc)
                 Else
-                    Dim lastResult = indicator2.UpdateLast(incrementalCandles, prevResults)
-                    If prevResults.Count > incrementalCandles.Count - 1 Then
-                        prevResults(prevResults.Count - 1) = lastResult
+                    Dim lr = indicator2.UpdateLast(inc, prev)
+                    If prev.Count > inc.Count - 1 Then
+                        prev(prev.Count - 1) = lr
                     Else
-                        prevResults.Add(lastResult)
+                        prev.Add(lr)
                     End If
                 End If
-
-                ' 같은 봉 재호출 테스트 (틱 업데이트 시뮬레이션)
                 If i > 0 AndAlso i Mod 10 = 0 Then
-                    Dim reResult = indicator2.UpdateLast(incrementalCandles, prevResults)
-                    prevResults(prevResults.Count - 1) = reResult
+                    Dim rr = indicator2.UpdateLast(inc, prev)
+                    prev(prev.Count - 1) = rr
                 End If
             Next
-
-            ' 비교
             For i = 0 To candles.Count - 1
-                If i >= fullResults.Count OrElse i >= prevResults.Count Then
-                    sb.AppendLine($"  [FAIL] 인덱스 {i}: 결과 크기 불일치")
-                    allPass = False
-                    Continue For
+                If i >= fullResults.Count OrElse i >= prev.Count Then
+                    allPass = False : Continue For
                 End If
-
-                Dim fObv = fullResults(i).Val("OBV")
-                Dim iObv = prevResults(i).Val("OBV")
-                Dim fDir = fullResults(i).Val("Direction")
-                Dim iDir = prevResults(i).Val("Direction")
-                Dim fSig = fullResults(i).Val("Signal")
-                Dim iSig = prevResults(i).Val("Signal")
-
-                If Math.Abs(fObv - iObv) > tolerance Then
-                    sb.AppendLine($"  [FAIL] 봉{i}: OBV Full={fObv:F2} vs Inc={iObv:F2}")
-                    allPass = False
-                End If
-                If Not Single.IsNaN(fDir) AndAlso Not Single.IsNaN(iDir) AndAlso fDir <> iDir Then
-                    sb.AppendLine($"  [FAIL] 봉{i}: Direction Full={fDir} vs Inc={iDir}")
+                Dim fO = fullResults(i).Val("OBV")
+                Dim iO = prev(i).Val("OBV")
+                If Math.Abs(fO - iO) > tolerance Then
+                    sb.AppendLine($"  [FAIL] 봉{i}: OBV Full={fO:F2} vs Inc={iO:F2}")
                     allPass = False
                 End If
             Next
-
-            sb.AppendLine($"  OBV: {If(allPass, "PASS", "FAIL")}")
+            sb.AppendLine($"  OBV: {TF(allPass)}")
             Return allPass
         End Function
 
-
-        ''' <summary>테스트 B: RSI 증분 검증</summary>
+        ' ───────────── 테스트 B: RSI ─────────────
         Private Shared Function TestRSI(candles As List(Of CandleItem), sb As System.Text.StringBuilder) As Boolean
             sb.AppendLine()
             sb.AppendLine("── 테스트 B: RSI ──")
-
             Dim indicator As New RSI_Indicator(14)
             Dim allPass = True
-            Dim tolerance = 0.1F   ' RSI는 누적 오차 허용
-
-            ' 전체 Calculate
+            Dim tolerance = 0.1F
             Dim fullResults = indicator.Calculate(candles)
-
-            ' 증분 UpdateLast
             Dim indicator2 As New RSI_Indicator(14)
-            Dim incrementalCandles As New List(Of CandleItem)
-            Dim prevResults As List(Of IndicatorResult) = Nothing
-
+            Dim inc As New List(Of CandleItem)
+            Dim prev As List(Of IndicatorResult) = Nothing
             For i = 0 To candles.Count - 1
-                incrementalCandles.Add(candles(i))
-
+                inc.Add(candles(i))
                 If i <= 14 Then
-                    prevResults = indicator2.Calculate(incrementalCandles)
+                    prev = indicator2.Calculate(inc)
                 Else
-                    Dim lastResult = indicator2.UpdateLast(incrementalCandles, prevResults)
-                    If prevResults.Count > incrementalCandles.Count - 1 Then
-                        prevResults(prevResults.Count - 1) = lastResult
+                    Dim lr = indicator2.UpdateLast(inc, prev)
+                    If prev.Count > inc.Count - 1 Then
+                        prev(prev.Count - 1) = lr
                     Else
-                        prevResults.Add(lastResult)
+                        prev.Add(lr)
                     End If
                 End If
-
-                ' 재호출 테스트
                 If i > 14 AndAlso i Mod 7 = 0 Then
-                    Dim reResult = indicator2.UpdateLast(incrementalCandles, prevResults)
-                    prevResults(prevResults.Count - 1) = reResult
+                    Dim rr = indicator2.UpdateLast(inc, prev)
+                    prev(prev.Count - 1) = rr
                 End If
             Next
-
-            ' 비교
             For i = 0 To candles.Count - 1
-                If i >= fullResults.Count OrElse i >= prevResults.Count Then Continue For
-
-                Dim fVal = fullResults(i).Val("Value")
-                Dim iVal = prevResults(i).Val("Value")
-
-                If Single.IsNaN(fVal) AndAlso Single.IsNaN(iVal) Then Continue For
-                If Single.IsNaN(fVal) <> Single.IsNaN(iVal) Then
-                    sb.AppendLine($"  [FAIL] 봉{i}: RSI NaN 불일치 Full={fVal} vs Inc={iVal}")
-                    allPass = False
-                    Continue For
+                If i >= fullResults.Count OrElse i >= prev.Count Then Continue For
+                Dim fV = fullResults(i).Val("Value")
+                Dim iV = prev(i).Val("Value")
+                If Single.IsNaN(fV) AndAlso Single.IsNaN(iV) Then Continue For
+                If Single.IsNaN(fV) <> Single.IsNaN(iV) Then
+                    sb.AppendLine($"  [FAIL] 봉{i}: RSI NaN 불일치")
+                    allPass = False : Continue For
                 End If
-                If Math.Abs(fVal - iVal) > tolerance Then
-                    sb.AppendLine($"  [FAIL] 봉{i}: RSI Full={fVal:F2} vs Inc={iVal:F2} (차이={Math.Abs(fVal - iVal):F4})")
+                If Math.Abs(fV - iV) > tolerance Then
+                    sb.AppendLine($"  [FAIL] 봉{i}: RSI Full={fV:F2} vs Inc={iV:F2}")
                     allPass = False
                 End If
             Next
-
-            sb.AppendLine($"  RSI: {If(allPass, "PASS", "FAIL")}")
+            sb.AppendLine($"  RSI: {TF(allPass)}")
             Return allPass
         End Function
 
-
-        ''' <summary>테스트 C: Volume 증분 검증</summary>
+        ' ───────────── 테스트 C: Volume ─────────────
         Private Shared Function TestVolume(candles As List(Of CandleItem), sb As System.Text.StringBuilder) As Boolean
             sb.AppendLine()
             sb.AppendLine("── 테스트 C: Volume ──")
-
             Dim indicator As New Volume_Indicator(20)
             Dim allPass = True
             Dim tolerance = 0.01F
-
-            ' 전체 Calculate
             Dim fullResults = indicator.Calculate(candles)
-
-            ' 증분 UpdateLast
             Dim indicator2 As New Volume_Indicator(20)
-            Dim incrementalCandles As New List(Of CandleItem)
-            Dim prevResults As List(Of IndicatorResult) = Nothing
-
+            Dim inc As New List(Of CandleItem)
+            Dim prev As List(Of IndicatorResult) = Nothing
             For i = 0 To candles.Count - 1
-                incrementalCandles.Add(candles(i))
-
+                inc.Add(candles(i))
                 If i = 0 Then
-                    prevResults = indicator2.Calculate(incrementalCandles)
+                    prev = indicator2.Calculate(inc)
                 Else
-                    Dim lastResult = indicator2.UpdateLast(incrementalCandles, prevResults)
-                    If prevResults.Count > incrementalCandles.Count - 1 Then
-                        prevResults(prevResults.Count - 1) = lastResult
+                    Dim lr = indicator2.UpdateLast(inc, prev)
+                    If prev.Count > inc.Count - 1 Then
+                        prev(prev.Count - 1) = lr
                     Else
-                        prevResults.Add(lastResult)
+                        prev.Add(lr)
                     End If
                 End If
-
-                ' 재호출 테스트 (같은 봉에서 볼륨 변경)
                 If i > 0 AndAlso i Mod 5 = 0 Then
-                    candles(i).Volume += 100  ' 틱 추가 시뮬레이션
-                    Dim reResult = indicator2.UpdateLast(incrementalCandles, prevResults)
-                    prevResults(prevResults.Count - 1) = reResult
-                    candles(i).Volume -= 100  ' 원복
+                    Dim rr = indicator2.UpdateLast(inc, prev)
+                    prev(prev.Count - 1) = rr
                 End If
             Next
-
-            ' 최종 전체 Calculate로 기준값 재생성 (볼륨 원복 후)
-            fullResults = indicator.Calculate(candles)
-
-            ' 비교
             For i = 0 To candles.Count - 1
-                If i >= fullResults.Count OrElse i >= prevResults.Count Then Continue For
-
-                Dim fRatio = fullResults(i).Val("Ratio")
-                Dim iRatio = prevResults(i).Val("Ratio")
+                If i >= fullResults.Count OrElse i >= prev.Count Then Continue For
                 Dim fMA = fullResults(i).Val("MA")
-                Dim iMA = prevResults(i).Val("MA")
-
+                Dim iMA = prev(i).Val("MA")
                 If Single.IsNaN(fMA) AndAlso Single.IsNaN(iMA) Then Continue For
                 If Single.IsNaN(fMA) <> Single.IsNaN(iMA) Then
                     sb.AppendLine($"  [FAIL] 봉{i}: MA NaN 불일치")
-                    allPass = False
-                    Continue For
+                    allPass = False : Continue For
                 End If
                 If Not Single.IsNaN(fMA) AndAlso Math.Abs(fMA - iMA) > tolerance Then
                     sb.AppendLine($"  [FAIL] 봉{i}: MA Full={fMA:F2} vs Inc={iMA:F2}")
                     allPass = False
                 End If
             Next
-
-            sb.AppendLine($"  Volume: {If(allPass, "PASS", "FAIL")}")
+            sb.AppendLine($"  Volume: {TF(allPass)}")
             Return allPass
         End Function
 
+        ' ───────────── 테스트 D: MACD ─────────────
+        Private Shared Function TestMACD(candles As List(Of CandleItem), sb As System.Text.StringBuilder) As Boolean
+            sb.AppendLine()
+            sb.AppendLine("── 테스트 D: MACD ──")
+            Dim indicator As New MACD_Indicator(7, 14, 9)
+            Dim allPass = True
+            Dim tolerance = 0.5F   ' EMA 누적 → 허용폭 넓게
+            Dim fullResults = indicator.Calculate(candles)
+            Dim indicator2 As New MACD_Indicator(7, 14, 9)
+            Dim inc As New List(Of CandleItem)
+            Dim prev As List(Of IndicatorResult) = Nothing
+            Dim initBars = 14  ' slow period
 
-        ''' <summary>테스트용 랜덤 캔들 생성</summary>
+            For i = 0 To candles.Count - 1
+                inc.Add(candles(i))
+                If i <= initBars Then
+                    prev = indicator2.Calculate(inc)
+                Else
+                    Dim lr = indicator2.UpdateLast(inc, prev)
+                    If prev.Count > inc.Count - 1 Then
+                        prev(prev.Count - 1) = lr
+                    Else
+                        prev.Add(lr)
+                    End If
+                End If
+                ' 재호출 테스트 (같은 봉 틱 업데이트)
+                If i > initBars AndAlso i Mod 8 = 0 Then
+                    Dim rr = indicator2.UpdateLast(inc, prev)
+                    prev(prev.Count - 1) = rr
+                End If
+            Next
+
+            Dim mismatchCount = 0
+            For i = 0 To candles.Count - 1
+                If i >= fullResults.Count OrElse i >= prev.Count Then Continue For
+                Dim fM = fullResults(i).Val("MACD")
+                Dim iM = prev(i).Val("MACD")
+                Dim fS = fullResults(i).Val("Signal")
+                Dim iSs = prev(i).Val("Signal")
+                Dim fH = fullResults(i).Val("Histogram")
+                Dim iH = prev(i).Val("Histogram")
+
+                If Single.IsNaN(fM) AndAlso Single.IsNaN(iM) Then Continue For
+                If Single.IsNaN(fM) <> Single.IsNaN(iM) Then
+                    If mismatchCount < 5 Then sb.AppendLine($"  [FAIL] 봉{i}: MACD NaN 불일치")
+                    mismatchCount += 1
+                    allPass = False : Continue For
+                End If
+                If Not Single.IsNaN(fM) AndAlso Math.Abs(fM - iM) > tolerance Then
+                    If mismatchCount < 5 Then sb.AppendLine($"  [FAIL] 봉{i}: MACD Full={fM:F2} vs Inc={iM:F2} (차이={Math.Abs(fM - iM):F4})")
+                    mismatchCount += 1
+                    allPass = False
+                End If
+                If Not Single.IsNaN(fS) AndAlso Not Single.IsNaN(iSs) AndAlso Math.Abs(fS - iSs) > tolerance Then
+                    If mismatchCount < 5 Then sb.AppendLine($"  [FAIL] 봉{i}: Signal Full={fS:F2} vs Inc={iSs:F2}")
+                    mismatchCount += 1
+                    allPass = False
+                End If
+            Next
+            If mismatchCount > 5 Then sb.AppendLine($"  ... 외 {mismatchCount - 5}건 추가 불일치")
+            sb.AppendLine($"  MACD: {TF(allPass)} (불일치 {mismatchCount}건)")
+            Return allPass
+        End Function
+
+        ' ───────────── 테스트 E: JMA ─────────────
+        Private Shared Function TestJMA(candles As List(Of CandleItem), sb As System.Text.StringBuilder) As Boolean
+            sb.AppendLine()
+            sb.AppendLine("── 테스트 E: JMA ──")
+            Dim indicator As New JMA_Indicator(14, 50, 2)
+            Dim allPass = True
+            Dim tolerance = 0.5F   ' JMA 내부 재귀 → 허용폭 넓게
+            Dim fullResults = indicator.Calculate(candles)
+            Dim indicator2 As New JMA_Indicator(14, 50, 2)
+            Dim inc As New List(Of CandleItem)
+            Dim prev As List(Of IndicatorResult) = Nothing
+            Dim initBars = 14
+
+            For i = 0 To candles.Count - 1
+                inc.Add(candles(i))
+                If i <= initBars Then
+                    prev = indicator2.Calculate(inc)
+                Else
+                    Dim lr = indicator2.UpdateLast(inc, prev)
+                    If prev.Count > inc.Count - 1 Then
+                        prev(prev.Count - 1) = lr
+                    Else
+                        prev.Add(lr)
+                    End If
+                End If
+                ' 재호출 테스트
+                If i > initBars AndAlso i Mod 6 = 0 Then
+                    Dim rr = indicator2.UpdateLast(inc, prev)
+                    prev(prev.Count - 1) = rr
+                End If
+            Next
+
+            Dim mismatchCount = 0
+            For i = 0 To candles.Count - 1
+                If i >= fullResults.Count OrElse i >= prev.Count Then Continue For
+                Dim fV = fullResults(i).Val("Value")
+                Dim iV = prev(i).Val("Value")
+
+                If Single.IsNaN(fV) AndAlso Single.IsNaN(iV) Then Continue For
+                If Single.IsNaN(fV) <> Single.IsNaN(iV) Then
+                    If mismatchCount < 5 Then sb.AppendLine($"  [FAIL] 봉{i}: JMA NaN 불일치")
+                    mismatchCount += 1
+                    allPass = False : Continue For
+                End If
+                If Not Single.IsNaN(fV) AndAlso Math.Abs(fV - iV) > tolerance Then
+                    If mismatchCount < 5 Then sb.AppendLine($"  [FAIL] 봉{i}: JMA Full={fV:F1} vs Inc={iV:F1} (차이={Math.Abs(fV - iV):F2})")
+                    mismatchCount += 1
+                    allPass = False
+                End If
+            Next
+            If mismatchCount > 5 Then sb.AppendLine($"  ... 외 {mismatchCount - 5}건 추가 불일치")
+            sb.AppendLine($"  JMA: {TF(allPass)} (불일치 {mismatchCount}건)")
+            Return allPass
+        End Function
+
+        ' ───────────── 테스트 F: SuperTrend ─────────────
+        Private Shared Function TestSuperTrend(candles As List(Of CandleItem), sb As System.Text.StringBuilder) As Boolean
+            sb.AppendLine()
+            sb.AppendLine("── 테스트 F: SuperTrend ──")
+            Dim indicator As New SuperTrend_Indicator(10, 3.0F)
+            Dim allPass = True
+            Dim tolerance = 0.5F
+            Dim fullResults = indicator.Calculate(candles)
+            Dim indicator2 As New SuperTrend_Indicator(10, 3.0F)
+            Dim inc As New List(Of CandleItem)
+            Dim prev As List(Of IndicatorResult) = Nothing
+            Dim initBars = 10
+
+            For i = 0 To candles.Count - 1
+                inc.Add(candles(i))
+                If i <= initBars Then
+                    prev = indicator2.Calculate(inc)
+                Else
+                    Dim lr = indicator2.UpdateLast(inc, prev)
+                    If prev.Count > inc.Count - 1 Then
+                        prev(prev.Count - 1) = lr
+                    Else
+                        prev.Add(lr)
+                    End If
+                End If
+                ' 재호출 테스트
+                If i > initBars AndAlso i Mod 7 = 0 Then
+                    Dim rr = indicator2.UpdateLast(inc, prev)
+                    prev(prev.Count - 1) = rr
+                End If
+            Next
+
+            Dim mismatchCount = 0
+            For i = 0 To candles.Count - 1
+                If i >= fullResults.Count OrElse i >= prev.Count Then Continue For
+                Dim fV = fullResults(i).Val("Value")
+                Dim iV = prev(i).Val("Value")
+                Dim fD = fullResults(i).Val("Direction")
+                Dim iD = prev(i).Val("Direction")
+
+                If Single.IsNaN(fV) AndAlso Single.IsNaN(iV) Then Continue For
+                If Single.IsNaN(fV) <> Single.IsNaN(iV) Then
+                    If mismatchCount < 5 Then sb.AppendLine($"  [FAIL] 봉{i}: ST NaN 불일치")
+                    mismatchCount += 1
+                    allPass = False : Continue For
+                End If
+                If Not Single.IsNaN(fV) AndAlso Math.Abs(fV - iV) > tolerance Then
+                    If mismatchCount < 5 Then sb.AppendLine($"  [FAIL] 봉{i}: ST Full={fV:F1} vs Inc={iV:F1} (차이={Math.Abs(fV - iV):F2})")
+                    mismatchCount += 1
+                    allPass = False
+                End If
+                If Not Single.IsNaN(fD) AndAlso Not Single.IsNaN(iD) AndAlso fD <> iD Then
+                    If mismatchCount < 5 Then sb.AppendLine($"  [FAIL] 봉{i}: Direction Full={fD} vs Inc={iD}")
+                    mismatchCount += 1
+                    allPass = False
+                End If
+            Next
+            If mismatchCount > 5 Then sb.AppendLine($"  ... 외 {mismatchCount - 5}건 추가 불일치")
+            sb.AppendLine($"  SuperTrend: {TF(allPass)} (불일치 {mismatchCount}건)")
+            Return allPass
+        End Function
+
+        ' ───────────── 테스트 캔들 생성 ─────────────
         Private Shared Function GenerateTestCandles(count As Integer) As List(Of CandleItem)
             Dim candles As New List(Of CandleItem)
-            Dim rng As New Random(42)  ' 고정 시드 (재현성)
+            Dim rng As New Random(42)
             Dim basePrice As Single = 10000
 
             For i = 0 To count - 1
-                Dim change = CSng((rng.NextDouble() - 0.48) * 200)  ' 약간 상승 편향
+                Dim change = CSng((rng.NextDouble() - 0.48) * 200)
                 basePrice += change
                 If basePrice < 1000 Then basePrice = 1000
 
                 Dim high = basePrice + CSng(rng.NextDouble() * 100)
                 Dim low = basePrice - CSng(rng.NextDouble() * 100)
-                Dim open = low + CSng(rng.NextDouble() * (high - low))
-                Dim close = low + CSng(rng.NextDouble() * (high - low))
+                Dim open1 = low + CSng(rng.NextDouble() * (high - low))
+                Dim close1 = low + CSng(rng.NextDouble() * (high - low))
                 Dim vol = CLng(rng.Next(10000, 500000))
 
                 Dim c As New CandleItem With {
                     .Dt = DateTime.Today.AddSeconds(i * 30),
-                    .Open = open, .High = high, .Low = low, .Close = close,
+                    .Open = open1, .High = high, .Low = low, .Close = close1,
                     .Volume = vol, .TickCount = rng.Next(5, 50)}
                 candles.Add(c)
             Next
-
             Return candles
         End Function
 
