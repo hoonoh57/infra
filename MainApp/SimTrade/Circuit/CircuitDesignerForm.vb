@@ -1,8 +1,8 @@
 ﻿' ═══════════════════════════════════════════════════════════════
-' CircuitDesignerForm.vb — 전략 회로 설계기 폼
+' CircuitDesignerForm.vb — 전략 회로 설계기 + 캔들 타임라인 검증
 ' ═══════════════════════════════════════════════════════════════
-' 회로도를 시각적으로 표시하고, 노드 클릭으로 ON/OFF 전환,
-' 더블클릭으로 파라미터 편집, 실시간 신호 흐름을 표시한다.
+' [v4.2] 종목 선택 → 캔들 로드 → 타임라인 슬라이더 드래그 →
+'        해당 시점 지표 계산 → 회로 평가 → 노드별 LED/프로브 표시
 ' ═══════════════════════════════════════════════════════════════
 
 Imports System.Drawing
@@ -19,12 +19,27 @@ Public Class CircuitDesignerForm
     Private _settings As SimTradeSettings
     Private _selectedNode As CircuitNode = Nothing
 
+    ' ── 캔들 타임라인 ──
+    Private _candles As List(Of CandleItem) = Nothing
+    Private _indicatorEngine As IndicatorEngine = Nothing
+    Private _currentCandleIndex As Integer = -1
+    Private _stockCode As String = ""
+    Private _stockName As String = ""
+
     ' ── UI ──
     Private WithEvents _canvas As New PictureBox()
     Private WithEvents _tmrRefresh As New Timer()
     Private _pnlParams As Panel
     Private _lblInfo As Label
     Private _chkLive As CheckBox
+
+    ' ── 타임라인 UI ──
+    Private _pnlTimeline As Panel
+    Private WithEvents _trkCandle As TrackBar
+    Private _lblCandleInfo As Label
+    Private _lblResult As Label
+    Private _txtStockCode As TextBox
+    Private _btnLoadStock As Button
 
     ' ── 드래그 ──
     Private _isDragging As Boolean = False
@@ -42,11 +57,74 @@ Public Class CircuitDesignerForm
     End Sub
 
     Private Sub InitUI()
-        Me.Text = "Strategy Circuit Designer v1.0"
-        Me.Size = New Size(1200, 800)
+        Me.Text = "Strategy Circuit Designer v2.0 — 캔들 타임라인 검증"
+        Me.Size = New Size(1300, 900)
         Me.BackColor = Color.FromArgb(25, 25, 30)
         Me.ForeColor = Color.White
         Me.DoubleBuffered = True
+
+        ' ── 상단: 종목 입력 + 로드 ──
+        Dim pnlTop As New Panel()
+        pnlTop.Dock = DockStyle.Top
+        pnlTop.Height = 45
+        pnlTop.BackColor = Color.FromArgb(40, 40, 45)
+
+        Dim lblCode As New Label()
+        lblCode.Text = "종목코드:"
+        lblCode.Location = New Point(10, 12)
+        lblCode.AutoSize = True
+        lblCode.ForeColor = Color.White
+        pnlTop.Controls.Add(lblCode)
+
+        _txtStockCode = New TextBox()
+        _txtStockCode.Location = New Point(80, 9)
+        _txtStockCode.Size = New Size(80, 25)
+        _txtStockCode.BackColor = Color.FromArgb(50, 50, 55)
+        _txtStockCode.ForeColor = Color.White
+        _txtStockCode.Text = ""
+        pnlTop.Controls.Add(_txtStockCode)
+
+        _btnLoadStock = New Button()
+        _btnLoadStock.Text = "캔들 로드"
+        _btnLoadStock.Location = New Point(170, 7)
+        _btnLoadStock.Size = New Size(90, 28)
+        _btnLoadStock.FlatStyle = FlatStyle.Flat
+        _btnLoadStock.BackColor = Color.FromArgb(60, 60, 65)
+        _btnLoadStock.ForeColor = Color.White
+        AddHandler _btnLoadStock.Click, AddressOf OnLoadStock
+        pnlTop.Controls.Add(_btnLoadStock)
+
+        _lblResult = New Label()
+        _lblResult.Text = "종목을 로드하세요"
+        _lblResult.Location = New Point(280, 12)
+        _lblResult.Size = New Size(700, 20)
+        _lblResult.ForeColor = Color.Gray
+        pnlTop.Controls.Add(_lblResult)
+
+        ' ── 하단: 타임라인 슬라이더 ──
+        _pnlTimeline = New Panel()
+        _pnlTimeline.Dock = DockStyle.Bottom
+        _pnlTimeline.Height = 70
+        _pnlTimeline.BackColor = Color.FromArgb(35, 35, 40)
+
+        _trkCandle = New TrackBar()
+        _trkCandle.Dock = DockStyle.Top
+        _trkCandle.Height = 35
+        _trkCandle.Minimum = 0
+        _trkCandle.Maximum = 0
+        _trkCandle.Value = 0
+        _trkCandle.TickFrequency = 10
+        _trkCandle.BackColor = Color.FromArgb(35, 35, 40)
+        _pnlTimeline.Controls.Add(_trkCandle)
+
+        _lblCandleInfo = New Label()
+        _lblCandleInfo.Text = "캔들: - / -  |  시각: -  |  O/H/L/C: -  |  Vol: -"
+        _lblCandleInfo.Dock = DockStyle.Bottom
+        _lblCandleInfo.Height = 30
+        _lblCandleInfo.ForeColor = Color.Cyan
+        _lblCandleInfo.TextAlign = ContentAlignment.MiddleLeft
+        _lblCandleInfo.Padding = New Padding(10, 0, 0, 0)
+        _pnlTimeline.Controls.Add(_lblCandleInfo)
 
         ' ── 캔버스 (회로도 렌더링) ──
         _canvas.Dock = DockStyle.Fill
@@ -67,7 +145,7 @@ Public Class CircuitDesignerForm
         _lblInfo.TextAlign = ContentAlignment.MiddleCenter
         _pnlParams.Controls.Add(_lblInfo)
 
-        ' ── 하단 정보 패널 ──
+        ' ── 하단 옵션 ──
         Dim pnlBottom As New Panel()
         pnlBottom.Dock = DockStyle.Bottom
         pnlBottom.Height = 40
@@ -75,7 +153,7 @@ Public Class CircuitDesignerForm
 
         _chkLive = New CheckBox()
         _chkLive.Text = "실시간 업데이트"
-        _chkLive.Checked = True
+        _chkLive.Checked = False
         _chkLive.ForeColor = Color.White
         _chkLive.Location = New Point(10, 8)
         _chkLive.AutoSize = True
@@ -91,10 +169,227 @@ Public Class CircuitDesignerForm
         AddHandler btnReset.Click, Sub(s, e) ResetAllParams()
         pnlBottom.Controls.Add(btnReset)
 
+        ' ── 조립 (Fill을 먼저, 나머지 나중) ──
         Me.Controls.Add(_canvas)
         Me.Controls.Add(_pnlParams)
+        Me.Controls.Add(_pnlTimeline)
         Me.Controls.Add(pnlBottom)
+        Me.Controls.Add(pnlTop)
     End Sub
+
+#Region "종목 로드"
+
+    Private Sub OnLoadStock(sender As Object, e As EventArgs)
+        Dim code = _txtStockCode.Text.Trim()
+        If String.IsNullOrEmpty(code) Then
+            MessageBox.Show("종목코드를 입력하세요.", "알림")
+            Return
+        End If
+
+        ' StateManager에서 캔들 가져오기 시도
+        Dim stateManager = GetStateManager()
+        If stateManager Is Nothing Then
+            _lblResult.Text = "모의매매가 실행 중이 아닙니다. [시작] 후 다시 시도하세요."
+            _lblResult.ForeColor = Color.OrangeRed
+            Return
+        End If
+
+        Dim stockState = stateManager.GetState(code)
+        If stockState Is Nothing Then
+            _lblResult.Text = $"종목 {code}이(가) 감시 목록에 없습니다."
+            _lblResult.ForeColor = Color.OrangeRed
+            Return
+        End If
+
+        If stockState.Candles Is Nothing OrElse stockState.Candles.Count < 5 Then
+            _lblResult.Text = $"{code} 캔들 수 부족 ({If(stockState.Candles IsNot Nothing, stockState.Candles.Count, 0)}개)"
+            _lblResult.ForeColor = Color.OrangeRed
+            Return
+        End If
+
+        ' 캔들 복사 (원본 훼손 방지)
+        _candles = stockState.Candles.ToList()
+        _stockCode = stockState.Code
+        _stockName = stockState.Name
+        _indicatorEngine = New IndicatorEngine()
+
+        ' 지표 등록
+        RegisterIndicators()
+
+        ' 슬라이더 설정
+        _trkCandle.Minimum = 0
+        _trkCandle.Maximum = _candles.Count - 1
+        _trkCandle.Value = _candles.Count - 1
+        _currentCandleIndex = _candles.Count - 1
+
+        _lblResult.Text = $"{_stockCode} {_stockName} — 캔들 {_candles.Count}개 로드 완료"
+        _lblResult.ForeColor = Color.LightGreen
+
+        ' 초기 평가
+        EvaluateAtCandle(_currentCandleIndex)
+        _canvas.Invalidate()
+    End Sub
+
+    Private Sub RegisterIndicators()
+        If _indicatorEngine Is Nothing Then Return
+        Try
+            _indicatorEngine.Register("SuperTrend", _settings.ST_Period, _settings.ST_Multiplier)
+        Catch : End Try
+        Try
+            _indicatorEngine.Register("RSI", _settings.RSI_Period)
+        Catch : End Try
+        Try
+            _indicatorEngine.Register("Volume", _settings.VOL_Period)
+        Catch : End Try
+        Try
+            _indicatorEngine.Register("OBV", _settings.OBV_MAPeriod)
+        Catch : End Try
+        Try
+            _indicatorEngine.Register("TickIntensity", 1)
+        Catch : End Try
+        Try
+            _indicatorEngine.Register("MACD", _settings.MACD_Fast, _settings.MACD_Slow, _settings.MACD_Signal)
+        Catch : End Try
+        Try
+            _indicatorEngine.Register("JMA", _settings.JMA_Period, _settings.JMA_Phase, _settings.JMA_Power)
+        Catch : End Try
+    End Sub
+
+    ''' <summary>부모 SimTradeForm의 엔진에서 StateManager를 가져온다.</summary>
+    Private Function GetStateManager() As StateManager
+        Dim parentForm = TryCast(Me.Owner, SimTradeForm)
+        If parentForm Is Nothing Then Return Nothing
+        Try
+            ' SimTradeForm._engine.Manager에 접근
+            Dim engineField = GetType(SimTradeForm).GetField("_engine", Reflection.BindingFlags.NonPublic Or Reflection.BindingFlags.Instance)
+            If engineField Is Nothing Then Return Nothing
+            Dim engine = TryCast(engineField.GetValue(parentForm), SimTradeEngine)
+            If engine Is Nothing Then Return Nothing
+            Return engine.Manager
+        Catch
+            Return Nothing
+        End Try
+    End Function
+
+#End Region
+
+#Region "캔들 위치 변경 → 지표 계산 → 회로 평가"
+
+    Private Sub OnTrackBarScroll(sender As Object, e As EventArgs) Handles _trkCandle.Scroll
+        If _candles Is Nothing OrElse _candles.Count = 0 Then Return
+        _currentCandleIndex = _trkCandle.Value
+        EvaluateAtCandle(_currentCandleIndex)
+        _canvas.Invalidate()
+    End Sub
+
+    ''' <summary>캔들 인덱스 위치에서 지표 계산 후 회로 평가</summary>
+    Private Sub EvaluateAtCandle(candleIdx As Integer)
+        If _candles Is Nothing OrElse candleIdx < 0 OrElse candleIdx >= _candles.Count Then Return
+        If _indicatorEngine Is Nothing Then Return
+
+        ' 0~candleIdx 까지의 캔들로 지표 전체 재계산
+        Dim subCandles = _candles.Take(candleIdx + 1).ToList()
+        _indicatorEngine.CalculateAll(subCandles)
+
+        ' 현재 캔들 정보
+        Dim c = _candles(candleIdx)
+        _lblCandleInfo.Text = $"캔들: {candleIdx + 1}/{_candles.Count}  |  " &
+                              $"시각: {c.Dt:HH:mm:ss}  |  " &
+                              $"O={c.Open:N0} H={c.High:N0} L={c.Low:N0} C={c.Close:N0}  |  " &
+                              $"Vol={c.Volume:N0}  Tick={c.TickCount}"
+
+        ' 지표 결과 → 임시 StockState 구성
+        Dim tempState As New StockState()
+        tempState.Code = _stockCode
+        tempState.Name = _stockName
+        tempState.CurrentPrice = CInt(c.Close)
+
+        ' 지표 값 추출
+        ExtractIndicators(tempState)
+
+        ' 회로 평가
+        Dim result = _engine.Evaluate(tempState, 0, 0, 0)
+
+        ' 결과 표시
+        Dim buyText = If(result.BuySignal, "● 매수 신호!", "○ 매수 없음")
+        Dim condText = $"{result.BuyConditionsMet}/7"
+        Dim filterText = If(result.ActiveFilterBlocks.Count > 0,
+                            $"차단: {String.Join(",", result.ActiveFilterBlocks)}", "필터 통과")
+        _lblResult.Text = $"{_stockCode} {_stockName}  |  {buyText} ({condText})  |  {filterText}"
+        _lblResult.ForeColor = If(result.BuySignal, Color.LightGreen, Color.FromArgb(200, 200, 200))
+
+        ' 선택 노드 갱신
+        If _selectedNode IsNot Nothing Then ShowNodeParams(_selectedNode)
+    End Sub
+
+    ''' <summary>IndicatorEngine 결과에서 StockState 지표값 추출</summary>
+    Private Sub ExtractIndicators(state As StockState)
+        If _indicatorEngine Is Nothing Then Return
+
+        Try
+            Dim stResult = _indicatorEngine.GetResult("SuperTrend")
+            If stResult IsNot Nothing AndAlso stResult.Values.Count > 0 Then
+                state.ST_Direction = stResult.Values.Last()
+            End If
+        Catch : End Try
+
+        Try
+            Dim jmaResult = _indicatorEngine.GetResult("JMA")
+            If jmaResult IsNot Nothing AndAlso jmaResult.Values.Count > 0 Then
+                state.JMA_Direction = jmaResult.Values.Last()
+                If jmaResult.Values.Count >= 2 Then
+                    state.JMA_PrevDirection = jmaResult.Values(jmaResult.Values.Count - 2)
+                End If
+                ' JMA 전환봉 계산
+                If state.JMA_Direction > 0 AndAlso state.JMA_PrevDirection <= 0 Then
+                    state.JMA_TurnBar = 0
+                Else
+                    state.JMA_TurnBar = -1
+                End If
+            End If
+        Catch : End Try
+
+        Try
+            Dim tickResult = _indicatorEngine.GetResult("TickIntensity")
+            If tickResult IsNot Nothing AndAlso tickResult.Values.Count > 0 Then
+                state.TickSum_Normalized = tickResult.Values.Last()
+                If tickResult.Values.Count >= 6 Then
+                    Dim last5 = tickResult.Values.Skip(tickResult.Values.Count - 5).Take(5)
+                    state.TickMA5_Normalized = last5.Average()
+                End If
+            End If
+        Catch : End Try
+
+        Try
+            Dim obvResult = _indicatorEngine.GetResult("OBV")
+            If obvResult IsNot Nothing AndAlso obvResult.Values.Count > 0 Then
+                state.OBV_Direction = obvResult.Values.Last()
+            End If
+        Catch : End Try
+
+        Try
+            Dim rsiResult = _indicatorEngine.GetResult("RSI")
+            If rsiResult IsNot Nothing AndAlso rsiResult.Values.Count > 0 Then
+                state.RSI_Value = rsiResult.Values.Last()
+            End If
+        Catch : End Try
+
+        Try
+            Dim macdResult = _indicatorEngine.GetResult("MACD")
+            If macdResult IsNot Nothing AndAlso macdResult.Values.Count > 0 Then
+                state.MACD_Histogram = macdResult.Values.Last()
+            End If
+        Catch : End Try
+
+        Try
+            Dim volResult = _indicatorEngine.GetResult("Volume")
+            If volResult IsNot Nothing AndAlso volResult.Values.Count > 0 Then
+                state.Volume_Ratio = volResult.Values.Last()
+            End If
+        Catch : End Try
+    End Sub
+
+#End Region
 
 #Region "렌더링"
 
@@ -136,7 +431,6 @@ Public Class CircuitDesignerForm
     Private Sub DrawNode(g As Graphics, node As CircuitNode)
         Dim rect As New Rectangle(node.X, node.Y, node.Width, node.Height)
 
-        ' 배경
         Dim bgColor = If(Not node.Enabled, Color.FromArgb(50, 50, 55),
                       If(node.IsTriggered, Color.FromArgb(20, 80, 20),
                          Color.FromArgb(40, 50, 70)))
@@ -148,18 +442,16 @@ Public Class CircuitDesignerForm
             g.FillRoundedRectangle(brush, rect, 8)
         End Using
 
-        ' 테두리
         Dim borderColor = If(node.IsTriggered AndAlso node.Enabled, Color.Lime,
                           If(Not node.Enabled, Color.Gray, Color.FromArgb(100, 140, 200)))
         Using pen As New Pen(borderColor, If(_selectedNode IsNot Nothing AndAlso _selectedNode.Id = node.Id, 2.5F, 1.0F))
             g.DrawRoundedRectangle(pen, rect, 8)
         End Using
 
-        ' ON/OFF 인디케이터
+        ' LED
         Dim ledColor = If(node.Enabled, If(node.IsTriggered, Color.Lime, Color.FromArgb(100, 100, 100)), Color.Red)
-        Dim ledRect As New Rectangle(node.X + 5, node.Y + 5, 10, 10)
         Using ledBrush As New SolidBrush(ledColor)
-            g.FillEllipse(ledBrush, ledRect)
+            g.FillEllipse(ledBrush, node.X + 5, node.Y + 5, 10, 10)
         End Using
 
         ' 이름
@@ -208,8 +500,9 @@ Public Class CircuitDesignerForm
 
     Private Sub OnCanvasDoubleClick(sender As Object, e As EventArgs) Handles _canvas.DoubleClick
         If _selectedNode IsNot Nothing AndAlso Not _selectedNode.Locked Then
-            ' ON/OFF 토글
             _selectedNode.Enabled = Not _selectedNode.Enabled
+            ' 노드 변경 → 즉시 재평가
+            If _currentCandleIndex >= 0 Then EvaluateAtCandle(_currentCandleIndex)
             ShowNodeParams(_selectedNode)
             _canvas.Invalidate()
         End If
@@ -229,7 +522,6 @@ Public Class CircuitDesignerForm
 #Region "파라미터 패널"
 
     Private Sub ShowNodeParams(node As CircuitNode)
-        ' 기존 컨트롤 제거 (lblInfo 제외)
         Dim toRemove = _pnlParams.Controls.Cast(Of Control).Where(Function(c) c IsNot _lblInfo).ToList()
         For Each c In toRemove : _pnlParams.Controls.Remove(c) : Next
 
@@ -237,7 +529,6 @@ Public Class CircuitDesignerForm
 
         Dim y = 40
 
-        ' ON/OFF 스위치
         If Not node.Locked Then
             Dim chk As New CheckBox()
             chk.Text = "활성화"
@@ -248,13 +539,13 @@ Public Class CircuitDesignerForm
             AddHandler chk.CheckedChanged, Sub(s, e)
                                                node.Enabled = chk.Checked
                                                _lblInfo.Text = $"{node.Name} ({If(node.Enabled, "ON", "OFF")})"
+                                               If _currentCandleIndex >= 0 Then EvaluateAtCandle(_currentCandleIndex)
                                                _canvas.Invalidate()
                                            End Sub
             _pnlParams.Controls.Add(chk)
             y += 30
         End If
 
-        ' 파라미터 컨트롤
         For Each param In node.Params
             Dim lbl As New Label()
             lbl.Text = param.Label
@@ -278,6 +569,7 @@ Public Class CircuitDesignerForm
                     Dim capturedParam = param
                     AddHandler nud.ValueChanged, Sub(s, e)
                                                      capturedParam.Value = nud.Value
+                                                     If _currentCandleIndex >= 0 Then EvaluateAtCandle(_currentCandleIndex)
                                                      _canvas.Invalidate()
                                                  End Sub
                     _pnlParams.Controls.Add(nud)
@@ -288,7 +580,11 @@ Public Class CircuitDesignerForm
                     chk.Location = New Point(120, y)
                     chk.ForeColor = Color.White
                     Dim capturedParam = param
-                    AddHandler chk.CheckedChanged, Sub(s, e) capturedParam.Value = chk.Checked
+                    AddHandler chk.CheckedChanged, Sub(s, e)
+                                                       capturedParam.Value = chk.Checked
+                                                       If _currentCandleIndex >= 0 Then EvaluateAtCandle(_currentCandleIndex)
+                                                       _canvas.Invalidate()
+                                                   End Sub
                     _pnlParams.Controls.Add(chk)
             End Select
 
@@ -313,6 +609,7 @@ Public Class CircuitDesignerForm
             Next
             node.Enabled = True
         Next
+        If _currentCandleIndex >= 0 Then EvaluateAtCandle(_currentCandleIndex)
         _canvas.Invalidate()
         If _selectedNode IsNot Nothing Then ShowNodeParams(_selectedNode)
     End Sub
@@ -323,6 +620,20 @@ Public Class CircuitDesignerForm
 
     Private Sub OnRefresh(sender As Object, e As EventArgs) Handles _tmrRefresh.Tick
         If _chkLive IsNot Nothing AndAlso _chkLive.Checked Then
+            ' 실시간 모드: StateManager에서 최신 캔들 가져와서 재로드
+            If Not String.IsNullOrEmpty(_stockCode) Then
+                Dim mgr = GetStateManager()
+                If mgr IsNot Nothing Then
+                    Dim st = mgr.GetState(_stockCode)
+                    If st IsNot Nothing AndAlso st.Candles IsNot Nothing Then
+                        _candles = st.Candles.ToList()
+                        _trkCandle.Maximum = Math.Max(0, _candles.Count - 1)
+                        _trkCandle.Value = _candles.Count - 1
+                        _currentCandleIndex = _candles.Count - 1
+                        EvaluateAtCandle(_currentCandleIndex)
+                    End If
+                End If
+            End If
             _canvas.Invalidate()
         End If
     End Sub
