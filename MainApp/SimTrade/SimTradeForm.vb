@@ -37,6 +37,12 @@ Public Class SimTradeForm
 
     ' ─── 틱 쓰로틀링 ───
     Private ReadOnly _lastTickTime As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
+    ' ─── 성능 최적화 ───
+    Private ReadOnly _logQueue As New System.Collections.Concurrent.ConcurrentQueue(Of String)
+    Private WithEvents _tmrLog As New Timer()
+    Private _logBatchCount As Integer = 0
+    Private Const MAX_LOG_PER_BATCH As Integer = 20
+    Private _last7CondLogTime As New Dictionary(Of String, DateTime)(StringComparer.OrdinalIgnoreCase)
 
     ' ─── UI ───
     Private WithEvents _tmrRefresh As New Timer()
@@ -81,7 +87,10 @@ Public Class SimTradeForm
         InitializeEngines()
         InitializeUI()
         _tmrRefresh.Interval = 1000
+        _tmrLog.Interval = 150
+        _tmrLog.Start()
     End Sub
+
 
     ''' <summary>v4.0 엔진 초기화</summary>
     Private Sub InitializeEngines()
@@ -441,15 +450,16 @@ Public Class SimTradeForm
         Dim state = _stateManager.GetState(code)
         If state Is Nothing Then Return
 
+        ' ★ 쓰로틀링 강화: 종목당 500ms
         Dim now = DateTime.Now
-        If _lastTickTime.ContainsKey(code) AndAlso (now - _lastTickTime(code)).TotalMilliseconds < 200 Then Return
+        If _lastTickTime.ContainsKey(code) AndAlso (now - _lastTickTime(code)).TotalMilliseconds < 500 Then Return
         _lastTickTime(code) = now
 
         Dim price = Math.Abs(CInt(m.Dbl("price")))
         Dim vol = CLng(Math.Abs(m.Dbl("volume")))
         If price <= 0 Then Return
 
-        ' 시세 업데이트
+        ' 시세 업데이트 (스레드 안전)
         Dim ask = Math.Abs(CInt(m.Dbl("ask1")))
         Dim bid = Math.Abs(CInt(m.Dbl("bid1")))
         Dim cumVol = CLng(Math.Abs(m.Dbl("cumVolume")))
@@ -462,14 +472,17 @@ Public Class SimTradeForm
             If si IsNot Nothing Then state.Name = si.Name
         End If
 
-        ' ★ CandleBuilder에 위임 (캔들 완성 시 이벤트 발화)
+        ' ★ CandleBuilder + 증분 지표를 현재 스레드에서 실행 (UI 스레드 아님)
         _candleBuilder.OnTick(code, price, vol, now, state.Candles)
 
-        ' 진행 중 캔들 업데이트 (증분 지표)
         If state.Candles.Count > 0 Then
-            state.Engine.UpdateLast(state.Candles)
+            Try
+                state.Engine.UpdateLast(state.Candles)
+            Catch
+            End Try
         End If
     End Sub
+
 
     Private Sub OnOrderBook(m As Msg)
         Dim code = m.Str("code")
@@ -490,8 +503,8 @@ Public Class SimTradeForm
         Dim state = _stateManager.GetState(code)
         If state Is Nothing Then Return
 
-        ' 전체 지표 재계산
-        state.Engine.CalculateAll(state.Candles)
+        ' ★ CalculateAll 제거 — UpdateLast가 이미 증분 처리
+        ' 지표 동기화만 수행
         UpdateStateIndicators(state)
 
         ' DayMax TickSum 갱신
@@ -499,9 +512,12 @@ Public Class SimTradeForm
             state.DayMaxTickSum = candle.NormalizedTickSum
         End If
 
-        ' 신호 판단
+        ' ★ 신호 판단 — BeginInvoke로 비동기 UI 호출 (블로킹 방지)
         If state.Candles.Count >= _settings.MinCandlesForSignal Then
-            SafeUI(Sub() EvaluateSignal(state))
+            Try
+                Me.BeginInvoke(Sub() EvaluateSignal(state))
+            Catch
+            End Try
         Else
             state.LastSignal = $"캔들수집중({state.Candles.Count}/{_settings.MinCandlesForSignal})"
         End If
@@ -582,7 +598,6 @@ Public Class SimTradeForm
 
     ''' <summary>7조건 상세 로그 — 캔들 완성 시마다 조건별 충족 상태 출력</summary>
     Private Sub Log7ConditionDetail(state As StockState, result As BuySignalResult)
-        ' 이미 보유/시간전/쿨다운 등 사전 차단된 경우는 상세 로그 생략
         If state.HasPosition Then Return
         If result.Reason.StartsWith("시간전") OrElse
            result.Reason.StartsWith("매수금지") OrElse
@@ -594,6 +609,18 @@ Public Class SimTradeForm
             Return
         End If
 
+        ' ★ 종목당 5초에 1회만 상세 로그 (폭주 방지)
+        Dim now = DateTime.Now
+        If _last7CondLogTime.ContainsKey(state.Code) Then
+            If (now - _last7CondLogTime(state.Code)).TotalSeconds < 5 Then
+                Return
+            End If
+        End If
+        _last7CondLogTime(state.Code) = now
+
+        ' ★ 3개 이상 충족 시만 로그 (노이즈 감소)
+        If result.ConditionsMet < 3 Then Return
+
         Dim c1 = If(result.C1_ST, "●", "○")
         Dim c2 = If(result.C2_JMA, "●", "○")
         Dim c3 = If(result.C3_TickSum, "●", "○")
@@ -603,19 +630,16 @@ Public Class SimTradeForm
         Dim c7 = If(result.C7_Volume, "●", "○")
 
         Dim met = result.ConditionsMet
-        Dim tag = If(met = 7, "★★★", If(met >= 5, "★★", If(met >= 3, "★", "")))
+        Dim tag = If(met = 7, "★★★", If(met >= 5, "★★", "★"))
 
         Log($"[7조건] {state.Code} {state.Name} [{met}/7]{tag} " &
-            $"C1:ST{c1} C2:JMA{c2} C3:Tick{c3} C4:OBV{c4} C5:동시{c5} C6:MACD{c6} C7:Vol{c7}" &
-            $" | ST={state.ST_Direction:F0} JMA={state.JMA_Direction:F0}(턴{state.JMA_TurnBar}) " &
-            $"Tick={state.TickSum_Normalized:F1} OBV={state.OBV_Direction:F0} " &
-            $"RSI={state.RSI_Value:F0} MACD_H={state.MACD_Histogram:F2} VolR={state.Volume_Ratio:F0}%")
+            $"ST{c1} JMA{c2} Tick{c3} OBV{c4} 동시{c5} MACD{c6} Vol{c7}")
 
-        ' 미충족 사유 출력 (3개까지)
         If result.RejectReasons.Count > 0 AndAlso met < 7 Then
-            Log($"  → 미충족: {String.Join(", ", result.RejectReasons.Take(5))}")
+            Log($"  → {String.Join(", ", result.RejectReasons.Take(3))}")
         End If
     End Sub
+
 
 
 
@@ -882,22 +906,39 @@ Public Class SimTradeForm
     Private Sub Log(text As String)
         Dim line = $"[{DateTime.Now:HH:mm:ss}] {text}"
         AppLogger.I.Trade(text, "SimTrade")
+        _logQueue.Enqueue(line)
+    End Sub
+
+    Private Sub OnLogTimer(sender As Object, e As EventArgs) Handles _tmrLog.Tick
         If _rtbLog Is Nothing Then Return
-        If _rtbLog.InvokeRequired Then
-            _rtbLog.BeginInvoke(Sub() AppendLog(line))
-        Else
-            AppendLog(line)
-        End If
+        If _logQueue.IsEmpty Then Return
+
+        Dim batch As New System.Text.StringBuilder()
+        Dim count = 0
+        Dim line As String = Nothing
+        While _logQueue.TryDequeue(line) AndAlso count < MAX_LOG_PER_BATCH
+            batch.AppendLine(line)
+            count += 1
+        End While
+
+        If batch.Length = 0 Then Return
+
+        Try
+            _rtbLog.AppendText(batch.ToString())
+            If _rtbLog.Lines.Length > 3000 Then
+                _rtbLog.Text = String.Join(Environment.NewLine, _rtbLog.Lines.Skip(_rtbLog.Lines.Length - 1500))
+            End If
+            _rtbLog.SelectionStart = _rtbLog.Text.Length
+            _rtbLog.ScrollToCaret()
+        Catch
+        End Try
     End Sub
 
     Private Sub AppendLog(line As String)
+        ' 더 이상 직접 호출되지 않음 — OnLogTimer가 배치 처리
         _rtbLog.AppendText(line & Environment.NewLine)
-        If _rtbLog.Lines.Length > 2000 Then
-            _rtbLog.Text = String.Join(Environment.NewLine, _rtbLog.Lines.Skip(_rtbLog.Lines.Length - 1000))
-        End If
-        _rtbLog.SelectionStart = _rtbLog.Text.Length
-        _rtbLog.ScrollToCaret()
     End Sub
+
 
     Private Sub SafeUI(action As Action)
         If Me.InvokeRequired Then
