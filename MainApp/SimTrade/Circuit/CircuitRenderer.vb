@@ -1,20 +1,8 @@
 ﻿' ═══════════════════════════════════════════════════════════════
 ' CircuitRenderer.vb — 전략 회로 시각화 렌더러 (GDI+)
 ' ═══════════════════════════════════════════════════════════════
-' [v4.2] Strategy Circuit Designer의 핵심 렌더링 엔진.
-'   CircuitDefinition + CircuitEvalResult를 읽어 Panel/PictureBox에
-'   전자회로 스타일로 그립니다.
-'
-'   노드 = IC칩 (둥근 사각형 + LED + 프로브 텍스트)
-'   와이어 = 배선 (상태별 컬러: 활성/비활성/경고/차단)
-'   게이트 = AND/OR 심볼
-'   파라미터 = 저항기/콘덴서 아이콘 (노드 하단)
-'
 ' 의존: CircuitModels.vb (모든 enum/class 정의는 CircuitModels.vb에만 존재)
-'       CircuitEngine.vb
-'
-' ★ 주의: 이 파일에 enum/class를 중복 정의하지 마세요.
-'         모든 모델은 CircuitModels.vb 단일 소스입니다.
+' ★ 이 파일에 enum/class를 중복 정의하지 마세요.
 ' ═══════════════════════════════════════════════════════════════
 
 Imports System.Drawing
@@ -22,40 +10,30 @@ Imports System.Drawing.Drawing2D
 
 Namespace SimTrade.Circuit
 
-    ''' <summary>
-    ''' GDI+ 기반 회로도 렌더러.
-    ''' Paint 이벤트에서 Render(g, bounds)를 호출하면 전체 회로를 그린다.
-    ''' </summary>
     Public Class CircuitRenderer
 
-#Region "색상 상수 (불변)"
+#Region "색상 상수"
 
-        ' ── 배경 ──
         Private Shared ReadOnly BG_COLOR As Color = Color.FromArgb(20, 20, 30)
         Private Shared ReadOnly GRID_COLOR As Color = Color.FromArgb(35, 35, 50)
 
-        ' ── 노드 ──
         Private Shared ReadOnly NODE_FILL_ON As Color = Color.FromArgb(40, 50, 70)
         Private Shared ReadOnly NODE_FILL_OFF As Color = Color.FromArgb(30, 30, 40)
         Private Shared ReadOnly NODE_BORDER_ON As Color = Color.FromArgb(100, 160, 255)
         Private Shared ReadOnly NODE_BORDER_OFF As Color = Color.FromArgb(60, 60, 80)
         Private Shared ReadOnly NODE_BORDER_SELECTED As Color = Color.FromArgb(255, 200, 50)
 
-        ' ── LED ──
         Private Shared ReadOnly LED_PASS As Color = Color.FromArgb(0, 255, 100)
         Private Shared ReadOnly LED_FAIL As Color = Color.FromArgb(255, 60, 60)
         Private Shared ReadOnly LED_WARN As Color = Color.FromArgb(255, 200, 0)
         Private Shared ReadOnly LED_OFF As Color = Color.FromArgb(60, 60, 60)
         Private Shared ReadOnly LED_DISABLED As Color = Color.FromArgb(80, 80, 80)
 
-        ' ── 와이어 ──
         Private Shared ReadOnly WIRE_ACTIVE As Color = Color.FromArgb(0, 200, 100)
         Private Shared ReadOnly WIRE_INACTIVE As Color = Color.FromArgb(60, 60, 80)
         Private Shared ReadOnly WIRE_BLOCKED As Color = Color.FromArgb(200, 50, 50)
         Private Shared ReadOnly WIRE_WARNING As Color = Color.FromArgb(200, 180, 0)
-        Private Shared ReadOnly WIRE_DISABLED As Color = Color.FromArgb(40, 40, 50)
 
-        ' ── 텍스트 ──
         Private Shared ReadOnly TEXT_TITLE As Color = Color.FromArgb(220, 230, 255)
         Private Shared ReadOnly TEXT_LABEL As Color = Color.FromArgb(170, 180, 200)
         Private Shared ReadOnly TEXT_VALUE As Color = Color.FromArgb(130, 220, 255)
@@ -63,21 +41,18 @@ Namespace SimTrade.Circuit
         Private Shared ReadOnly TEXT_DIM As Color = Color.FromArgb(90, 100, 120)
         Private Shared ReadOnly TEXT_WARN As Color = Color.FromArgb(255, 180, 0)
 
-        ' ── 게이트 ──
         Private Shared ReadOnly GATE_FILL As Color = Color.FromArgb(50, 40, 60)
         Private Shared ReadOnly GATE_BORDER As Color = Color.FromArgb(180, 130, 255)
 
-        ' ── 파라미터(저항/콘덴서) ──
         Private Shared ReadOnly PARAM_FILL As Color = Color.FromArgb(35, 45, 55)
         Private Shared ReadOnly PARAM_BORDER As Color = Color.FromArgb(80, 120, 160)
 
-        ' ── 영역 구분선 ──
         Private Shared ReadOnly ZONE_BORDER As Color = Color.FromArgb(50, 55, 70)
         Private Shared ReadOnly ZONE_LABEL As Color = Color.FromArgb(80, 90, 110)
 
 #End Region
 
-#Region "폰트 (불변)"
+#Region "폰트"
 
         Private Shared ReadOnly FONT_TITLE As New Font("Consolas", 10, FontStyle.Bold)
         Private Shared ReadOnly FONT_NODE As New Font("Consolas", 8.5F, FontStyle.Bold)
@@ -216,11 +191,8 @@ Namespace SimTrade.Circuit
 
 #End Region
 
-#Region "★ 메인 렌더링"
+#Region "메인 렌더링"
 
-        ''' <summary>
-        ''' 전체 회로를 그린다. Paint 이벤트에서 호출.
-        ''' </summary>
         Public Sub Render(g As Graphics, bounds As Rectangle)
             If _definition Is Nothing Then Return
 
@@ -262,8 +234,8 @@ Namespace SimTrade.Circuit
                 For x = sx To bounds.Width Step step_
                     g.DrawLine(pen, x, 0, x, bounds.Height)
                 Next
-                For y = sy To bounds.Height Step step_
-                    g.DrawLine(pen, 0, y, bounds.Width, y)
+                For yy = sy To bounds.Height Step step_
+                    g.DrawLine(pen, 0, yy, bounds.Width, yy)
                 Next
             End Using
         End Sub
@@ -275,9 +247,10 @@ Namespace SimTrade.Circuit
         Private Sub DrawZones(g As Graphics)
             If _definition.Nodes Is Nothing OrElse _definition.Nodes.Count = 0 Then Return
 
+            ' Zone은 Category로 대체 (Zone이 비어있으면 Category 사용)
             Dim zoneGroups As New Dictionary(Of String, List(Of CircuitNode))(StringComparer.OrdinalIgnoreCase)
             For Each nd In _definition.Nodes
-                Dim zone = If(nd.Zone, "기타")
+                Dim zone = If(String.IsNullOrEmpty(nd.Zone), If(String.IsNullOrEmpty(nd.Category), "기타", nd.Category), nd.Zone)
                 If Not zoneGroups.ContainsKey(zone) Then zoneGroups(zone) = New List(Of CircuitNode)()
                 zoneGroups(zone).Add(nd)
             Next
@@ -296,7 +269,7 @@ Namespace SimTrade.Circuit
 
                         Dim zoneRect As New Rectangle(minX, minY, maxX - minX, maxY - minY)
                         g.DrawRectangle(pen, zoneRect)
-                        g.DrawString(kvp.Key, FONT_ZONE, brush, minX + 5, minY + 3)
+                        g.DrawString(kvp.Key, FONT_ZONE, brush, CSng(minX + 5), CSng(minY + 3))
                     Next
                 End Using
             End Using
@@ -314,12 +287,13 @@ Namespace SimTrade.Circuit
         End Sub
 
         Private Sub DrawWire(g As Graphics, wire As CircuitWire)
-            Dim srcNode = FindNode(wire.SourceNodeId)
-            Dim tgtNode = FindNode(wire.TargetNodeId)
+            ' ★ 수정: FromNodeId / ToNodeId 사용 (SourceNodeId/TargetNodeId 아님)
+            Dim srcNode = FindNode(wire.FromNodeId)
+            Dim tgtNode = FindNode(wire.ToNodeId)
             If srcNode Is Nothing OrElse tgtNode Is Nothing Then Return
 
-            Dim srcPt As New PointF(CSng(srcNode.X + srcNode.Width), CSng(srcNode.Y + CInt(srcNode.Height \ 2)))
-            Dim tgtPt As New PointF(CSng(tgtNode.X), CSng(tgtNode.Y + CInt(tgtNode.Height \ 2)))
+            Dim srcPt As New PointF(CSng(srcNode.X + srcNode.Width), CSng(srcNode.Y + srcNode.Height \ 2))
+            Dim tgtPt As New PointF(CSng(tgtNode.X), CSng(tgtNode.Y + tgtNode.Height \ 2))
 
             Dim wireColor = GetWireColor(wire)
             Dim wireWidth = If(wire.State = WireState.Active, WIRE_ACTIVE_WIDTH, WIRE_WIDTH)
@@ -372,12 +346,12 @@ Namespace SimTrade.Circuit
         End Function
 
         Private Function GetWireColor(wire As CircuitWire) As Color
+            ' ★ 수정: WireState.Disabled 제거 (enum에 없음)
             Select Case wire.State
                 Case WireState.Active : Return WIRE_ACTIVE
                 Case WireState.Inactive : Return WIRE_INACTIVE
                 Case WireState.Blocked : Return WIRE_BLOCKED
                 Case WireState.Warning : Return WIRE_WARNING
-                Case WireState.Disabled : Return WIRE_DISABLED
                 Case Else : Return WIRE_INACTIVE
             End Select
         End Function
@@ -387,6 +361,7 @@ Namespace SimTrade.Circuit
 #Region "게이트 렌더링"
 
         Private Sub DrawAllGates(g As Graphics)
+            ' ★ 수정: Gates 컬렉션 사용 (CircuitDefinition에 추가됨)
             If _definition.Gates Is Nothing Then Return
             For Each gate In _definition.Gates
                 DrawGate(g, gate)
@@ -405,16 +380,18 @@ Namespace SimTrade.Circuit
                 End Using
             End Using
 
+            ' ★ 수정: AND_Gate / OR_Gate / NOT_Gate 사용
             Dim gateText As String
             Select Case gate.GateType
-                Case GateType.AND : gateText = "AND"
-                Case GateType.OR : gateText = "OR"
-                Case Else : gateText = "NOT"
+                Case GateType.AND_Gate : gateText = "AND"
+                Case GateType.OR_Gate : gateText = "OR"
+                Case GateType.NOT_Gate : gateText = "NOT"
+                Case Else : gateText = "?"
             End Select
 
             Dim textSize = g.MeasureString(gateText, FONT_GATE)
-            Dim textX = CSng(gate.X) + (GATE_SIZE - textSize.Width) / 2.0F
-            Dim textY = CSng(gate.Y) + (GATE_SIZE - textSize.Height) / 2.0F
+            Dim textX = CSng(gate.X) + (CSng(GATE_SIZE) - textSize.Width) / 2.0F
+            Dim textY = CSng(gate.Y) + (CSng(GATE_SIZE) - textSize.Height) / 2.0F
 
             Dim gatePassed = GetGateResult(gate.Id)
             Dim textColor = If(gatePassed, LED_PASS, LED_FAIL)
@@ -426,15 +403,15 @@ Namespace SimTrade.Circuit
                 Using brush As New SolidBrush(TEXT_LABEL)
                     Dim labelSize = g.MeasureString(gate.Label, FONT_LABEL)
                     g.DrawString(gate.Label, FONT_LABEL, brush,
-                        CSng(gate.X) + (GATE_SIZE - labelSize.Width) / 2.0F,
-                        CSng(gate.Y) + GATE_SIZE + 2.0F)
+                        CSng(gate.X) + (CSng(GATE_SIZE) - labelSize.Width) / 2.0F,
+                        CSng(gate.Y) + CSng(GATE_SIZE) + 2.0F)
                 End Using
             End If
         End Sub
 
 #End Region
 
-#Region "★ 노드 렌더링"
+#Region "노드 렌더링"
 
         Private Sub DrawAllNodes(g As Graphics)
             If _definition.Nodes Is Nothing Then Return
@@ -473,21 +450,20 @@ Namespace SimTrade.Circuit
                 End Using
             End Using
 
-            ' ── IC칩 핀 마킹 (상단 노치) ──
             DrawICNotch(g, rect)
 
-            ' ── LED (우상단) ──
+            ' ── LED ──
             Dim ledColor = GetNodeLEDColor(node)
             Dim ledX = rect.Right - LED_RADIUS * 2 - 4
             Dim ledY = rect.Top + 4
             DrawLED(g, ledX, ledY, ledColor)
 
-            ' ── ON/OFF 스위치 (좌상단) ──
+            ' ── ON/OFF 스위치 ──
             DrawSwitch(g, rect.X + 4, rect.Y + 4, isEnabled)
 
-            ' ── 노드 제목 ──
+            ' ── 노드 제목 (★ 수정: Name 사용, DisplayName 아님) ──
             Using brush As New SolidBrush(If(isEnabled, TEXT_TITLE, TEXT_DIM))
-                g.DrawString(node.DisplayName, FONT_NODE, brush, CSng(rect.X + 20), CSng(rect.Y + 4))
+                g.DrawString(node.Name, FONT_NODE, brush, CSng(rect.X + 20), CSng(rect.Y + 4))
             End Using
 
             ' ── 노드 타입 아이콘 ──
@@ -536,7 +512,7 @@ Namespace SimTrade.Circuit
 
         Private Sub DrawICNotch(g As Graphics, rect As Rectangle)
             Using pen As New Pen(Color.FromArgb(80, 100, 130), 1.0F)
-                Dim notchX = CInt(rect.X + rect.Width \ 2 - 4)
+                Dim notchX = rect.X + rect.Width \ 2 - 4
                 g.DrawArc(pen, notchX, rect.Y - 2, 8, 4, 0, 180)
             End Using
         End Sub
@@ -555,7 +531,7 @@ Namespace SimTrade.Circuit
                 g.FillEllipse(ledBrush, ledRect)
             End Using
 
-            Dim hlRect As New Rectangle(x + 2, y + 1, LED_RADIUS, LED_RADIUS - 1)
+            Dim hlRect As New Rectangle(x + 2, y + 1, LED_RADIUS, Math.Max(1, LED_RADIUS - 1))
             Using hlBrush As New SolidBrush(Color.FromArgb(80, 255, 255, 255))
                 g.FillEllipse(hlBrush, hlRect)
             End Using
@@ -580,7 +556,7 @@ Namespace SimTrade.Circuit
 
 #End Region
 
-#Region "파라미터 박스 (저항기/콘덴서)"
+#Region "파라미터 박스"
 
         Private Sub DrawParamBoxes(g As Graphics, node As CircuitNode)
             Dim startY = node.Y + node.Height + 3
@@ -600,13 +576,16 @@ Namespace SimTrade.Circuit
 
                 Dim iconX = pRect.X + 2
                 Dim iconY = pRect.Y + 2
-                If param.DataType = ParamDataType.Float OrElse param.DataType = ParamDataType.Int Then
+                ' ★ 수정: ParamDataType.DecNumber / IntNumber 사용
+                If param.DataType = ParamDataType.DecNumber OrElse param.DataType = ParamDataType.IntNumber Then
                     DrawResistorIcon(g, iconX, iconY, 10, PARAM_HEIGHT - 4)
                 Else
                     DrawCapacitorIcon(g, iconX, iconY, 10, PARAM_HEIGHT - 4)
                 End If
 
-                Dim labelText = $"{param.Name}:{param.CurrentValue}"
+                ' ★ 수정: Label / Value 사용 (Name/CurrentValue 아님)
+                Dim valText = If(param.Value IsNot Nothing, param.Value.ToString(), "–")
+                Dim labelText = $"{param.Label}:{valText}"
                 Using brush As New SolidBrush(TEXT_LABEL)
                     g.DrawString(labelText, FONT_PARAM, brush, CSng(pRect.X + 14), CSng(pRect.Y + 2))
                 End Using
@@ -625,10 +604,10 @@ Namespace SimTrade.Circuit
                 Dim midY = CSng(y + h \ 2)
                 Dim pts = {
                     New PointF(CSng(x), midY),
-                    New PointF(CSng(x) + w * 0.2F, CSng(y)),
-                    New PointF(CSng(x) + w * 0.4F, CSng(y + h)),
-                    New PointF(CSng(x) + w * 0.6F, CSng(y)),
-                    New PointF(CSng(x) + w * 0.8F, CSng(y + h)),
+                    New PointF(CSng(x) + CSng(w) * 0.2F, CSng(y)),
+                    New PointF(CSng(x) + CSng(w) * 0.4F, CSng(y + h)),
+                    New PointF(CSng(x) + CSng(w) * 0.6F, CSng(y)),
+                    New PointF(CSng(x) + CSng(w) * 0.8F, CSng(y + h)),
                     New PointF(CSng(x + w), midY)
                 }
                 g.DrawLines(pen, pts)
@@ -637,8 +616,8 @@ Namespace SimTrade.Circuit
 
         Private Sub DrawCapacitorIcon(g As Graphics, x As Integer, y As Integer, w As Integer, h As Integer)
             Using pen As New Pen(PARAM_BORDER, 0.8F)
-                Dim midX = CInt(x + w \ 2)
-                Dim midY = CInt(y + h \ 2)
+                Dim midX = x + w \ 2
+                Dim midY = y + h \ 2
                 g.DrawLine(pen, x, midY, midX - 2, midY)
                 g.DrawLine(pen, midX - 2, y + 1, midX - 2, y + h - 1)
                 g.DrawLine(pen, midX + 2, y + 1, midX + 2, y + h - 1)
@@ -648,13 +627,13 @@ Namespace SimTrade.Circuit
 
 #End Region
 
-#Region "범례 (Legend)"
+#Region "범례"
 
         Private Sub DrawLegend(g As Graphics, bounds As Rectangle)
             Dim x = 10
             Dim y = bounds.Height - LEGEND_Y_OFFSET
 
-            Using bgBrush As New SolidBrush(Color.FromArgb(180, BG_COLOR.R, BG_COLOR.G, BG_COLOR.B))
+            Using bgBrush As New SolidBrush(Color.FromArgb(180, CInt(BG_COLOR.R), CInt(BG_COLOR.G), CInt(BG_COLOR.B)))
                 g.FillRectangle(bgBrush, x - 2, y - 2, 500, 24)
             End Using
 
@@ -698,7 +677,6 @@ Namespace SimTrade.Circuit
 
 #Region "히트 테스트"
 
-        ''' <summary>좌표 → 노드 ID (Nothing이면 빈 영역)</summary>
         Public Function HitTestNode(clientX As Integer, clientY As Integer) As String
             If _definition Is Nothing OrElse _definition.Nodes Is Nothing Then Return Nothing
 
@@ -716,7 +694,6 @@ Namespace SimTrade.Circuit
             Return Nothing
         End Function
 
-        ''' <summary>좌표 → 게이트 ID</summary>
         Public Function HitTestGate(clientX As Integer, clientY As Integer) As String
             If _definition Is Nothing OrElse _definition.Gates Is Nothing Then Return Nothing
 
@@ -733,7 +710,6 @@ Namespace SimTrade.Circuit
             Return Nothing
         End Function
 
-        ''' <summary>좌표 → 파라미터 히트 (노드ID, 파라미터 인덱스)</summary>
         Public Function HitTestParam(clientX As Integer, clientY As Integer) As Tuple(Of String, Integer)
             If _definition Is Nothing OrElse _definition.Nodes Is Nothing Then Return Nothing
 
@@ -758,7 +734,7 @@ Namespace SimTrade.Circuit
 
 #End Region
 
-#Region "월드 좌표 변환"
+#Region "좌표 변환"
 
         Public Function ClientToWorld(clientPt As PointF) As PointF
             Return New PointF(
@@ -784,6 +760,7 @@ Namespace SimTrade.Circuit
         Private Function GetNodeLEDColor(node As CircuitNode) As Color
             If Not node.Enabled Then Return LED_DISABLED
 
+            ' ★ 수정: NodeResults는 Dictionary(Of String, NodeEvalResult)
             If _evalResult IsNot Nothing AndAlso _evalResult.NodeResults IsNot Nothing Then
                 Dim nodeResult As NodeEvalResult = Nothing
                 If _evalResult.NodeResults.TryGetValue(node.Id, nodeResult) Then

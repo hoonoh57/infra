@@ -12,10 +12,6 @@ Imports MainApp.SimTrade
 
 Namespace SimTrade
 
-    ''' <summary>
-    ''' SimTradeForm의 UI를 빌드하고 관리하는 헬퍼 클래스.
-    ''' Form 인스턴스에 컨트롤을 주입합니다.
-    ''' </summary>
     Public Class SimTradeUI
 
 #Region "컨트롤 참조 (읽기 전용 — 외부에서 이벤트 연결용)"
@@ -30,6 +26,7 @@ Namespace SimTrade
         Public ReadOnly Property BtnCondition As Button
         Public ReadOnly Property BtnStart As Button
         Public ReadOnly Property BtnStop As Button
+        Public ReadOnly Property BtnCircuit As Button          ' ★ 추가: 회로설계 버튼
         Public ReadOnly Property TabControl As TabControl
         Public ReadOnly Property PnlSettings As Panel
 
@@ -60,7 +57,6 @@ Namespace SimTrade
 
 #Region "빌드 (불변 레이아웃)"
 
-        ''' <summary>전체 UI를 Form에 빌드합니다. 레이아웃은 불변.</summary>
         Public Sub Build(form As Form)
             form.Text = "모의매매 v4.2"
             form.Size = New Size(1400, 900)
@@ -78,19 +74,19 @@ Namespace SimTrade
             _BtnStart = CreateButton("▶ 시작", 100, 10, 80, 30)
             _BtnStop = CreateButton("■ 중지", 190, 10, 80, 30)
             _BtnStop.Enabled = False
-            _LblStatus = CreateLabel("대기 중", 290, 15, 400, 20)
+            _BtnCircuit = CreateButton("회로설계", 280, 10, 80, 30)   ' ★ 추가
+            _LblStatus = CreateLabel("대기 중", 380, 15, 400, 20)     ' ★ X좌표 290→380
             _LblStatus.ForeColor = Color.Gray
-            _LblSummary = CreateLabel("", 700, 15, 600, 20)
+            _LblSummary = CreateLabel("", 790, 15, 600, 20)           ' ★ X좌표 700→790
             _LblSummary.ForeColor = Color.Cyan
 
-            pnlTop.Controls.AddRange({_BtnCondition, _BtnStart, _BtnStop, _LblStatus, _LblSummary})
+            pnlTop.Controls.AddRange({_BtnCondition, _BtnStart, _BtnStop, _BtnCircuit, _LblStatus, _LblSummary})
 
             ' ── 탭 컨트롤 ──
             _TabControl = New TabControl()
             _TabControl.Dock = DockStyle.Fill
             _TabControl.BackColor = Color.FromArgb(30, 30, 30)
 
-            ' 탭1: 감시
             Dim tabWatch As New TabPage("감시")
             _DgvWatch = CreateGrid()
             For Each colName In SimTradeConst.WATCH_COLUMNS
@@ -98,7 +94,6 @@ Namespace SimTrade
             Next
             tabWatch.Controls.Add(_DgvWatch)
 
-            ' 탭2: 포지션
             Dim tabPos As New TabPage("포지션")
             _DgvPositions = CreateGrid()
             For Each colName In SimTradeConst.POSITION_COLUMNS
@@ -106,7 +101,6 @@ Namespace SimTrade
             Next
             tabPos.Controls.Add(_DgvPositions)
 
-            ' 탭3: 이력
             Dim tabHist As New TabPage("매매이력")
             _DgvHistory = CreateGrid()
             For Each colName In SimTradeConst.HISTORY_COLUMNS
@@ -114,7 +108,6 @@ Namespace SimTrade
             Next
             tabHist.Controls.Add(_DgvHistory)
 
-            ' 탭4: 설정
             Dim tabSettings As New TabPage("설정")
             _PnlSettings = New Panel()
             _PnlSettings.Dock = DockStyle.Fill
@@ -141,15 +134,13 @@ Namespace SimTrade
             _RtbLog.ScrollBars = RichTextBoxScrollBars.Vertical
             splitMain.Panel2.Controls.Add(_RtbLog)
 
-            ' ★★★ 핵심: Fill을 먼저, Top을 나중에 추가해야 겹침 방지 ★★★
             form.Controls.Add(splitMain)
             form.Controls.Add(pnlTop)
         End Sub
 
-
 #End Region
 
-#Region "설정 패널 빌드 (불변 — 컨트롤명/배치 고정)"
+#Region "설정 패널 빌드"
 
         Private Sub BuildSettingsPanel(pnl As Panel)
             Dim y = 10
@@ -179,15 +170,13 @@ Namespace SimTrade
 
 #End Region
 
-#Region "그리드 갱신 (가변)"
+#Region "그리드 갱신"
 
-        ''' <summary>감시 그리드 갱신 — 깜빡임 방지: 행 수 같으면 셀값만 갱신</summary>
         Public Sub RefreshWatchGrid(snapshots As List(Of StockStateSnapshot))
             If snapshots Is Nothing Then Return
             Dim sorted = snapshots.OrderBy(Function(s) s.Code).ToList()
 
             If _DgvWatch.Rows.Count = sorted.Count Then
-                ' ★ 깜빡임 방지: 셀 값만 업데이트
                 For i = 0 To sorted.Count - 1
                     Dim s = sorted(i)
                     Dim row = _DgvWatch.Rows(i)
@@ -204,10 +193,9 @@ Namespace SimTrade
                     row.Cells(10).Value = If(Double.IsNaN(s.MACD_Histogram), "-", s.MACD_Histogram.ToString("F2"))
                     row.Cells(11).Value = SimTradeHelper.StateText(s.State)
                     row.Cells(12).Value = s.LastSignal
-                    row.Cells(13).Value = "" ' 봉수는 스냅샷에 없으므로 공란
+                    row.Cells(13).Value = ""
                 Next
             Else
-                ' 행 수 변경 시 재구성
                 _DgvWatch.SuspendLayout()
                 _DgvWatch.Rows.Clear()
                 For Each s In sorted
@@ -227,7 +215,6 @@ Namespace SimTrade
             End If
         End Sub
 
-        ''' <summary>포지션 그리드 갱신</summary>
         Public Sub RefreshPositionGrid(holdings As List(Of StockState))
             If holdings Is Nothing Then Return
             _DgvPositions.SuspendLayout()
@@ -243,7 +230,6 @@ Namespace SimTrade
             _DgvPositions.ResumeLayout()
         End Sub
 
-        ''' <summary>매매이력 행 추가</summary>
         Public Sub AddHistoryRow(record As TradeRecord)
             _DgvHistory.Rows.Insert(0,
                 record.Code, record.Name, record.BuyPrice.ToString("N0"),
@@ -257,12 +243,10 @@ Namespace SimTrade
 
 #Region "로그 관리"
 
-        ''' <summary>로그 메시지 큐에 추가 (스레드 안전)</summary>
         Public Sub EnqueueLog(message As String)
             _logQueue.Enqueue($"[{DateTime.Now:HH:mm:ss}] {message}")
         End Sub
 
-        ''' <summary>로그 큐에서 배치로 RichTextBox에 출력</summary>
         Public Sub FlushLog()
             Dim count = 0
             Dim msg As String = Nothing
@@ -271,7 +255,6 @@ Namespace SimTrade
                 count += 1
             End While
             If count > 0 Then
-                ' 라인 수 제한
                 If _RtbLog.Lines.Length > SimTradeConst.MAX_LOG_LINES Then
                     Dim excess = _RtbLog.Lines.Length - SimTradeConst.MAX_LOG_LINES
                     Dim charIdx = _RtbLog.GetFirstCharIndexFromLine(excess)
@@ -287,7 +270,6 @@ Namespace SimTrade
 
 #Region "설정 UI ↔ SimTradeSettings"
 
-        ''' <summary>UI → Settings 적용</summary>
         Public Sub ApplySettingsFromUI(settings As SimTradeSettings)
             settings.ST_Period = CInt(_NudST_Period.Value)
             settings.ST_Multiplier = CDbl(_NudST_Multiplier.Value)
@@ -310,7 +292,6 @@ Namespace SimTrade
             settings.SellOrderType = CType(_CboSellOrder.SelectedIndex, SimOrderType)
         End Sub
 
-        ''' <summary>Settings → UI 반영</summary>
         Public Sub LoadSettingsToUI(settings As SimTradeSettings)
             _NudST_Period.Value = settings.ST_Period
             _NudST_Multiplier.Value = CDec(settings.ST_Multiplier)
@@ -332,7 +313,6 @@ Namespace SimTrade
             _CboSellOrder.SelectedIndex = CInt(settings.SellOrderType)
         End Sub
 
-        ''' <summary>설정 컨트롤 활성/비활성</summary>
         Public Sub SetSettingsEnabled(enabled As Boolean)
             If _PnlSettings Is Nothing Then Return
             For Each ctrl As Control In _PnlSettings.Controls
@@ -345,7 +325,7 @@ Namespace SimTrade
 
 #End Region
 
-#Region "UI 팩토리 (불변 헬퍼)"
+#Region "UI 팩토리"
 
         Private Shared Function CreateButton(text As String, x As Integer, y As Integer,
                                               w As Integer, h As Integer) As Button

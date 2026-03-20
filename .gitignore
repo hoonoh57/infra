@@ -38,3 +38,4 @@ _obj_test/
 image/
 db.config
 out/
+_dump_*.txt 

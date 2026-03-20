@@ -84,7 +84,11 @@ Namespace SimTrade.Circuit
                 If node.IsTriggered OrElse Not node.Enabled Then
                     result.BuyConditionsMet += 1
                 End If
-                result.NodeResults(node.Id) = node.IsTriggered
+                result.NodeResults(node.Id) = New NodeEvalResult() With {
+    .Status = If(node.IsTriggered OrElse Not node.Enabled, NodeStatus.Pass, NodeStatus.Fail),
+    .ValueText = node.ProbeText
+}
+
             Next
 
             ' 와이어 상태 갱신
