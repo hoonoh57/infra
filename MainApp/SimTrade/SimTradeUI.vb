@@ -84,7 +84,6 @@ Namespace SimTrade
             _LblSummary.ForeColor = Color.Cyan
 
             pnlTop.Controls.AddRange({_BtnCondition, _BtnStart, _BtnStop, _LblStatus, _LblSummary})
-            form.Controls.Add(pnlTop)
 
             ' ── 탭 컨트롤 ──
             _TabControl = New TabControl()
@@ -142,8 +141,11 @@ Namespace SimTrade
             _RtbLog.ScrollBars = RichTextBoxScrollBars.Vertical
             splitMain.Panel2.Controls.Add(_RtbLog)
 
+            ' ★★★ 핵심: Fill을 먼저, Top을 나중에 추가해야 겹침 방지 ★★★
             form.Controls.Add(splitMain)
+            form.Controls.Add(pnlTop)
         End Sub
+
 
 #End Region
 

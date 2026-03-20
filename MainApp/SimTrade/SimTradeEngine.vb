@@ -306,7 +306,7 @@ Namespace SimTrade
                             _view.Log($"[감시추가] {code} {name} — 캐시캔들 {state.Candles.Count}개 → Ready (총 {_stateManager.TotalCount}종목)")
                         Else
                             _stateManager.TransitionTo(code, DataState.Downloading)
-                            StockInfoManager.I.AddStock(code, DataSourceType.조건검색, "SimTrade")
+                            StockInfoManager.I.AddStocks({code}, DataSourceType.조건검색, "SimTrade")
                             _view.Log($"[감시추가] {code} {name} — 캔들 요청 (총 {_stateManager.TotalCount}종목)")
                         End If
 
