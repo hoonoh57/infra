@@ -285,7 +285,6 @@ Public Class SimTradeForm
     ' ═══════════════════════════════════════
     ' ★ 종목 추가 — StateManager + CandleBuilder 연동
     ' ═══════════════════════════════════════
-
     Private Function AddWatchItem(code As String) As Boolean
         If String.IsNullOrEmpty(code) Then Return False
         If _stateManager.GetState(code) IsNot Nothing Then Return False
@@ -295,46 +294,52 @@ Public Class SimTradeForm
         Dim name = If(si IsNot Nothing, si.Name, "")
 
         Dim state = _stateManager.AddStock(code, name)
-
-        ' 지표 엔진 등록
         RegisterIndicators(state.Engine)
 
-        ' 캐시 캔들 로드
-        Dim cached = StockInfoManager.I.GetCachedCandleItems(code)
-        If cached IsNot Nothing AndAlso cached.Count > 0 Then
-            For Each c In cached : state.Candles.Add(c) : Next
-            _candleBuilder.InitializeFromHistory(code, state.Candles)
-            state.Engine.CalculateAll(state.Candles)
-            UpdateStateIndicators(state)
-
-            ' Adaptive: 기준봉 산출
-            If _settings.TICKINT_UseReferenceCandle Then
-                Dim rc = _adaptiveCalc.CalcReferenceCandle(state.Candles)
-                If rc.IsValid Then
-                    state.HasReferenceCandle = True
-                    state.ReferenceCandleHigh = rc.High
-                    state.ReferenceCandleTickSum = rc.TickSum
-                    state.ReferenceCandleVolume = rc.Volume
-                    state.ReferenceCandleDate = rc.CandleDate
-                End If
-            End If
-
-            _stateManager.TransitionTo(code, DataState.Ready)
-            Log($"[감시추가] {code} {name} — 캐시캔들 {state.Candles.Count}개 (총 {_stateManager.TotalCount}종목)")
-        Else
-            _stateManager.TransitionTo(code, DataState.Downloading)
-            StockInfoManager.I.AddStock(code, DataSourceType.조건검색, "SimTrade")
-            Log($"[감시추가] {code} {name} — Cybos 캔들 요청 (총 {_stateManager.TotalCount}종목)")
-        End If
-
+        ' ★ 캐시 캔들 확인 및 처리를 백그라운드에서
         Threading.ThreadPool.QueueUserWorkItem(
             Sub()
-                Threading.Thread.Sleep(100)
-                MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", code)
+                Try
+                    Dim cached = StockInfoManager.I.GetCachedCandleItems(code)
+                    If cached IsNot Nothing AndAlso cached.Count > 0 Then
+                        SyncLock state.Candles
+                            For Each c In cached
+                                state.Candles.Add(c)
+                            Next
+                        End SyncLock
+
+                        _candleBuilder.InitializeFromHistory(code, state.Candles)
+                        state.Engine.CalculateAll(state.Candles)
+                        UpdateStateIndicators(state)
+
+                        If _settings.TICKINT_UseReferenceCandle Then
+                            Dim rc = _adaptiveCalc.CalcReferenceCandle(state.Candles)
+                            If rc.IsValid Then
+                                state.HasReferenceCandle = True
+                                state.ReferenceCandleHigh = rc.High
+                                state.ReferenceCandleTickSum = rc.TickSum
+                                state.ReferenceCandleVolume = rc.Volume
+                                state.ReferenceCandleDate = rc.CandleDate
+                            End If
+                        End If
+
+                        _stateManager.TransitionTo(code, DataState.Ready)
+                        Log($"[감시추가] {code} {name} — 캐시캔들 {state.Candles.Count}개 → Ready (총 {_stateManager.TotalCount}종목)")
+                    Else
+                        _stateManager.TransitionTo(code, DataState.Downloading)
+                        StockInfoManager.I.AddStock(code, DataSourceType.조건검색, "SimTrade")
+                        Log($"[감시추가] {code} {name} — 캔들 요청 (총 {_stateManager.TotalCount}종목)")
+                    End If
+
+                    Threading.Thread.Sleep(50)
+                    MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", code)
+                Catch ex As Exception
+                    Log($"[감시추가오류] {code}: {ex.Message}")
+                End Try
             End Sub)
+
         Return True
     End Function
-
 
     ' ═══════════════════════════════════════
     ' 지표 등록 (기존 5종 + MACD 추가)
@@ -375,24 +380,27 @@ Public Class SimTradeForm
     ' ═══════════════════════════════════════
     ' ★ 캔들 다운로드 완료
     ' ═══════════════════════════════════════
-
     Private Sub OnCandleDownloaded(m As Msg)
         Dim code = m.Str("code")
         If String.IsNullOrEmpty(code) Then Return
         Dim state = _stateManager.GetState(code)
         If state Is Nothing Then Return
-        If state.Candles.Count >= _settings.MinCandlesForSignal Then Return
+
+        ' ★ 이미 Ready 이상이면 중복 수신 무시
+        If state.State >= DataState.Ready Then Return
 
         Dim rows = m.DictList("rows")
         If rows Is Nothing OrElse rows.Count = 0 Then
-            Log($"[캔들수신] {code} — 없음") : Return
+            Log($"[캔들수신] {code} — 없음")
+            Return
         End If
 
         Dim downloaded As New List(Of CandleItem)()
         For Each row In rows
             Try
                 Dim c As New CandleItem()
-                Dim dtStr = "" : If row.ContainsKey("dt") Then dtStr = row("dt")
+                Dim dtStr = ""
+                If row.ContainsKey("dt") Then dtStr = row("dt")
                 If dtStr <> "" Then DateTime.TryParse(dtStr, c.Dt)
                 If row.ContainsKey("open") Then Single.TryParse(row("open"), c.Open)
                 If row.ContainsKey("high") Then Single.TryParse(row("high"), c.High)
@@ -400,45 +408,54 @@ Public Class SimTradeForm
                 If row.ContainsKey("close") Then Single.TryParse(row("close"), c.Close)
                 If row.ContainsKey("volume") Then Long.TryParse(row("volume"), c.Volume)
                 downloaded.Add(c)
-            Catch : End Try
+            Catch
+            End Try
         Next
         If downloaded.Count = 0 Then Return
         downloaded.Sort(Function(a, b) a.Dt.CompareTo(b.Dt))
 
-        SafeUI(
+        ' ★ 백그라운드에서 지표 계산 후 UI 갱신
+        Threading.ThreadPool.QueueUserWorkItem(
             Sub()
-                Dim existing = New List(Of CandleItem)(state.Candles)
-                state.Candles.Clear()
-                state.Candles.AddRange(downloaded)
-                state.Candles.AddRange(existing)
-                While state.Candles.Count > 500 : state.Candles.RemoveAt(0) : End While
+                Try
+                    SyncLock state.Candles
+                        Dim existing = New List(Of CandleItem)(state.Candles)
+                        state.Candles.Clear()
+                        state.Candles.AddRange(downloaded)
+                        state.Candles.AddRange(existing)
+                        While state.Candles.Count > 500
+                            state.Candles.RemoveAt(0)
+                        End While
+                    End SyncLock
 
-                _candleBuilder.InitializeFromHistory(code, state.Candles)
-                state.Engine.CalculateAll(state.Candles)
-                UpdateStateIndicators(state)
+                    _candleBuilder.InitializeFromHistory(code, state.Candles)
+                    state.Engine.CalculateAll(state.Candles)
+                    UpdateStateIndicators(state)
 
-                ' 기준봉 산출
-                If _settings.TICKINT_UseReferenceCandle Then
-                    Dim rc = _adaptiveCalc.CalcReferenceCandle(state.Candles)
-                    If rc.IsValid Then
-                        state.HasReferenceCandle = True
-                        state.ReferenceCandleHigh = rc.High
-                        state.ReferenceCandleTickSum = rc.TickSum
-                        state.ReferenceCandleVolume = rc.Volume
-                        state.ReferenceCandleDate = rc.CandleDate
+                    ' 기준봉 산출
+                    If _settings.TICKINT_UseReferenceCandle Then
+                        Dim rc = _adaptiveCalc.CalcReferenceCandle(state.Candles)
+                        If rc.IsValid Then
+                            state.HasReferenceCandle = True
+                            state.ReferenceCandleHigh = rc.High
+                            state.ReferenceCandleTickSum = rc.TickSum
+                            state.ReferenceCandleVolume = rc.Volume
+                            state.ReferenceCandleDate = rc.CandleDate
+                        End If
                     End If
-                End If
 
-                If state.Name = "" Then
-                    Dim sn = StockInfoManager.I.GetItem(code)
-                    If sn IsNot Nothing Then state.Name = sn.Name
-                End If
+                    If state.Name = "" Then
+                        Dim sn = StockInfoManager.I.GetItem(code)
+                        If sn IsNot Nothing Then state.Name = sn.Name
+                    End If
 
-                _stateManager.TransitionTo(code, DataState.Ready)
-                Log($"[캔들수신] {code} {state.Name} — {downloaded.Count}개 (총 {state.Candles.Count}개)")
+                    _stateManager.TransitionTo(code, DataState.Ready)
+                    Log($"[캔들수신] {code} {state.Name} — {downloaded.Count}개 (총 {state.Candles.Count}개) → Ready")
+                Catch ex As Exception
+                    Log($"[캔들처리오류] {code}: {ex.Message}")
+                End Try
             End Sub)
     End Sub
-
 
     ' ═══════════════════════════════════════
     ' ★ 틱 수신 → CandleBuilder → 신호 판단
@@ -498,21 +515,24 @@ Public Class SimTradeForm
     ' ═══════════════════════════════════════
     ' ★ 캔들 완성 이벤트 → 지표 전체계산 + 신호판단
     ' ═══════════════════════════════════════
-
     Private Sub OnCandleCompleted(code As String, candle As CandleItem, candles As List(Of CandleItem))
         Dim state = _stateManager.GetState(code)
         If state Is Nothing Then Return
 
-        ' ★ CalculateAll 제거 — UpdateLast가 이미 증분 처리
-        ' 지표 동기화만 수행
+        ' ★ 캔들 수가 MinCandlesForSignal에 도달한 첫 시점에만 CalculateAll
+        If candles.Count = _settings.MinCandlesForSignal Then
+            Try
+                state.Engine.CalculateAll(state.Candles)
+            Catch
+            End Try
+        End If
+
         UpdateStateIndicators(state)
 
-        ' DayMax TickSum 갱신
         If candle.NormalizedTickSum > state.DayMaxTickSum Then
             state.DayMaxTickSum = candle.NormalizedTickSum
         End If
 
-        ' ★ 신호 판단 — BeginInvoke로 비동기 UI 호출 (블로킹 방지)
         If state.Candles.Count >= _settings.MinCandlesForSignal Then
             Try
                 Me.BeginInvoke(Sub() EvaluateSignal(state))
