@@ -3,6 +3,11 @@
 ' ═══════════════════════════════════════════════════════════════
 ' 원칙서 v4.0. 모든 종목 상태를 중앙 관리.
 ' UI는 스냅샷으로만 읽고, Decision Layer만 상태를 변경한다.
+'
+' [v4.1 수정] 2026-03-20
+'   ① IsValidTransition: Detected→Ready, Downloading→Ready 허용
+'     (캐시 히트 시 Analyzing 단계 불필요, 현재 아키텍처에서 Analyzing 미사용)
+'   ② TransitionTo: SyncLock 범위 최소화, 로깅 확인용 반환값 유지
 ' ═══════════════════════════════════════════════════════════════
 
 Imports System.Collections.Concurrent
@@ -78,26 +83,43 @@ Namespace SimTrade
             Return True
         End Function
 
-        ''' <summary>유효한 상태 전이 규칙</summary>
+        ''' <summary>
+        ''' 유효한 상태 전이 규칙
+        ''' [v4.1 수정] Detected→Ready, Downloading→Ready 허용 (캐시 히트/직접 전이 지원)
+        ''' </summary>
         Private Function IsValidTransition(from As DataState, [to] As DataState) As Boolean
             Select Case from
                 Case DataState.None
                     Return [to] = DataState.Detected
+
                 Case DataState.Detected
-                    Return [to] = DataState.Downloading OrElse [to] = DataState.Excluded
+                    ' v4.1: 캐시 히트 시 Detected→Ready 직접 전이 허용
+                    Return [to] = DataState.Downloading OrElse
+                           [to] = DataState.Ready OrElse
+                           [to] = DataState.Excluded
+
                 Case DataState.Downloading
-                    Return [to] = DataState.Analyzing OrElse [to] = DataState.Excluded
+                    ' v4.1: 캔들 수신 후 Downloading→Ready 직접 전이 허용 (Analyzing 단계 생략)
+                    Return [to] = DataState.Analyzing OrElse
+                           [to] = DataState.Ready OrElse
+                           [to] = DataState.Excluded
+
                 Case DataState.Analyzing
                     Return [to] = DataState.Ready OrElse [to] = DataState.Excluded
+
                 Case DataState.Ready
                     Return [to] = DataState.Trading OrElse [to] = DataState.Excluded
+
                 Case DataState.Trading
                     Return [to] = DataState.Closed
                     ' Trading 중에는 Excluded 불가 (보유 종목 제외 금지 — 금지 ⑪)
+
                 Case DataState.Closed
                     Return False  ' 최종 상태
+
                 Case DataState.Excluded
                     Return False  ' 최종 상태
+
                 Case Else
                     Return False
             End Select
