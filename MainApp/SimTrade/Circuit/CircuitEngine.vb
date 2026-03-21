@@ -275,57 +275,59 @@ Namespace SimTrade.Circuit
             c.Version = "4.2"
 
             ' ═══ 열 1: 지표 노드 (x=50) ═══
-            Dim y = 20
+            Dim y = 10
             c.Nodes.Add(MakeIndicator("IND_ST", "SuperTrend", 50, y, settings))
-            y += 80
+            y += 55
             c.Nodes.Add(MakeIndicator("IND_JMA", "JMA", 50, y, settings))
-            y += 80
+            y += 55
             c.Nodes.Add(MakeIndicator("IND_TICK", "TickIntensity", 50, y, settings))
-            y += 80
+            y += 55
             c.Nodes.Add(MakeIndicator("IND_OBV", "OBV", 50, y, settings))
-            y += 80
+            y += 55
             c.Nodes.Add(MakeIndicator("IND_RSI", "RSI", 50, y, settings))
-            y += 80
+            y += 55
             c.Nodes.Add(MakeIndicator("IND_MACD", "MACD", 50, y, settings))
-            y += 80
+            y += 55
             c.Nodes.Add(MakeIndicator("IND_VOL", "Volume", 50, y, settings))
 
+
             ' ═══ 열 2: 매수 조건 노드 (x=280) ═══
-            y = 20
-            c.Nodes.Add(MakeCondition("C1_ST", "C1: ST▲", 280, y, "매수조건")) : y += 80
+            y = 10
+            c.Nodes.Add(MakeCondition("C1_ST", "C1: ST▲", 280, y, "매수조건")) : y += 55
             c.Nodes.Add(MakeCondition("C2_JMA", "C2: JMA전환", 280, y, "매수조건",
                 New CircuitParam() With {.Key = "ConfirmBars", .Label = "확인봉수", .DataType = ParamDataType.IntNumber,
                     .Value = settings.ConfirmBars_JMA, .DefaultValue = 2, .MinValue = 1, .MaxValue = 10,
-                    .SettingsProperty = "ConfirmBars_JMA"})) : y += 80
+                    .SettingsProperty = "ConfirmBars_JMA"})) : y += 55
             c.Nodes.Add(MakeCondition("C3_TICK", "C3: TickSum", 280, y, "매수조건",
                 New CircuitParam() With {.Key = "Threshold", .Label = "임계값", .DataType = ParamDataType.DecNumber,
                     .Value = settings.TICKINT_Threshold, .DefaultValue = 5.0, .MinValue = 0.5, .MaxValue = 50.0,
-                    .StepValue = 0.5, .SettingsProperty = "TICKINT_Threshold"})) : y += 80
-            c.Nodes.Add(MakeCondition("C4_OBV", "C4: OBV▲", 280, y, "매수조건")) : y += 80
-            c.Nodes.Add(MakeCondition("C5_CONFIRM", "C5: 동시확인", 280, y, "매수조건")) : y += 80
-            c.Nodes.Add(MakeCondition("C6_MACD", "C6: MACD GC", 280, y, "매수조건")) : y += 80
+                    .StepValue = 0.5, .SettingsProperty = "TICKINT_Threshold"})) : y += 55
+            c.Nodes.Add(MakeCondition("C4_OBV", "C4: OBV▲", 280, y, "매수조건")) : y += 55
+            c.Nodes.Add(MakeCondition("C5_CONFIRM", "C5: 동시확인", 280, y, "매수조건")) : y += 55
+            c.Nodes.Add(MakeCondition("C6_MACD", "C6: MACD GC", 280, y, "매수조건")) : y += 55
             c.Nodes.Add(MakeCondition("C7_VOL", "C7: Volume>MA", 280, y, "매수조건"))
 
             ' ═══ 열 3: AND 게이트 (x=500) ═══
             Dim buyGate As New CircuitNode() With {
                 .Id = "GATE_BUY", .Name = "BUY AND", .NodeType = NodeType.Gate,
                 .GateType = GateType.AND_Gate, .Category = "게이트",
-                .X = 500, .Y = 240, .Width = 120, .Height = 100}
+                .X = 500, .Y = 120, .Width = 120, .Height = 80}
             c.Nodes.Add(buyGate)
 
             ' ═══ 열 3: 필터 노드 (x=500, 아래쪽) ═══
-            y = 400
-            c.Nodes.Add(MakeFilter("F_GAP", "갭상승", 500, y)) : y += 60
-            c.Nodes.Add(MakeFilter("F_FAKE", "페이크돌파", 500, y)) : y += 60
-            c.Nodes.Add(MakeFilter("F_VI", "VI근접", 500, y)) : y += 60
-            c.Nodes.Add(MakeFilter("F_SPREAD", "스프레드", 500, y)) : y += 60
-            c.Nodes.Add(MakeFilter("F_VOLUME", "거래대금", 500, y)) : y += 60
+            y = 220
+            c.Nodes.Add(MakeFilter("F_GAP", "갭상승", 500, y)) : y += 45
+            c.Nodes.Add(MakeFilter("F_FAKE", "페이크돌파", 500, y)) : y += 45
+            c.Nodes.Add(MakeFilter("F_VI", "VI근접", 500, y)) : y += 45
+            c.Nodes.Add(MakeFilter("F_SPREAD", "스프레드", 500, y)) : y += 45
+            c.Nodes.Add(MakeFilter("F_VOLUME", "거래대금", 500, y)) : y += 45
             c.Nodes.Add(MakeFilter("F_TIME", "시간제한", 500, y))
 
             ' ═══ 열 4: 출력 (x=700) ═══
             c.Nodes.Add(New CircuitNode() With {
                 .Id = "OUT_BUY", .Name = "매수 신호", .NodeType = NodeType.Output,
-                .Category = "출력", .X = 700, .Y = 260, .Width = 120, .Height = 50})
+                .Category = "출력", .X = 700, .Y = 130, .Width = 120, .Height = 45})
+
 
             ' ═══ 와이어 연결 ═══
             ' 지표 → 조건
@@ -372,7 +374,8 @@ Namespace SimTrade.Circuit
         Private Shared Function MakeFilter(id As String, name As String, x As Integer, y As Integer) As CircuitNode
             Return New CircuitNode() With {
                 .Id = id, .Name = name, .NodeType = NodeType.Filter,
-                .Category = "필터", .X = x, .Y = y, .Width = 140, .Height = 45}
+                .Category = "필터", .X = x, .Y = y, .Width = 130, .Height = 35}
+
         End Function
 
 #End Region

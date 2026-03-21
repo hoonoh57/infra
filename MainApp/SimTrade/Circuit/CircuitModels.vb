@@ -98,8 +98,9 @@ Namespace SimTrade.Circuit
 
         Public Property X As Integer = 0
         Public Property Y As Integer = 0
-        Public Property Width As Integer = 160
-        Public Property Height As Integer = 60
+        Public Property Width As Integer = 150
+        Public Property Height As Integer = 45
+
 
         Public Property InputPorts As New List(Of String)
         Public Property OutputPorts As New List(Of String)
