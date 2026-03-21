@@ -232,27 +232,13 @@ Public Class CircuitDesignerForm
 
     Private Sub RegisterIndicators()
         If _indicatorEngine Is Nothing Then Return
-        Try
-            _indicatorEngine.Register("SuperTrend", _settings.ST_Period, _settings.ST_Multiplier)
-        Catch : End Try
-        Try
-            _indicatorEngine.Register("RSI", _settings.RSI_Period)
-        Catch : End Try
-        Try
-            _indicatorEngine.Register("Volume", _settings.VOL_Period)
-        Catch : End Try
-        Try
-            _indicatorEngine.Register("OBV", _settings.OBV_MAPeriod)
-        Catch : End Try
-        Try
-            _indicatorEngine.Register("TickIntensity", 1)
-        Catch : End Try
-        Try
-            _indicatorEngine.Register("MACD", _settings.MACD_Fast, _settings.MACD_Slow, _settings.MACD_Signal)
-        Catch : End Try
-        Try
-            _indicatorEngine.Register("JMA", _settings.JMA_Period, _settings.JMA_Phase, _settings.JMA_Power)
-        Catch : End Try
+        Try : _indicatorEngine.Register(New SuperTrend_Indicator(_settings.ST_Period, CSng(_settings.ST_Multiplier))) : Catch : End Try
+        Try : _indicatorEngine.Register(New RSI_Indicator(_settings.RSI_Period)) : Catch : End Try
+        Try : _indicatorEngine.Register(New Volume_Indicator(_settings.VOL_Period)) : Catch : End Try
+        Try : _indicatorEngine.Register(New OBV_Indicator(_settings.OBV_MAPeriod)) : Catch : End Try
+        Try : _indicatorEngine.Register(New TickIntensity_Indicator(_settings.TICKINT_Timeframe)) : Catch : End Try
+        Try : _indicatorEngine.Register(New MACD_Indicator(_settings.MACD_Fast, _settings.MACD_Slow, _settings.MACD_Signal)) : Catch : End Try
+        Try : _indicatorEngine.Register(New JMA_Indicator(_settings.JMA_Period, _settings.JMA_Phase, _settings.JMA_Power)) : Catch : End Try
     End Sub
 
     ''' <summary>부모 SimTradeForm의 엔진에서 StateManager를 가져온다.</summary>
@@ -322,25 +308,27 @@ Public Class CircuitDesignerForm
         If _selectedNode IsNot Nothing Then ShowNodeParams(_selectedNode)
     End Sub
 
-    ''' <summary>IndicatorEngine 결과에서 StockState 지표값 추출</summary>
     Private Sub ExtractIndicators(state As StockState)
         If _indicatorEngine Is Nothing Then Return
+        Dim results = _indicatorEngine.Results
+        If results Is Nothing OrElse results.Count = 0 Then Return
+
+        Dim idx = If(_currentCandleIndex >= 0, _currentCandleIndex, 0)
 
         Try
-            Dim stResult = _indicatorEngine.GetResult("SuperTrend")
-            If stResult IsNot Nothing AndAlso stResult.Values.Count > 0 Then
-                state.ST_Direction = stResult.Values.Last()
+            Dim stList = FindResult(results, "ST_")
+            If stList IsNot Nothing AndAlso stList.Count > idx Then
+                state.ST_Direction = stList(idx).Val("Direction")
             End If
         Catch : End Try
 
         Try
-            Dim jmaResult = _indicatorEngine.GetResult("JMA")
-            If jmaResult IsNot Nothing AndAlso jmaResult.Values.Count > 0 Then
-                state.JMA_Direction = jmaResult.Values.Last()
-                If jmaResult.Values.Count >= 2 Then
-                    state.JMA_PrevDirection = jmaResult.Values(jmaResult.Values.Count - 2)
+            Dim jmaList = FindResult(results, "JMA_")
+            If jmaList IsNot Nothing AndAlso jmaList.Count > idx Then
+                state.JMA_Direction = jmaList(idx).Val("Direction")
+                If idx > 0 AndAlso jmaList.Count > idx - 1 Then
+                    state.JMA_PrevDirection = jmaList(idx - 1).Val("Direction")
                 End If
-                ' JMA 전환봉 계산
                 If state.JMA_Direction > 0 AndAlso state.JMA_PrevDirection <= 0 Then
                     state.JMA_TurnBar = 0
                 Else
@@ -350,44 +338,51 @@ Public Class CircuitDesignerForm
         Catch : End Try
 
         Try
-            Dim tickResult = _indicatorEngine.GetResult("TickIntensity")
-            If tickResult IsNot Nothing AndAlso tickResult.Values.Count > 0 Then
-                state.TickSum_Normalized = tickResult.Values.Last()
-                If tickResult.Values.Count >= 6 Then
-                    Dim last5 = tickResult.Values.Skip(tickResult.Values.Count - 5).Take(5)
-                    state.TickMA5_Normalized = last5.Average()
-                End If
+            Dim tiList = FindResult(results, "TICKINT_")
+            If tiList IsNot Nothing AndAlso tiList.Count > idx Then
+                state.TickSum_Normalized = tiList(idx).Val("TickSum")
+                state.TickMA5_Normalized = tiList(idx).Val("MA5")
             End If
         Catch : End Try
 
         Try
-            Dim obvResult = _indicatorEngine.GetResult("OBV")
-            If obvResult IsNot Nothing AndAlso obvResult.Values.Count > 0 Then
-                state.OBV_Direction = obvResult.Values.Last()
+            Dim obvList = FindResult(results, "OBV_")
+            If obvList IsNot Nothing AndAlso obvList.Count > idx Then
+                state.OBV_Direction = obvList(idx).Val("Direction")
             End If
         Catch : End Try
 
         Try
-            Dim rsiResult = _indicatorEngine.GetResult("RSI")
-            If rsiResult IsNot Nothing AndAlso rsiResult.Values.Count > 0 Then
-                state.RSI_Value = rsiResult.Values.Last()
+            Dim rsiList = FindResult(results, "RSI_")
+            If rsiList IsNot Nothing AndAlso rsiList.Count > idx Then
+                state.RSI_Value = rsiList(idx).Val("Value")
             End If
         Catch : End Try
 
         Try
-            Dim macdResult = _indicatorEngine.GetResult("MACD")
-            If macdResult IsNot Nothing AndAlso macdResult.Values.Count > 0 Then
-                state.MACD_Histogram = macdResult.Values.Last()
+            Dim macdList = FindResult(results, "MACD_")
+            If macdList IsNot Nothing AndAlso macdList.Count > idx Then
+                state.MACD_Histogram = macdList(idx).Val("Histogram")
             End If
         Catch : End Try
 
         Try
-            Dim volResult = _indicatorEngine.GetResult("Volume")
-            If volResult IsNot Nothing AndAlso volResult.Values.Count > 0 Then
-                state.Volume_Ratio = volResult.Values.Last()
+            Dim volList = FindResult(results, "VOL_")
+            If volList IsNot Nothing AndAlso volList.Count > idx Then
+                state.Volume_Ratio = volList(idx).Val("Ratio")
             End If
         Catch : End Try
     End Sub
+
+    ''' <summary>딕셔너리에서 접두사로 지표 결과 찾기</summary>
+    Private Shared Function FindResult(results As Dictionary(Of String, List(Of IndicatorResult)),
+                                    prefix As String) As List(Of IndicatorResult)
+        For Each kv In results
+            If kv.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) Then Return kv.Value
+        Next
+        Return Nothing
+    End Function
+
 
 #End Region
 
