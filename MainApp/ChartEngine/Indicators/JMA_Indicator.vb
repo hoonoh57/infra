@@ -108,9 +108,9 @@ Public Class JMA_Indicator
                 For j = 0 To i
                     sum += CDbl(candles(j).Close)
                 Next
-                currentJMA = Math.Round(sum / (i + 1), 1)
+                currentJMA = Math.Round(sum / (i + 1), 4)
             Else
-                currentJMA = Math.Round(e2 + prevJMA, 1)
+                currentJMA = Math.Round(e2 + prevJMA, 4)
             End If
 
             jmaArr(i) = currentJMA
@@ -192,6 +192,7 @@ Public Class JMA_Indicator
         Return results
     End Function
 
+
     Public Function UpdateLast(candles As List(Of CandleItem), prevResults As List(Of IndicatorResult)) As IndicatorResult Implements IIndicator.UpdateLast
         Dim i = candles.Count - 1
         If i < 0 OrElse Double.IsNaN(_e0) OrElse _calcCount = 0 Then
@@ -268,9 +269,9 @@ Public Class JMA_Indicator
             For j = 0 To i
                 sum += CDbl(candles(j).Close)
             Next
-            currentJMA = Math.Round(sum / (i + 1), 1)
+            currentJMA = Math.Round(sum / (i + 1), 4)
         Else
-            currentJMA = Math.Round(lE2 + lPrevJMA, 1)
+            currentJMA = Math.Round(lE2 + lPrevJMA, 4)
         End If
 
         Dim curDir As Integer

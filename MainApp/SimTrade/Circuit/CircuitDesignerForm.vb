@@ -709,10 +709,15 @@ Public Class CircuitDesignerForm
                     End If
                 End If
                 If jmaRes IsNot Nothing AndAlso i < jmaRes.Count Then
-                    Dim vj = jmaRes(i).Val("Value")
-                    If Not Single.IsNaN(vj) AndAlso vj > 0 Then
-                        If vj < minPrice Then minPrice = vj
-                        If vj > maxPrice Then maxPrice = vj
+                    Dim ju = jmaRes(i).Val("Up")
+                    Dim jd = jmaRes(i).Val("Down")
+                    If Not Single.IsNaN(ju) AndAlso ju > 0 Then
+                        If ju < minPrice Then minPrice = ju
+                        If ju > maxPrice Then maxPrice = ju
+                    End If
+                    If Not Single.IsNaN(jd) AndAlso jd > 0 Then
+                        If jd < minPrice Then minPrice = jd
+                        If jd > maxPrice Then maxPrice = jd
                     End If
                 End If
             Next
@@ -784,6 +789,7 @@ Public Class CircuitDesignerForm
 
         ' ═══ 지표 오버레이 ═══
         If _indicatorEngine IsNot Nothing AndAlso _indicatorEngine.Results IsNot Nothing Then
+            ' SuperTrend
             Dim stResults = FindResult(_indicatorEngine.Results, "ST_")
             If stResults IsNot Nothing Then
                 DrawIndicatorLine(g, stResults, "Up", startIdx, endIdx, barWidth, chartRect,
@@ -792,10 +798,13 @@ Public Class CircuitDesignerForm
                                   minPrice, maxPrice, priceRange, Color.FromArgb(180, 220, 60, 60), 1.5F)
             End If
 
+            ' JMA 상승=초록, 하락=빨강 (SuperTrend 스타일 두 색)
             Dim jmaResults = FindResult(_indicatorEngine.Results, "JMA_")
             If jmaResults IsNot Nothing Then
-                DrawIndicatorLine(g, jmaResults, "Value", startIdx, endIdx, barWidth, chartRect,
-                                  minPrice, maxPrice, priceRange, Color.FromArgb(200, 255, 200, 50), 2.0F)
+                DrawIndicatorLine(g, jmaResults, "Up", startIdx, endIdx, barWidth, chartRect,
+                                  minPrice, maxPrice, priceRange, Color.FromArgb(220, 0, 220, 100), 2.5F)
+                DrawIndicatorLine(g, jmaResults, "Down", startIdx, endIdx, barWidth, chartRect,
+                                  minPrice, maxPrice, priceRange, Color.FromArgb(220, 255, 60, 60), 2.5F)
             End If
         End If
 
@@ -854,17 +863,12 @@ Public Class CircuitDesignerForm
                 Using br As New SolidBrush(If(isBull2, Color.FromArgb(255, 100, 100), Color.FromArgb(100, 160, 255)))
                     g.DrawString(infoText, infoFont, br, boxX, boxY)
                 End Using
-
                 infoFont.Dispose()
                 timeFont.Dispose()
             End If
         End If
-
-        Using br As New SolidBrush(Color.FromArgb(150, 160, 180))
-            g.DrawString($"{_stockCode} {_stockName}  |  캔들 {startIdx + 1}~{endIdx + 1}/{_candles.Count}",
-                         New Font("Consolas", 8), br, chartRect.Left, chartRect.Bottom + 5)
-        End Using
     End Sub
+
 
     Private Sub DrawIndicatorLine(g As Graphics,
                                    results As List(Of IndicatorResult),
