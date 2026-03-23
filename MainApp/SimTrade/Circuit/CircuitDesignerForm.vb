@@ -529,6 +529,7 @@ Public Class CircuitDesignerForm
         If results Is Nothing OrElse results.Count = 0 Then Return
         Dim idx = If(_currentCandleIndex >= 0, _currentCandleIndex, 0)
 
+        ' ── ST ──
         Try
             Dim stList = FindResult(results, "ST_")
             If stList IsNot Nothing AndAlso stList.Count > idx Then
@@ -536,29 +537,92 @@ Public Class CircuitDesignerForm
             End If
         Catch : End Try
 
+        ' ── JMA (벤치마킹: Up/Down NaN 패턴으로 Direction 판정) ──
         Try
             Dim jmaList = FindResult(results, "JMA_")
             If jmaList IsNot Nothing AndAlso jmaList.Count > idx Then
-                state.JMA_Direction = jmaList(idx).Val("Direction")
-                If idx > 0 AndAlso jmaList.Count > idx - 1 Then
-                    state.JMA_PrevDirection = jmaList(idx - 1).Val("Direction")
-                End If
-                If state.JMA_Direction > 0 AndAlso state.JMA_PrevDirection <= 0 Then
-                    state.JMA_TurnBar = 0
+                ' 현재 봉 Direction
+                Dim curUp = jmaList(idx).Val("Up")
+                Dim curDown = jmaList(idx).Val("Down")
+                If Not Single.IsNaN(curUp) AndAlso Single.IsNaN(curDown) Then
+                    state.JMA_Direction = 1
+                ElseIf Single.IsNaN(curUp) AndAlso Not Single.IsNaN(curDown) Then
+                    state.JMA_Direction = -1
+                ElseIf Not Single.IsNaN(curUp) AndAlso Not Single.IsNaN(curDown) Then
+                    state.JMA_Direction = 1   ' 전환점: Up/Down 모두 유효
                 Else
-                    state.JMA_TurnBar = -1
+                    state.JMA_Direction = 0
+                End If
+
+                ' 이전 봉 Direction
+                If idx > 0 AndAlso jmaList.Count > idx - 1 Then
+                    Dim prevUp = jmaList(idx - 1).Val("Up")
+                    Dim prevDown = jmaList(idx - 1).Val("Down")
+                    If Not Single.IsNaN(prevUp) AndAlso Single.IsNaN(prevDown) Then
+                        state.JMA_PrevDirection = 1
+                    ElseIf Single.IsNaN(prevUp) AndAlso Not Single.IsNaN(prevDown) Then
+                        state.JMA_PrevDirection = -1
+                    ElseIf Not Single.IsNaN(prevUp) AndAlso Not Single.IsNaN(prevDown) Then
+                        state.JMA_PrevDirection = 1
+                    Else
+                        state.JMA_PrevDirection = 0
+                    End If
+                End If
+
+                ' TurnBar: 현재 상승이면 뒤로 스캔하여 하락→상승 전환 시점 찾기
+                state.JMA_TurnBar = -1
+                Dim curDir = CInt(state.JMA_Direction)
+                If curDir <> 0 Then
+                    For k = idx - 1 To Math.Max(0, idx - 20) Step -1
+                        If k >= jmaList.Count Then Continue For
+                        Dim pUp = jmaList(k).Val("Up")
+                        Dim pDown = jmaList(k).Val("Down")
+                        Dim pDir As Integer = 0
+                        If Not Single.IsNaN(pUp) AndAlso Single.IsNaN(pDown) Then
+                            pDir = 1
+                        ElseIf Single.IsNaN(pUp) AndAlso Not Single.IsNaN(pDown) Then
+                            pDir = -1
+                        End If
+                        If pDir <> 0 AndAlso pDir <> curDir Then
+                            state.JMA_TurnBar = idx - k - 1
+                            Exit For
+                        End If
+                    Next
                 End If
             End If
         Catch : End Try
 
+        ' ── TickIntensity (폴백: CandleItem.NormalizedTickSum) ──
         Try
+            Dim tickOk = False
             Dim tiList = FindResult(results, "TICKINT_")
             If tiList IsNot Nothing AndAlso tiList.Count > idx Then
-                state.TickSum_Normalized = tiList(idx).Val("TickSum")
-                state.TickMA5_Normalized = tiList(idx).Val("MA5")
+                Dim ts = tiList(idx).Val("TickSum")
+                Dim m5 = tiList(idx).Val("MA5")
+                If Not Single.IsNaN(ts) Then
+                    state.TickSum_Normalized = ts
+                    state.TickMA5_Normalized = m5
+                    tickOk = True
+                End If
+            End If
+            If Not tickOk AndAlso _candles IsNot Nothing AndAlso idx < _candles.Count Then
+                Dim ci = _candles(idx)
+                If ci.NormalizedTickSum <> 0 OrElse ci.TickCount > 0 Then
+                    state.TickSum_Normalized = ci.NormalizedTickSum
+                    Dim sum5 As Double = 0 : Dim cnt5 As Integer = 0
+                    For k = Math.Max(0, idx - 4) To idx
+                        Dim ck = _candles(k)
+                        If ck.NormalizedTickSum <> 0 OrElse ck.TickCount > 0 Then
+                            sum5 += Math.Abs(ck.NormalizedTickSum)
+                            cnt5 += 1
+                        End If
+                    Next
+                    state.TickMA5_Normalized = If(cnt5 >= 5, sum5 / cnt5, Double.NaN)
+                End If
             End If
         Catch : End Try
 
+        ' ── OBV ──
         Try
             Dim obvList = FindResult(results, "OBV_")
             If obvList IsNot Nothing AndAlso obvList.Count > idx Then
@@ -566,6 +630,7 @@ Public Class CircuitDesignerForm
             End If
         Catch : End Try
 
+        ' ── RSI ──
         Try
             Dim rsiList = FindResult(results, "RSI_")
             If rsiList IsNot Nothing AndAlso rsiList.Count > idx Then
@@ -573,6 +638,7 @@ Public Class CircuitDesignerForm
             End If
         Catch : End Try
 
+        ' ── MACD ──
         Try
             Dim macdList = FindResult(results, "MACD_")
             If macdList IsNot Nothing AndAlso macdList.Count > idx Then
@@ -580,6 +646,7 @@ Public Class CircuitDesignerForm
             End If
         Catch : End Try
 
+        ' ── Volume ──
         Try
             Dim volList = FindResult(results, "VOL_")
             If volList IsNot Nothing AndAlso volList.Count > idx Then
@@ -587,6 +654,7 @@ Public Class CircuitDesignerForm
             End If
         Catch : End Try
     End Sub
+
 
     Private Shared Function FindResult(results As Dictionary(Of String, List(Of IndicatorResult)),
                                        prefix As String) As List(Of IndicatorResult)

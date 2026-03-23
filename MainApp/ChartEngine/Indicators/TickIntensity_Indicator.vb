@@ -124,6 +124,21 @@ Public Class TickIntensity_Indicator
             Next
         End SyncLock
 
+        ' ── 폴백: 틱 데이터 없을 때 CandleItem.NormalizedTickSum 사용 ──
+        If Not hasAnyTick Then
+            For i = 0 To count - 1
+                Dim nts = candles(i).NormalizedTickSum
+                If nts <> 0 OrElse candles(i).TickCount > 0 Then
+                    hasAnyTick = True
+                    tickSums(i) = CSng(Math.Abs(nts))
+                    tickSigned(i) = ApplyCandleDirection(candles(i), tickSums(i))
+                Else
+                    tickSums(i) = Single.NaN
+                    tickSigned(i) = Single.NaN
+                End If
+            Next
+        End If
+
         Dim sma5 = CalcSMA(tickSums, SMA5_PERIOD)
         Dim sma20 = CalcSMA(tickSums, SMA20_PERIOD)
 
