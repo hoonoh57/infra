@@ -303,6 +303,18 @@ Namespace SimTrade
 
                             _candleBuilder.InitializeFromHistory(code, state.Candles)
                             state.Engine.CalculateAll(state.Candles)
+
+                            ' ★ 디버그: TickIntensity 계산 결과 확인
+                            Dim dbgTi = SimTradeHelper.FindResult(state.Engine.Results, "TICKINT_")
+                            If dbgTi IsNot Nothing AndAlso dbgTi.Count > 0 Then
+                                Dim lastTi = dbgTi(dbgTi.Count - 1)
+                                _view.Log($"[디버그] {code} TickIntensity 결과 {dbgTi.Count}건, 마지막 TickSum={lastTi.Val("TickSum"):F1}, MA5={lastTi.Val("MA5"):F1}")
+                            Else
+                                _view.Log($"[디버그] {code} TickIntensity 결과 없음")
+                            End If
+
+
+
                             UpdateStateIndicators(state)
                             ComputeReferenceCandle(state)
 
@@ -721,8 +733,7 @@ Namespace SimTrade
                 Dim rawMA5 = tiList(idx).Val("MA5")
                 Dim rawMA20 = tiList(idx).Val("MA20")
 
-                ' 캔들의 실제 IntervalSec 사용 (혼합 캔들 대응)
-                Dim intervalSec = 60  ' 기본 1분
+                Dim intervalSec = 60
                 If idx < state.Candles.Count AndAlso state.Candles(idx).IntervalSec > 0 Then
                     intervalSec = state.Candles(idx).IntervalSec
                 Else
@@ -732,6 +743,12 @@ Namespace SimTrade
                 state.TickSum_Normalized = SimTradeHelper.NormalizeTickSum(rawTickSum, intervalSec)
                 state.TickMA5_Normalized = SimTradeHelper.NormalizeTickSum(rawMA5, intervalSec)
                 state.TickMA20_Normalized = SimTradeHelper.NormalizeTickSum(rawMA20, intervalSec)
+            End If
+
+            ' TickBar 카운트 저장
+            Dim tickInd2 = state.Engine.GetAll().OfType(Of TickIntensity_Indicator)().FirstOrDefault()
+            If tickInd2 IsNot Nothing Then
+                state.TickBarCount = tickInd2.TickBarCount
             End If
 
 
