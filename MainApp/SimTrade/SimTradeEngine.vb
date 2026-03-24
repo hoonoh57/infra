@@ -358,7 +358,7 @@ Namespace SimTrade
             If String.IsNullOrEmpty(code) Then Return
             Dim state = _stateManager.GetState(code)
             If state Is Nothing Then Return
-            If state.State >= DataState.Ready Then Return ' 중복 방지
+            If state.State >= DataState.Ready Then Return
 
             Dim rows = m.DictList("rows")
             If rows Is Nothing OrElse rows.Count = 0 Then
@@ -371,7 +371,6 @@ Namespace SimTrade
                 Try
                     Dim c As New CandleItem()
 
-                    ' ── Dt 파싱: date+time 분리 필드 우선, dt 단일 필드 폴백 ──
                     Dim dateStr = ""
                     Dim timeStr = ""
                     Dim dtStr = ""
@@ -380,24 +379,22 @@ Namespace SimTrade
                     If row.ContainsKey("dt") Then dtStr = row("dt").Trim()
 
                     If dateStr <> "" AndAlso timeStr <> "" Then
-                        ' time이 3자리일 수 있음: "917" → "0917"
                         Dim combined = dateStr & timeStr.PadLeft(4, "0"c)
                         If Not DateTime.TryParseExact(combined, "yyyyMMddHHmm",
-                        Globalization.CultureInfo.InvariantCulture,
-                        Globalization.DateTimeStyles.None, c.Dt) Then
-                            ' 6자리 시간(HHmmss)인 경우
-                            DateTime.TryParseExact(combined, "yyyyMMddHHmmss",
                             Globalization.CultureInfo.InvariantCulture,
-                            Globalization.DateTimeStyles.None, c.Dt)
+                            Globalization.DateTimeStyles.None, c.Dt) Then
+                            DateTime.TryParseExact(combined, "yyyyMMddHHmmss",
+                                Globalization.CultureInfo.InvariantCulture,
+                                Globalization.DateTimeStyles.None, c.Dt)
                         End If
                     ElseIf dtStr <> "" Then
                         If Not DateTime.TryParse(dtStr, c.Dt) Then
                             If Not DateTime.TryParseExact(dtStr, "yyyyMMddHHmmss",
-                            Globalization.CultureInfo.InvariantCulture,
-                            Globalization.DateTimeStyles.None, c.Dt) Then
-                                DateTime.TryParseExact(dtStr, "yyyyMMddHHmm",
                                 Globalization.CultureInfo.InvariantCulture,
-                                Globalization.DateTimeStyles.None, c.Dt)
+                                Globalization.DateTimeStyles.None, c.Dt) Then
+                                DateTime.TryParseExact(dtStr, "yyyyMMddHHmm",
+                                    Globalization.CultureInfo.InvariantCulture,
+                                    Globalization.DateTimeStyles.None, c.Dt)
                             End If
                         End If
                     End If
@@ -416,35 +413,41 @@ Namespace SimTrade
             downloaded.Sort(Function(a, b) a.Dt.CompareTo(b.Dt))
 
             Threading.ThreadPool.QueueUserWorkItem(
-            Sub()
-                Try
-                    SyncLock state.Candles
-                        Dim existing = New List(Of CandleItem)(state.Candles)
-                        state.Candles.Clear()
-                        state.Candles.AddRange(downloaded)
-                        state.Candles.AddRange(existing)
-                        While state.Candles.Count > SimTradeConst.MAX_CANDLES
-                            state.Candles.RemoveAt(0)
-                        End While
-                    End SyncLock
+                Sub()
+                    Try
+                        ' ★ 틱 타임스탬프 로드 (메인 차트와 동일 경로)
+                        Dim tickCount = LoadTickBarsFromCybos(code, state.Engine)
+                        If tickCount > 0 Then
+                            _view.Log($"[틱캔들] {code} {state.Name} — {tickCount}개 타임스탬프 로드")
+                        End If
 
-                    _candleBuilder.InitializeFromHistory(code, state.Candles)
-                    state.Engine.CalculateAll(state.Candles)
-                    UpdateStateIndicators(state)
-                    ComputeReferenceCandle(state)
+                        SyncLock state.Candles
+                            Dim existing = New List(Of CandleItem)(state.Candles)
+                            state.Candles.Clear()
+                            state.Candles.AddRange(downloaded)
+                            state.Candles.AddRange(existing)
+                            While state.Candles.Count > SimTradeConst.MAX_CANDLES
+                                state.Candles.RemoveAt(0)
+                            End While
+                        End SyncLock
 
-                    If state.Name = "" Then
-                        Dim sn = StockInfoManager.I.GetItem(code)
-                        If sn IsNot Nothing Then state.Name = sn.Name
-                    End If
+                        _candleBuilder.InitializeFromHistory(code, state.Candles)
+                        state.Engine.CalculateAll(state.Candles)
+                        UpdateStateIndicators(state)
+                        ComputeReferenceCandle(state)
 
-                    _stateManager.TransitionTo(code, DataState.Ready)
-                    Threading.Interlocked.Increment(_readyCount)
-                    _view.Log($"[캔들수신] {code} {state.Name} — {downloaded.Count}개 (총 {state.Candles.Count}개) → Ready")
-                Catch ex As Exception
-                    _view.Log($"[캔들처리오류] {code}: {ex.Message}")
-                End Try
-            End Sub)
+                        If state.Name = "" Then
+                            Dim sn = StockInfoManager.I.GetItem(code)
+                            If sn IsNot Nothing Then state.Name = sn.Name
+                        End If
+
+                        _stateManager.TransitionTo(code, DataState.Ready)
+                        Threading.Interlocked.Increment(_readyCount)
+                        _view.Log($"[캔들수신] {code} {state.Name} — {downloaded.Count}개 (총 {state.Candles.Count}개) → Ready")
+                    Catch ex As Exception
+                        _view.Log($"[캔들처리오류] {code}: {ex.Message}")
+                    End Try
+                End Sub)
         End Sub
 
 
