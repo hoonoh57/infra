@@ -284,10 +284,15 @@ Namespace SimTrade
             Dim state = _stateManager.AddStock(code, name)
             RegisterIndicators(state.Engine)
 
-            ' ★ 백그라운드에서 캐시 로드 / 다운로드 요청
             Threading.ThreadPool.QueueUserWorkItem(
                 Sub()
                     Try
+                        ' ★ 틱 타임스탬프 로드 (메인 차트와 동일 경로)
+                        Dim tickCount = LoadTickBarsFromCybos(code, state.Engine)
+                        If tickCount > 0 Then
+                            _view.Log($"[틱캔들] {code} {name} — {tickCount}개 타임스탬프 로드")
+                        End If
+
                         Dim cached = StockInfoManager.I.GetCachedCandleItems(code)
                         If cached IsNot Nothing AndAlso cached.Count > 0 Then
                             SyncLock state.Candles
@@ -319,6 +324,7 @@ Namespace SimTrade
 
             Return True
         End Function
+
 
 #End Region
 
@@ -829,6 +835,77 @@ Namespace SimTrade
             _view.Log($"  프로파일: {_settings.ActiveProfileMode}, Adaptive={_settings.AdaptiveMode}")
             _view.Log("──────────────")
         End Sub
+
+        ''' <summary>
+        ''' cybos API로 당일 틱 타임스탬프를 요청하여 TickIntensity_Indicator.SetTickBars에 전달.
+        ''' 메인 차트(FastChartControl)와 동일한 데이터 경로를 사용.
+        ''' 백그라운드 스레드에서 호출 가능 (DoEvents 미사용).
+        ''' </summary>
+        Public Shared Function LoadTickBarsFromCybos(code As String, engine As IndicatorEngine, Optional timeoutMs As Integer = 15000) As Integer
+            Dim tickResponse As Msg = Nothing
+            Dim tickCompleted As Boolean = False
+
+            Dim handler As Action(Of Msg) =
+                Sub(m As Msg)
+                    If m Is Nothing Then Return
+                    If Not String.Equals(SharedUtil.NormalizeChartCode(m.Str("code")),
+                                         SharedUtil.NormalizeChartCode(code),
+                                         StringComparison.OrdinalIgnoreCase) Then Return
+                    tickResponse = m.Clone()
+                    tickCompleted = True
+                End Sub
+
+            MessageBus.I.On(Topics.TICK_CANDLE_LOADED, handler)
+            Try
+                MessageBus.I.Emit(Topics.TICK_CANDLE_REQUEST,
+                                  "code", code,
+                                  "provider", "cybos",
+                                  "count", 5000,
+                                  "tickUnit", RuntimeChartSettings.DefaultTickUnit,
+                                  "timeframe", RuntimeChartSettings.TickTimeframe(RuntimeChartSettings.DefaultTickUnit))
+
+                Dim sw = Environment.TickCount
+                While Not tickCompleted AndAlso Environment.TickCount - sw < timeoutMs
+                    Threading.Thread.Sleep(50)
+                End While
+
+                If Not tickCompleted OrElse tickResponse Is Nothing Then Return 0
+
+                Dim rows = tickResponse.DictList("rows")
+                If rows Is Nothing OrElse rows.Count = 0 Then Return 0
+
+                Dim tickBars As New List(Of DateTime)(rows.Count)
+                For Each row In rows
+                    Dim dtVal = ""
+                    Dim tmVal = ""
+                    If row.ContainsKey("dt") Then dtVal = row("dt")
+                    If row.ContainsKey("date") Then dtVal = row("date")
+                    If row.ContainsKey("time") Then tmVal = row("time")
+                    Dim parsed = DateTime.MinValue
+                    If dtVal <> "" AndAlso tmVal <> "" Then
+                        Dim combined = dtVal & tmVal.PadLeft(6, "0"c)
+                        DateTime.TryParseExact(combined, "yyyyMMddHHmmss",
+                            Globalization.CultureInfo.InvariantCulture,
+                            Globalization.DateTimeStyles.None, parsed)
+                    ElseIf dtVal <> "" Then
+                        DateTime.TryParse(dtVal, parsed)
+                    End If
+                    If parsed <> DateTime.MinValue Then tickBars.Add(parsed)
+                Next
+
+                If tickBars.Count = 0 Then Return 0
+                tickBars.Sort()
+
+                Dim tickInd = engine.GetAll().OfType(Of TickIntensity_Indicator)().FirstOrDefault()
+                If tickInd IsNot Nothing Then
+                    tickInd.SetTickBars(tickBars)
+                    Return tickBars.Count
+                End If
+                Return 0
+            Finally
+                MessageBus.I.Off(Topics.TICK_CANDLE_LOADED, handler)
+            End Try
+        End Function
 
 #End Region
 
