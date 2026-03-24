@@ -323,16 +323,37 @@ Public Class CircuitDesignerForm
                             For Each r In rows
                                 Dim d = r.ToObject(Of Dictionary(Of String, String))()
                                 Dim ci As New CandleItem()
-                                Dim sv As String = Nothing
-                                If d.TryGetValue("dt", sv) Then
-                                    If Not DateTime.TryParse(sv, ci.Dt) Then
-                                        ' yyyyMMddHHmmss 형식 시도
-                                        DateTime.TryParseExact(sv, "yyyyMMddHHmmss",
-            Globalization.CultureInfo.InvariantCulture,
-            Globalization.DateTimeStyles.None, ci.Dt)
+
+                                ' ── Dt 파싱: date+time 분리 필드 우선, dt 폴백 ──
+                                Dim dateStr = ""
+                                Dim timeStr = ""
+                                Dim dtStr = ""
+                                If d.ContainsKey("date") Then dateStr = d("date").Trim()
+                                If d.ContainsKey("time") Then timeStr = d("time").Trim()
+                                If d.ContainsKey("dt") Then dtStr = d("dt").Trim()
+
+                                If dateStr <> "" AndAlso timeStr <> "" Then
+                                    Dim combined = dateStr & timeStr.PadLeft(4, "0"c)
+                                    If Not DateTime.TryParseExact(combined, "yyyyMMddHHmm",
+                                        Globalization.CultureInfo.InvariantCulture,
+                                        Globalization.DateTimeStyles.None, ci.Dt) Then
+                                        DateTime.TryParseExact(combined, "yyyyMMddHHmmss",
+                                            Globalization.CultureInfo.InvariantCulture,
+                                            Globalization.DateTimeStyles.None, ci.Dt)
+                                    End If
+                                ElseIf dtStr <> "" Then
+                                    If Not DateTime.TryParse(dtStr, ci.Dt) Then
+                                        If Not DateTime.TryParseExact(dtStr, "yyyyMMddHHmmss",
+                                            Globalization.CultureInfo.InvariantCulture,
+                                            Globalization.DateTimeStyles.None, ci.Dt) Then
+                                            DateTime.TryParseExact(dtStr, "yyyyMMddHHmm",
+                                                Globalization.CultureInfo.InvariantCulture,
+                                                Globalization.DateTimeStyles.None, ci.Dt)
+                                        End If
                                     End If
                                 End If
 
+                                Dim sv As String = Nothing
                                 If d.TryGetValue("open", sv) Then Single.TryParse(sv, ci.Open)
                                 If d.TryGetValue("high", sv) Then Single.TryParse(sv, ci.High)
                                 If d.TryGetValue("low", sv) Then Single.TryParse(sv, ci.Low)
@@ -350,6 +371,7 @@ Public Class CircuitDesignerForm
         End Try
         Return Nothing
     End Function
+
 
     Private Sub RegisterIndicators()
         If _indicatorEngine Is Nothing Then Return
@@ -537,7 +559,7 @@ Public Class CircuitDesignerForm
             End If
         Catch : End Try
 
-        ' ── JMA (벤치마킹: Up/Down NaN 패턴으로 Direction 판정) ──
+        ' ── JMA (전환 후 경과봉 카운터 방식) ──
         Try
             Dim jmaList = FindResult(results, "JMA_")
             If jmaList IsNot Nothing AndAlso jmaList.Count > idx Then
@@ -549,7 +571,7 @@ Public Class CircuitDesignerForm
                 ElseIf Single.IsNaN(curUp) AndAlso Not Single.IsNaN(curDown) Then
                     state.JMA_Direction = -1
                 ElseIf Not Single.IsNaN(curUp) AndAlso Not Single.IsNaN(curDown) Then
-                    state.JMA_Direction = 1   ' 전환점: Up/Down 모두 유효
+                    state.JMA_Direction = 1
                 Else
                     state.JMA_Direction = 0
                 End If
@@ -569,26 +591,38 @@ Public Class CircuitDesignerForm
                     End If
                 End If
 
-                ' TurnBar: 현재 상승이면 뒤로 스캔하여 하락→상승 전환 시점 찾기
+                ' TurnBar: 카운터 방식 (StateManager.UpdateIndicators와 통일)
+                ' 현재 방향과 이전 방향이 다르면 전환점 = 0, 같으면 누적 카운트
                 state.JMA_TurnBar = -1
                 Dim curDir = CInt(state.JMA_Direction)
-                If curDir <> 0 Then
-                    For k = idx - 1 To Math.Max(0, idx - 20) Step -1
+                Dim prevDir = CInt(state.JMA_PrevDirection)
+                If curDir > 0 Then
+                    ' 상승 중: 전환점부터 경과봉 카운트
+                    Dim turnCount = 0
+                    For k = idx To 1 Step -1
                         If k >= jmaList.Count Then Continue For
-                        Dim pUp = jmaList(k).Val("Up")
-                        Dim pDown = jmaList(k).Val("Down")
-                        Dim pDir As Integer = 0
-                        If Not Single.IsNaN(pUp) AndAlso Single.IsNaN(pDown) Then
-                            pDir = 1
-                        ElseIf Single.IsNaN(pUp) AndAlso Not Single.IsNaN(pDown) Then
-                            pDir = -1
+                        Dim kUp = jmaList(k).Val("Up")
+                        Dim kDown = jmaList(k).Val("Down")
+                        Dim kDir As Integer = 0
+                        If Not Single.IsNaN(kUp) AndAlso Single.IsNaN(kDown) Then
+                            kDir = 1
+                        ElseIf Single.IsNaN(kUp) AndAlso Not Single.IsNaN(kDown) Then
+                            kDir = -1
+                        ElseIf Not Single.IsNaN(kUp) AndAlso Not Single.IsNaN(kDown) Then
+                            kDir = 1 ' 전환점
                         End If
-                        If pDir <> 0 AndAlso pDir <> curDir Then
-                            state.JMA_TurnBar = idx - k - 1
+                        If kDir <> 1 Then
+                            state.JMA_TurnBar = turnCount
                             Exit For
                         End If
+                        turnCount += 1
+                        If turnCount > 100 Then Exit For
                     Next
+                    If state.JMA_TurnBar = -1 AndAlso turnCount > 0 Then
+                        state.JMA_TurnBar = turnCount
+                    End If
                 End If
+
             End If
         Catch : End Try
 
@@ -654,6 +688,7 @@ Public Class CircuitDesignerForm
             End If
         Catch : End Try
     End Sub
+
 
 
     Private Shared Function FindResult(results As Dictionary(Of String, List(Of IndicatorResult)),

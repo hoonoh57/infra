@@ -709,11 +709,22 @@ Namespace SimTrade
             Dim tiList = SimTradeHelper.FindResult(results, "TICKINT_")
             If tiList IsNot Nothing AndAlso tiList.Count > idx Then
                 Dim rawTickSum = tiList(idx).Val("TickSum")
-                Dim intervalSec = _candleBuilder.GetCurrentIntervalSec()
+                Dim rawMA5 = tiList(idx).Val("MA5")
+                Dim rawMA20 = tiList(idx).Val("MA20")
+
+                ' 캔들의 실제 IntervalSec 사용 (혼합 캔들 대응)
+                Dim intervalSec = 60  ' 기본 1분
+                If idx < state.Candles.Count AndAlso state.Candles(idx).IntervalSec > 0 Then
+                    intervalSec = state.Candles(idx).IntervalSec
+                Else
+                    intervalSec = _candleBuilder.GetCurrentIntervalSec()
+                End If
+
                 state.TickSum_Normalized = SimTradeHelper.NormalizeTickSum(rawTickSum, intervalSec)
-                state.TickMA5_Normalized = SimTradeHelper.NormalizeTickSum(tiList(idx).Val("MA5"), intervalSec)
-                state.TickMA20_Normalized = SimTradeHelper.NormalizeTickSum(tiList(idx).Val("MA20"), intervalSec)
+                state.TickMA5_Normalized = SimTradeHelper.NormalizeTickSum(rawMA5, intervalSec)
+                state.TickMA20_Normalized = SimTradeHelper.NormalizeTickSum(rawMA20, intervalSec)
             End If
+
 
             ' OBV
             Dim obvList = SimTradeHelper.FindResult(results, "OBV_")

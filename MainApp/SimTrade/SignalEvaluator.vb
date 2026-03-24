@@ -418,39 +418,34 @@ Namespace SimTrade
             Return _settings.TICKINT_Threshold   ' 기본 5.0
         End Function
 
-        ''' <summary>MACD 골든크로스 판단</summary>
+        ''' <summary>MACD 골든크로스 판단 (참고지표 — 완화 적용)</summary>
         Private Function EvaluateMACDGoldenCross(state As StockState) As Boolean
             Dim results = state.Engine.Results
             Dim macdList = FindResult(results, "MACD_")
             If macdList Is Nothing Then Return False
 
             Dim idx = macdList.Count - 1
-            If idx < _settings.ConfirmBars_MACD Then Return False
+            If idx < 1 Then Return False
 
-            ' 최근 ConfirmBars_MACD 봉 이내에 MACD > Signal 크로스가 발생했는지
-            For i = idx To Math.Max(0, idx - _settings.ConfirmBars_MACD) Step -1
-                Dim macdVal = macdList(i).Val("MACD")
-                Dim signalVal = macdList(i).Val("Signal")
-                Dim histVal = macdList(i).Val("Histogram")
+            ' 현재봉 기준: Histogram > 0 (MACD > Signal) 이면 충족
+            Dim histVal = macdList(idx).Val("Histogram")
+            Dim macdVal = macdList(idx).Val("MACD")
+            Dim signalVal = macdList(idx).Val("Signal")
 
-                If Single.IsNaN(macdVal) OrElse Single.IsNaN(signalVal) Then Continue For
+            If Single.IsNaN(histVal) OrElse Single.IsNaN(macdVal) Then Return False
 
-                ' MACD, Signal, Histogram 모두 > 0 조건
-                If _settings.MACD_RequireAllPositive Then
-                    If macdVal <= 0 OrElse signalVal <= 0 OrElse histVal <= 0 Then Continue For
-                End If
+            ' 기본 조건: MACD가 Signal 위에 있으면 통과 (Histogram > 0)
+            If histVal > 0 Then Return True
 
-                ' 크로스 확인: 현재봉 Histogram > 0 이고 이전봉 Histogram <= 0
+            ' ConfirmBars 이내에 골든크로스(Histogram 양전환)가 있었으면 통과
+            Dim lookback = Math.Min(_settings.ConfirmBars_MACD, idx)
+            For i = idx To Math.Max(0, idx - lookback) Step -1
+                Dim h = macdList(i).Val("Histogram")
                 If i > 0 Then
-                    Dim prevHist = macdList(i - 1).Val("Histogram")
-                    If Not Single.IsNaN(prevHist) AndAlso prevHist <= 0 AndAlso histVal > 0 Then
-                        Return True
+                    Dim prevH = macdList(i - 1).Val("Histogram")
+                    If Not Single.IsNaN(h) AndAlso Not Single.IsNaN(prevH) Then
+                        If prevH <= 0 AndAlso h > 0 Then Return True
                     End If
-                End If
-
-                ' 또는 이미 크로스된 후 유지 중 (Histogram > 0 연속)
-                If histVal > 0 AndAlso macdVal > signalVal Then
-                    Return True
                 End If
             Next
 
