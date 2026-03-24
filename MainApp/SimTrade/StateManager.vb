@@ -193,6 +193,8 @@ Namespace SimTrade
             snap.CurrentPnLRate = s.CurrentPnLRate
             snap.LastSignal = s.LastSignal
             snap.HighSinceBuy = s.HighSinceBuy
+            snap.CandleCount = If(s.Candles IsNot Nothing, s.Candles.Count, 0)
+
             Return snap
         End Function
 
@@ -310,6 +312,7 @@ Namespace SimTrade
         Public Property CurrentPnLRate As Double = 0
         Public Property LastSignal As String = ""
         Public Property HighSinceBuy As Integer = 0
+        Public Property CandleCount As Integer = 0
     End Class
 
 End Namespace

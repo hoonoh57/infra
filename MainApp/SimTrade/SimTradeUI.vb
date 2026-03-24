@@ -193,7 +193,7 @@ Namespace SimTrade
                     row.Cells(10).Value = If(Double.IsNaN(s.MACD_Histogram), "-", s.MACD_Histogram.ToString("F2"))
                     row.Cells(11).Value = SimTradeHelper.StateText(s.State)
                     row.Cells(12).Value = s.LastSignal
-                    row.Cells(13).Value = ""
+                    row.Cells(13).Value = s.CandleCount.ToString()
                 Next
             Else
                 _DgvWatch.SuspendLayout()
@@ -209,7 +209,7 @@ Namespace SimTrade
                         If(Double.IsNaN(s.RSI_Value), "-", s.RSI_Value.ToString("F0")),
                         If(Double.IsNaN(s.MACD_Histogram), "-", s.MACD_Histogram.ToString("F2")),
                         SimTradeHelper.StateText(s.State),
-                        s.LastSignal, "")
+                        s.LastSignal, s.CandleCount.ToString())
                 Next
                 _DgvWatch.ResumeLayout()
             End If
