@@ -366,7 +366,13 @@ Namespace SimTrade
                     Dim c As New CandleItem()
                     Dim dtStr = ""
                     If row.ContainsKey("dt") Then dtStr = row("dt")
-                    If dtStr <> "" Then DateTime.TryParse(dtStr, c.Dt)
+                    If dtStr <> "" Then
+                        If Not DateTime.TryParse(dtStr, c.Dt) Then
+                            DateTime.TryParseExact(dtStr, "yyyyMMddHHmmss",
+                                Globalization.CultureInfo.InvariantCulture,
+                                Globalization.DateTimeStyles.None, c.Dt)
+                        End If
+                    End If
                     If row.ContainsKey("open") Then Single.TryParse(row("open"), c.Open)
                     If row.ContainsKey("high") Then Single.TryParse(row("high"), c.High)
                     If row.ContainsKey("low") Then Single.TryParse(row("low"), c.Low)
@@ -411,6 +417,7 @@ Namespace SimTrade
                     End Try
                 End Sub)
         End Sub
+
 
 #End Region
 
@@ -629,6 +636,7 @@ Namespace SimTrade
 #Region "StockState ← IndicatorEngine 동기화"
 
         ''' <summary>지표 최신값 → StockState 반영 (가변 — 지표 추가 시 수정)</summary>
+        ''' <summary>지표 최신값 → StockState 반영 (가변 — 지표 추가 시 수정)</summary>
         Public Sub UpdateStateIndicators(state As StockState)
             Dim results = state.Engine?.Results
             If results Is Nothing Then Return
@@ -642,11 +650,36 @@ Namespace SimTrade
                 state.ST_Direction = stList(idx).Val("Direction")
             End If
 
-            ' JMA
+            ' JMA (Up/Down NaN 패턴으로 Direction 판정)
             Dim jmaList = SimTradeHelper.FindResult(results, "JMA_")
             If jmaList IsNot Nothing AndAlso jmaList.Count > idx Then
-                state.JMA_Direction = jmaList(idx).Val("Direction")
-                state.JMA_PrevDirection = If(idx > 0, jmaList(idx - 1).Val("Direction"), 0)
+                ' 현재 봉 Direction
+                Dim curUp = jmaList(idx).Val("Up")
+                Dim curDown = jmaList(idx).Val("Down")
+                If Not Single.IsNaN(curUp) AndAlso Single.IsNaN(curDown) Then
+                    state.JMA_Direction = 1
+                ElseIf Single.IsNaN(curUp) AndAlso Not Single.IsNaN(curDown) Then
+                    state.JMA_Direction = -1
+                ElseIf Not Single.IsNaN(curUp) AndAlso Not Single.IsNaN(curDown) Then
+                    state.JMA_Direction = 1   ' 전환점
+                Else
+                    state.JMA_Direction = 0
+                End If
+
+                ' 이전 봉 Direction
+                If idx > 0 AndAlso jmaList.Count > idx - 1 Then
+                    Dim prevUp = jmaList(idx - 1).Val("Up")
+                    Dim prevDown = jmaList(idx - 1).Val("Down")
+                    If Not Single.IsNaN(prevUp) AndAlso Single.IsNaN(prevDown) Then
+                        state.JMA_PrevDirection = 1
+                    ElseIf Single.IsNaN(prevUp) AndAlso Not Single.IsNaN(prevDown) Then
+                        state.JMA_PrevDirection = -1
+                    ElseIf Not Single.IsNaN(prevUp) AndAlso Not Single.IsNaN(prevDown) Then
+                        state.JMA_PrevDirection = 1
+                    Else
+                        state.JMA_PrevDirection = 0
+                    End If
+                End If
             End If
 
             ' TickIntensity
@@ -690,6 +723,7 @@ Namespace SimTrade
                 state.OBV_Direction, state.RSI_Value,
                 state.MACD_Histogram, state.Volume_Ratio)
         End Sub
+
 
 #End Region
 

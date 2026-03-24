@@ -392,6 +392,7 @@ Public Class StockInfoManager
     End Function
 
     ''' <summary>캐시에서 캔들 데이터를 CandleItem 리스트로 반환 (오버레이용)</summary>
+    ''' <summary>캐시에서 캔들 데이터를 CandleItem 리스트로 반환 (오버레이용)</summary>
     Public Function GetCachedCandleItems(code As String) As List(Of CandleItem)
         If String.IsNullOrWhiteSpace(code) Then Return Nothing
 
@@ -405,7 +406,13 @@ Public Class StockInfoManager
                 Dim ci As New CandleItem()
                 Dim dtStr = ""
                 If r.ContainsKey("dt") Then dtStr = r("dt")
-                If dtStr <> "" Then DateTime.TryParse(dtStr, ci.Dt)
+                If dtStr <> "" Then
+                    If Not DateTime.TryParse(dtStr, ci.Dt) Then
+                        DateTime.TryParseExact(dtStr, "yyyyMMddHHmmss",
+                            Globalization.CultureInfo.InvariantCulture,
+                            Globalization.DateTimeStyles.None, ci.Dt)
+                    End If
+                End If
                 If r.ContainsKey("open") Then Single.TryParse(r("open"), ci.Open)
                 If r.ContainsKey("high") Then Single.TryParse(r("high"), ci.High)
                 If r.ContainsKey("low") Then Single.TryParse(r("low"), ci.Low)
