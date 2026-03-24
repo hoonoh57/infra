@@ -25,6 +25,7 @@ Public Class CircuitDesignerForm
     Private _currentCandleIndex As Integer = -1
     Private _stockCode As String = ""
     Private _stockName As String = ""
+    Private _externalStateManager As StateManager = Nothing
 
     ' ── 3색 점수 시스템 ──
     Private _conditionScores As New Dictionary(Of String, Double)  ' C1~C7 충족률 0.0~1.0+
@@ -74,8 +75,9 @@ Public Class CircuitDesignerForm
     Private Shared ReadOnly COLOR_BG_MID As Color = Color.FromArgb(30, 32, 40)
     Private Shared ReadOnly COLOR_BG_PANEL As Color = Color.FromArgb(35, 38, 48)
 
-    Public Sub New(settings As SimTradeSettings)
+    Public Sub New(settings As SimTradeSettings, Optional stateManager As StateManager = Nothing)
         _settings = settings
+        _externalStateManager = stateManager
         _engine = New CircuitEngine(settings)
         _circuit = CircuitEngine.CreateDefaultCircuit(settings)
         _engine.LoadCircuit(_circuit)
@@ -86,7 +88,9 @@ Public Class CircuitDesignerForm
         _tmrRefresh.Start()
     End Sub
 
+
 #Region "UI 초기화"
+    Private _splitMain As SplitContainer = Nothing  ' ★ 차트/회로도 분할
 
     Private Sub InitUI()
         Me.Text = "Strategy Circuit Tester v5.0 — What You See Is What You Trade"
@@ -132,10 +136,10 @@ Public Class CircuitDesignerForm
         _lblResult.ForeColor = Color.Gray
         pnlTop.Controls.Add(_lblResult)
 
-        ' ── 미니 캔들 차트 (상단 30%) ──
-        _pnlChart.Dock = DockStyle.Top
-        _pnlChart.Height = 220
+        ' ── 미니 캔들 차트 (스크롤 가능 — 서브차트 포함) ──
+        _pnlChart.Dock = DockStyle.Fill
         _pnlChart.BackColor = COLOR_BG_DARK
+        _pnlChart.AutoScroll = False  ' 직접 높이 관리
 
         ' ── 하단 스코어 바 ──
         _pnlScore.Dock = DockStyle.Bottom
@@ -212,15 +216,33 @@ Public Class CircuitDesignerForm
         _lblInfo.TextAlign = ContentAlignment.MiddleCenter
         _pnlParams.Controls.Add(_lblInfo)
 
+        ' ── ★ SplitContainer: 차트(상) / 회로도(하) ──
+        _splitMain = New SplitContainer()
+        _splitMain.Dock = DockStyle.Fill
+        _splitMain.Orientation = Orientation.Horizontal
+        _splitMain.SplitterDistance = 350
+        _splitMain.SplitterWidth = 6
+        _splitMain.BackColor = Color.FromArgb(60, 65, 80)
+        _splitMain.Panel1.BackColor = COLOR_BG_DARK
+        _splitMain.Panel2.BackColor = COLOR_BG_DARK
+        _splitMain.Panel1MinSize = 150
+        _splitMain.Panel2MinSize = 150
+
+        ' Panel1: 차트
+        _splitMain.Panel1.Controls.Add(_pnlChart)
+
+        ' Panel2: 회로도 + 파라미터
+        _splitMain.Panel2.Controls.Add(_canvas)
+        _splitMain.Panel2.Controls.Add(_pnlParams)
+
         ' ── 조립 순서 중요: Fill은 마지막 ──
-        Me.Controls.Add(_canvas)
-        Me.Controls.Add(_pnlParams)
-        Me.Controls.Add(_pnlChart)
+        Me.Controls.Add(_splitMain)
         Me.Controls.Add(_pnlScore)
         Me.Controls.Add(_pnlTimeline)
         Me.Controls.Add(pnlBottom)
         Me.Controls.Add(pnlTop)
     End Sub
+
 
 #End Region
 
@@ -385,18 +407,21 @@ Public Class CircuitDesignerForm
     End Sub
 
     Private Function GetStateManager() As StateManager
+        If _externalStateManager IsNot Nothing Then Return _externalStateManager
+
         Dim parentForm = TryCast(Me.Owner, SimTradeForm)
         If parentForm Is Nothing Then Return Nothing
         Try
             Dim engineField = GetType(SimTradeForm).GetField("_engine", Reflection.BindingFlags.NonPublic Or Reflection.BindingFlags.Instance)
             If engineField Is Nothing Then Return Nothing
-            Dim engine = TryCast(engineField.GetValue(parentForm), SimTradeEngine)
-            If engine Is Nothing Then Return Nothing
-            Return engine.Manager
+            Dim eng = TryCast(engineField.GetValue(parentForm), SimTradeEngine)
+            If eng Is Nothing Then Return Nothing
+            Return eng.Manager
         Catch
             Return Nothing
         End Try
     End Function
+
 
 #End Region
 

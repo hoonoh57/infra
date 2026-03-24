@@ -88,10 +88,11 @@ Public Class SimTradeForm
             Return
         End If
 
-        _circuitForm = New CircuitDesignerForm(_settings)
+        _circuitForm = New CircuitDesignerForm(_settings, _engine.Manager)
         _circuitForm.Show(Me)
         Log("회로 설계기 열림")
     End Sub
+
 
 
     ' ═══════════════════════════════════════
