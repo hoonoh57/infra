@@ -729,6 +729,7 @@ Public Class CircuitDesignerForm
 #Region "미니 캔들 차트 렌더링"
 
     Private Sub OnChartPaint(sender As Object, e As PaintEventArgs) Handles _pnlChart.Paint
+
         Dim g = e.Graphics
         g.SmoothingMode = SmoothingMode.AntiAlias
         g.Clear(COLOR_BG_DARK)
@@ -740,7 +741,11 @@ Public Class CircuitDesignerForm
             Return
         End If
 
-        Dim chartRect As New Rectangle(50, 10, _pnlChart.Width - 70, _pnlChart.Height - 30)
+        ' 메인 차트는 전체 높이의 55% (서브차트 5개 공간 확보)
+        Dim mainChartHeight = CInt((_pnlChart.Height - 30) * 0.55)
+        If mainChartHeight < 80 Then mainChartHeight = _pnlChart.Height - 30
+        Dim chartRect As New Rectangle(50, 10, _pnlChart.Width - 70, mainChartHeight)
+
         Dim startIdx = Math.Max(0, _chartScrollOffset)
         Dim endIdx = Math.Min(_candles.Count - 1, startIdx + _chartVisibleBars - 1)
         If endIdx < startIdx Then Return
@@ -927,6 +932,220 @@ Public Class CircuitDesignerForm
                 timeFont.Dispose()
             End If
         End If
+
+        ' ═══════════════════════════════════════════════════════════════
+        ' ═══ 서브차트 5개: MACD, RSI, OBV, TickIntensity, Volume ═══
+        ' ═══════════════════════════════════════════════════════════════
+        If _indicatorEngine Is Nothing OrElse _indicatorEngine.Results Is Nothing Then Return
+        If _pnlChart.Height < 300 Then Return  ' 높이 부족 시 서브차트 생략
+
+        Dim mainChartBottom = chartRect.Bottom + 20
+        Dim subAreaTop = mainChartBottom + 5
+        Dim subAreaHeight = _pnlChart.Height - subAreaTop - 5
+        If subAreaHeight < 100 Then Return
+
+        Dim subCount = 5
+        Dim subH = CInt(subAreaHeight / subCount)
+        Dim subLeft = chartRect.Left
+        Dim subWidth = chartRect.Width
+        Dim subGap = 2
+
+        ' ── 서브차트 구조체 ──
+        Dim subs() = {
+            New With {.Name = "MACD", .Prefix = "MACD_", .Keys = New String() {"MACD", "Signal", "Histogram"},
+                      .Colors = New Color() {Color.FromArgb(220, 0, 180, 255), Color.FromArgb(220, 255, 140, 0), Color.FromArgb(150, 120, 200, 120)},
+                      .IsBar = New Boolean() {False, False, True}, .ZeroLine = True},
+            New With {.Name = "RSI", .Prefix = "RSI_", .Keys = New String() {"Value"},
+                      .Colors = New Color() {Color.FromArgb(220, 200, 130, 255)},
+                      .IsBar = New Boolean() {False}, .ZeroLine = False},
+            New With {.Name = "OBV", .Prefix = "OBV_", .Keys = New String() {"OBV", "Signal"},
+                      .Colors = New Color() {Color.FromArgb(220, 100, 220, 100), Color.FromArgb(220, 255, 160, 60)},
+                      .IsBar = New Boolean() {False, False}, .ZeroLine = False},
+            New With {.Name = "TickInt", .Prefix = "TICKINT_", .Keys = New String() {"TickSum", "MA5"},
+                      .Colors = New Color() {Color.FromArgb(220, 80, 200, 255), Color.FromArgb(220, 255, 100, 100)},
+                      .IsBar = New Boolean() {True, False}, .ZeroLine = True},
+            New With {.Name = "Volume", .Prefix = "VOL_", .Keys = New String() {"Volume", "MA"},
+                      .Colors = New Color() {Color.FromArgb(120, 100, 160, 220), Color.FromArgb(220, 255, 200, 60)},
+                      .IsBar = New Boolean() {True, False}, .ZeroLine = False}
+        }
+
+        For si = 0 To subCount - 1
+            Dim s = subs(si)
+            Dim sRect As New Rectangle(subLeft, subAreaTop + si * subH + subGap, subWidth, subH - subGap * 2)
+            If sRect.Height < 15 Then Continue For
+
+            ' 배경
+            Using bgBr As New SolidBrush(Color.FromArgb(If(si Mod 2 = 0, 22, 26), If(si Mod 2 = 0, 22, 26), If(si Mod 2 = 0, 30, 35)))
+                g.FillRectangle(bgBr, sRect)
+            End Using
+
+            ' 테두리
+            Using borderPen As New Pen(Color.FromArgb(45, 50, 65), 0.5F)
+                g.DrawRectangle(borderPen, sRect)
+            End Using
+
+            ' 라벨
+            Using lblBr As New SolidBrush(Color.FromArgb(140, 150, 170))
+                g.DrawString(CStr(s.Name), New Font("Consolas", 7.5F, FontStyle.Bold), lblBr, sRect.Left + 3, sRect.Top + 1)
+            End Using
+
+            ' 데이터 가져오기
+            Dim resList = FindResult(_indicatorEngine.Results, CStr(s.Prefix))
+            If resList Is Nothing OrElse resList.Count = 0 Then Continue For
+
+            ' 값 범위 계산
+            Dim sMin As Single = Single.MaxValue
+            Dim sMax As Single = Single.MinValue
+            Dim keys = DirectCast(s.Keys, String())
+            For i = startIdx To endIdx
+                If i >= resList.Count Then Continue For
+                For ki = 0 To keys.Length - 1
+                    Dim v = resList(i).Val(keys(ki))
+                    If Single.IsNaN(v) Then Continue For
+                    If v < sMin Then sMin = v
+                    If v > sMax Then sMax = v
+                Next
+            Next
+
+            If sMin >= sMax Then
+                sMin -= 1 : sMax += 1
+            End If
+
+            ' RSI 고정 범위
+            If CStr(s.Name) = "RSI" Then
+                sMin = 0 : sMax = 100
+            End If
+
+            ' Zero line 포함
+            If CBool(s.ZeroLine) Then
+                If sMin > 0 Then sMin = 0
+                If sMax < 0 Then sMax = 0
+            End If
+
+            Dim sPad = (sMax - sMin) * 0.08F
+            sMin -= sPad : sMax += sPad
+            Dim sRange = sMax - sMin
+            If sRange <= 0 Then sRange = 1
+
+            ' Zero line 그리기
+            If CBool(s.ZeroLine) Then
+                Dim zy = sRect.Top + CInt((sMax - 0) / sRange * sRect.Height)
+                If zy >= sRect.Top AndAlso zy <= sRect.Bottom Then
+                    Using zPen As New Pen(Color.FromArgb(60, 70, 90), 0.5F)
+                        zPen.DashStyle = DashStyle.Dot
+                        g.DrawLine(zPen, sRect.Left, zy, sRect.Right, zy)
+                    End Using
+                End If
+            End If
+
+            ' RSI 과매수/과매도 라인
+            If CStr(s.Name) = "RSI" Then
+                For Each lvl In {30.0F, 70.0F}
+                    Dim ly = sRect.Top + CInt((sMax - lvl) / sRange * sRect.Height)
+                    If ly >= sRect.Top AndAlso ly <= sRect.Bottom Then
+                        Using lPen As New Pen(Color.FromArgb(50, 200, 200, 200), 0.5F)
+                            lPen.DashStyle = DashStyle.Dash
+                            g.DrawLine(lPen, sRect.Left, ly, sRect.Right, ly)
+                        End Using
+                    End If
+                Next
+            End If
+
+            ' 시리즈 그리기
+            Dim colors = DirectCast(s.Colors, Color())
+            Dim isBars = DirectCast(s.IsBar, Boolean())
+            For ki = 0 To keys.Length - 1
+                Dim seriesColor = colors(Math.Min(ki, colors.Length - 1))
+                Dim isBar = isBars(Math.Min(ki, isBars.Length - 1))
+
+                If isBar Then
+                    ' 바 차트
+                    Dim zeroY = sRect.Top + CInt((sMax - 0) / sRange * sRect.Height)
+                    zeroY = Math.Max(sRect.Top, Math.Min(sRect.Bottom, zeroY))
+                    For i = startIdx To endIdx
+                        If i >= resList.Count Then Continue For
+                        Dim v = resList(i).Val(keys(ki))
+                        If Single.IsNaN(v) Then Continue For
+                        Dim bx = sRect.Left + (i - startIdx) * barWidth + barWidth * 0.2F
+                        Dim bw = Math.Max(1.0F, barWidth * 0.6F)
+                        Dim vy = sRect.Top + CInt((sMax - v) / sRange * sRect.Height)
+                        vy = Math.Max(sRect.Top, Math.Min(sRect.Bottom, vy))
+                        Dim barTop2 = Math.Min(vy, zeroY)
+                        Dim barBot2 = Math.Max(vy, zeroY)
+                        If barBot2 - barTop2 < 1 Then barBot2 = barTop2 + 1
+                        Dim barColor = If(v >= 0, seriesColor, Color.FromArgb(seriesColor.A, 255, 80, 80))
+                        Using br As New SolidBrush(barColor)
+                            g.FillRectangle(br, bx, barTop2, bw, barBot2 - barTop2)
+                        End Using
+                    Next
+                Else
+                    ' 라인 차트
+                    Dim pts As New List(Of PointF)
+                    For i = startIdx To endIdx
+                        If i >= resList.Count Then Continue For
+                        Dim v = resList(i).Val(keys(ki))
+                        If Single.IsNaN(v) Then
+                            ' 끊김: 지금까지 모인 점 그리기
+                            If pts.Count >= 2 Then
+                                Using lp As New Pen(seriesColor, 1.2F)
+                                    g.DrawLines(lp, pts.ToArray())
+                                End Using
+                            End If
+                            pts.Clear()
+                            Continue For
+                        End If
+                        Dim px = sRect.Left + (i - startIdx) * barWidth + barWidth / 2.0F
+                        Dim py = sRect.Top + CInt((sMax - v) / sRange * sRect.Height)
+                        py = Math.Max(sRect.Top, Math.Min(sRect.Bottom, py))
+                        pts.Add(New PointF(px, py))
+                    Next
+                    If pts.Count >= 2 Then
+                        Using lp As New Pen(seriesColor, 1.2F)
+                            g.DrawLines(lp, pts.ToArray())
+                        End Using
+                    End If
+                End If
+            Next
+
+            ' 현재 캔들 위치 세로선
+            If _currentCandleIndex >= startIdx AndAlso _currentCandleIndex <= endIdx Then
+                Dim cx = sRect.Left + (_currentCandleIndex - startIdx) * barWidth + barWidth / 2.0F
+                Using cPen As New Pen(Color.FromArgb(80, 255, 255, 100), 0.7F)
+                    cPen.DashStyle = DashStyle.Dash
+                    g.DrawLine(cPen, cx, sRect.Top, cx, sRect.Bottom)
+                End Using
+            End If
+
+            ' 현재 봉 값 텍스트 (우측 상단)
+            If _currentCandleIndex >= 0 AndAlso _currentCandleIndex < resList.Count Then
+                Dim valTexts As New List(Of String)
+                For ki = 0 To keys.Length - 1
+                    Dim v = resList(_currentCandleIndex).Val(keys(ki))
+                    If Not Single.IsNaN(v) Then
+                        valTexts.Add($"{keys(ki)}={v:F1}")
+                    End If
+                Next
+                If valTexts.Count > 0 Then
+                    Dim valStr = String.Join("  ", valTexts)
+                    Using vBr As New SolidBrush(Color.FromArgb(200, 220, 240))
+                        Dim vFont As New Font("Consolas", 7.0F)
+                        Dim vSize = g.MeasureString(valStr, vFont)
+                        g.DrawString(valStr, vFont, vBr, sRect.Right - vSize.Width - 3, sRect.Top + 1)
+                    End Using
+                End If
+            End If
+
+            ' 크로스헤어 서브차트 연장
+            If _chartMousePos.X >= sRect.Left AndAlso _chartMousePos.X <= sRect.Right Then
+                Using crossPen As New Pen(Color.FromArgb(60, 200, 200, 200), 0.5F)
+                    crossPen.DashStyle = DashStyle.Dot
+                    g.DrawLine(crossPen, _chartMousePos.X, sRect.Top, _chartMousePos.X, sRect.Bottom)
+                End Using
+            End If
+        Next
+
+
+
     End Sub
 
 
