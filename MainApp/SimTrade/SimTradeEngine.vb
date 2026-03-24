@@ -364,15 +364,38 @@ Namespace SimTrade
             For Each row In rows
                 Try
                     Dim c As New CandleItem()
+
+                    ' ── Dt 파싱: date+time 분리 필드 우선, dt 단일 필드 폴백 ──
+                    Dim dateStr = ""
+                    Dim timeStr = ""
                     Dim dtStr = ""
-                    If row.ContainsKey("dt") Then dtStr = row("dt")
-                    If dtStr <> "" Then
+                    If row.ContainsKey("date") Then dateStr = row("date").Trim()
+                    If row.ContainsKey("time") Then timeStr = row("time").Trim()
+                    If row.ContainsKey("dt") Then dtStr = row("dt").Trim()
+
+                    If dateStr <> "" AndAlso timeStr <> "" Then
+                        ' time이 3자리일 수 있음: "917" → "0917"
+                        Dim combined = dateStr & timeStr.PadLeft(4, "0"c)
+                        If Not DateTime.TryParseExact(combined, "yyyyMMddHHmm",
+                        Globalization.CultureInfo.InvariantCulture,
+                        Globalization.DateTimeStyles.None, c.Dt) Then
+                            ' 6자리 시간(HHmmss)인 경우
+                            DateTime.TryParseExact(combined, "yyyyMMddHHmmss",
+                            Globalization.CultureInfo.InvariantCulture,
+                            Globalization.DateTimeStyles.None, c.Dt)
+                        End If
+                    ElseIf dtStr <> "" Then
                         If Not DateTime.TryParse(dtStr, c.Dt) Then
-                            DateTime.TryParseExact(dtStr, "yyyyMMddHHmmss",
+                            If Not DateTime.TryParseExact(dtStr, "yyyyMMddHHmmss",
+                            Globalization.CultureInfo.InvariantCulture,
+                            Globalization.DateTimeStyles.None, c.Dt) Then
+                                DateTime.TryParseExact(dtStr, "yyyyMMddHHmm",
                                 Globalization.CultureInfo.InvariantCulture,
                                 Globalization.DateTimeStyles.None, c.Dt)
+                            End If
                         End If
                     End If
+
                     If row.ContainsKey("open") Then Single.TryParse(row("open"), c.Open)
                     If row.ContainsKey("high") Then Single.TryParse(row("high"), c.High)
                     If row.ContainsKey("low") Then Single.TryParse(row("low"), c.Low)
@@ -387,35 +410,35 @@ Namespace SimTrade
             downloaded.Sort(Function(a, b) a.Dt.CompareTo(b.Dt))
 
             Threading.ThreadPool.QueueUserWorkItem(
-                Sub()
-                    Try
-                        SyncLock state.Candles
-                            Dim existing = New List(Of CandleItem)(state.Candles)
-                            state.Candles.Clear()
-                            state.Candles.AddRange(downloaded)
-                            state.Candles.AddRange(existing)
-                            While state.Candles.Count > SimTradeConst.MAX_CANDLES
-                                state.Candles.RemoveAt(0)
-                            End While
-                        End SyncLock
+            Sub()
+                Try
+                    SyncLock state.Candles
+                        Dim existing = New List(Of CandleItem)(state.Candles)
+                        state.Candles.Clear()
+                        state.Candles.AddRange(downloaded)
+                        state.Candles.AddRange(existing)
+                        While state.Candles.Count > SimTradeConst.MAX_CANDLES
+                            state.Candles.RemoveAt(0)
+                        End While
+                    End SyncLock
 
-                        _candleBuilder.InitializeFromHistory(code, state.Candles)
-                        state.Engine.CalculateAll(state.Candles)
-                        UpdateStateIndicators(state)
-                        ComputeReferenceCandle(state)
+                    _candleBuilder.InitializeFromHistory(code, state.Candles)
+                    state.Engine.CalculateAll(state.Candles)
+                    UpdateStateIndicators(state)
+                    ComputeReferenceCandle(state)
 
-                        If state.Name = "" Then
-                            Dim sn = StockInfoManager.I.GetItem(code)
-                            If sn IsNot Nothing Then state.Name = sn.Name
-                        End If
+                    If state.Name = "" Then
+                        Dim sn = StockInfoManager.I.GetItem(code)
+                        If sn IsNot Nothing Then state.Name = sn.Name
+                    End If
 
-                        _stateManager.TransitionTo(code, DataState.Ready)
-                        Threading.Interlocked.Increment(_readyCount)
-                        _view.Log($"[캔들수신] {code} {state.Name} — {downloaded.Count}개 (총 {state.Candles.Count}개) → Ready")
-                    Catch ex As Exception
-                        _view.Log($"[캔들처리오류] {code}: {ex.Message}")
-                    End Try
-                End Sub)
+                    _stateManager.TransitionTo(code, DataState.Ready)
+                    Threading.Interlocked.Increment(_readyCount)
+                    _view.Log($"[캔들수신] {code} {state.Name} — {downloaded.Count}개 (총 {state.Candles.Count}개) → Ready")
+                Catch ex As Exception
+                    _view.Log($"[캔들처리오류] {code}: {ex.Message}")
+                End Try
+            End Sub)
         End Sub
 
 
