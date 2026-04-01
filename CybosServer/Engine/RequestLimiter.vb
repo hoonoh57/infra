@@ -8,15 +8,17 @@ Imports System.Threading
 Public Class RequestLimiter
 
     Private ReadOnly _minIntervalMs As Integer = 200
+    ' ── 변경 후 (한 번 생성 후 재사용) ──
+    Private _cpCybos As CpCybos
 
     ''' <summary>남은 요청 횟수가 0이면 대기</summary>
     Public Sub WaitIfNeeded()
         Try
-            Dim cpCybos As New CpCybos()
-            Dim remain = CInt(cpCybos.GetLimitRemainCount(1))
+            If _cpCybos Is Nothing Then _cpCybos = New CpCybos()
+            Dim remain = CInt(_cpCybos.GetLimitRemainCount(1))
 
             If remain <= 0 Then
-                Dim waitMs = CInt(cpCybos.GetLimitRemainTime(1))
+                Dim waitMs = CInt(_cpCybos.GetLimitRemainTime(1))
                 If waitMs > 0 Then
                     Thread.Sleep(waitMs + 100)  ' 안전 마진
                 Else

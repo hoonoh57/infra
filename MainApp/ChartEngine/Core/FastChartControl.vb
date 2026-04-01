@@ -928,44 +928,53 @@ Public Class FastChartControl
         Dim rows = m.DictList("rows")
         If rows Is Nothing OrElse rows.Count = 0 Then Return
 
-        Dim rank As Integer = 0
-        Dim sectorChange As Single = 0
-        For i As Integer = 0 To rows.Count - 1
-            Dim row = rows(i)
-            If row Is Nothing Then Continue For
+        ' ── 1위 종목 = 대장주 ──
+        Dim leaderCode As String = ""
+        Dim leaderName As String = ""
+        If rows.Count > 0 AndAlso rows(0) IsNot Nothing Then
+            If rows(0).ContainsKey("code") Then leaderCode = rows(0)("code")
+            If leaderCode = "" AndAlso rows(0).ContainsKey("종목코드") Then leaderCode = rows(0)("종목코드")
+            leaderCode = SharedUtil.NormalizeCode(leaderCode)
 
-            Dim rowCode As String = ""
-            If row.ContainsKey("code") Then rowCode = row("code")
-            If rowCode = "" AndAlso row.ContainsKey("종목코드") Then rowCode = row("종목코드")
-            rowCode = SharedUtil.NormalizeCode(rowCode)
-            If rowCode <> _stockCode Then Continue For
+            Dim leaderItem = StockInfoManager.I.GetItem(leaderCode)
+            If leaderItem IsNot Nothing Then leaderName = leaderItem.Name
+        End If
 
-            rank = i + 1
-            If row.ContainsKey("등락률") Then sectorChange = CSng(SharedUtil.SafeDouble(row("등락률"), True))
-            Exit For
-        Next
+        If String.IsNullOrWhiteSpace(leaderCode) Then Return
+        ' 자기 자신이 대장주면 2위를 대장주로
+        If leaderCode = _stockCode AndAlso rows.Count > 1 Then
+            If rows(1).ContainsKey("code") Then leaderCode = rows(1)("code")
+            If leaderCode = "" AndAlso rows(1).ContainsKey("종목코드") Then leaderCode = rows(1)("종목코드")
+            leaderCode = SharedUtil.NormalizeCode(leaderCode)
+            Dim leaderItem2 = StockInfoManager.I.GetItem(leaderCode)
+            If leaderItem2 IsNot Nothing Then leaderName = leaderItem2.Name
+        End If
 
-        If rank <= 0 Then Return
-        Dim totalStocks = rows.Count
+        ' ── 대장주 캔들을 StockInfoManager 캐시에서 가져옴 ──
+        Dim leaderCandles = StockInfoManager.I.GetCachedCandleItems(leaderCode)
 
+        ' ── SectorLeader_Indicator에 주입 ──
         For Each ind In _indicatorEngine.GetAll()
             Dim secInd = TryCast(ind, SectorLeader_Indicator)
             If secInd IsNot Nothing Then
-                secInd.UpdateSnapshot(1, 1, rank, totalStocks, sectorChange)
+                secInd.SetLeader(leaderCode, leaderName, leaderCandles)
             End If
         Next
 
         If _candles Is Nothing OrElse _candles.Count = 0 Then Return
+
+        ' ── 전체 재계산 ──
         If InvokeRequired Then
             BeginInvoke(Sub()
-                            _indicatorEngine.UpdateLast(_candles)
+                            _indicatorEngine.CalculateAll(_candles)
                             _needsRepaint = True
                         End Sub)
         Else
-            _indicatorEngine.UpdateLast(_candles)
+            _indicatorEngine.CalculateAll(_candles)
             _needsRepaint = True
         End If
     End Sub
+
 
     Private Sub RequestAuxiliaryIndicatorData()
         If String.IsNullOrWhiteSpace(_stockCode) Then Return

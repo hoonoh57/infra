@@ -46,15 +46,13 @@ Public Class CybosServerMain
     End Sub
 
     Private Sub OnPipeMessage(msg As Msg) Handles _pipe.MessageReceived
-        ' 모든 요청을 엔진에 위임 (별도 스레드에서 실행 - 블로킹 COM 호출이므로)
-        Threading.ThreadPool.QueueUserWorkItem(
-            Sub(state)
-                _engine.Execute(msg, Sub(response)
-                                         ' 원래 요청의 시퀀스를 응답에 복사 (클라이언트 콜백 매칭용)
-                                         If msg.Has("_seq") Then response("_seq") = msg("_seq")
-                                         _pipe.Send(response)
-                                     End Sub)
-            End Sub)
+        Me.BeginInvoke(                                ' ← STA(UI) 스레드
+        Sub()
+            _engine.Execute(msg, Sub(response)
+                                     If msg.Has("_seq") Then response("_seq") = msg("_seq")
+                                     _pipe.Send(response)
+                                 End Sub)
+        End Sub)
     End Sub
 
     Protected Overrides Sub OnFormClosing(e As FormClosingEventArgs)

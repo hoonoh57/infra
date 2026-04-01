@@ -14,6 +14,14 @@ Public Class TickIntensity_Indicator
     Private _currentRealtimeTickCount As Integer = 0
     Private ReadOnly _completedRealtimeBars As New Dictionary(Of DateTime, Single)
     Private ReadOnly _tickLock As New Object()
+    Public ReadOnly Property TickBarCount As Integer
+        Get
+            SyncLock _tickLock
+                Return _tickBars.Count
+            End SyncLock
+        End Get
+    End Property
+
 
     Public Sub New(Optional timeframeMinutes As Integer = 1)
         _timeframeMinutes = timeframeMinutes

@@ -217,6 +217,7 @@ Namespace SimTrade
         Public Property JMA_Direction As Double = Double.NaN
         Public Property JMA_PrevDirection As Double = Double.NaN
         Public Property JMA_TurnBar As Integer = -1
+        Public Property TickBarCount As Integer = 0
         Public Property TickSum_Normalized As Double = Double.NaN
         Public Property TickMA5_Normalized As Double = Double.NaN
         Public Property TickMA20_Normalized As Double = Double.NaN
