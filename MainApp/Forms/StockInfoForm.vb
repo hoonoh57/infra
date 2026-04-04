@@ -28,14 +28,20 @@ Public Class StockInfoForm
     Private _colName As Integer = 1
     Private _colSource As Integer = 2
     Private _colPrice As Integer = 3
-    Private _colChange As Integer = 4
-    Private _colChangeRate As Integer = 5
-    Private _colVolume As Integer = 6
-    Private _colHigh As Integer = 7
-    Private _colLow As Integer = 8
-    Private _colStrength As Integer = 9
-    Private _colState As Integer = 10
-    Private _colCandles As Integer = 11
+    Private _colCapturePrice As Integer = 4
+    Private _colChange As Integer = 5
+    Private _colChangeRate As Integer = 6
+    Private _colScore As Integer = 7
+    Private _colScoreRank As Integer = 8
+    Private _colHighestRisePct As Integer = 9
+    Private _colHighestRiseRank As Integer = 10
+    Private _colRankGap As Integer = 11
+    Private _colVolume As Integer = 12
+    Private _colHigh As Integer = 13
+    Private _colLow As Integer = 14
+    Private _colStrength As Integer = 15
+    Private _colState As Integer = 16
+    Private _colCandles As Integer = 17
 
     Public Sub New()
         Me.Text = "종목정보"
@@ -108,34 +114,46 @@ Public Class StockInfoForm
         _grid.GridColor = Color.FromArgb(60, 60, 60)
 
         ' 컬럼 정의
-        _grid.Columns.Add("Code", "코드")           ' 0
-        _grid.Columns.Add("Name", "종목명")          ' 1
-        _grid.Columns.Add("Source", "소스")          ' 2
-        _grid.Columns.Add("Price", "현재가")          ' 3
-        _grid.Columns.Add("Change", "전일비")         ' 4
-        _grid.Columns.Add("ChangeRate", "등락률%")    ' 5
-        _grid.Columns.Add("Volume", "거래량")         ' 6
-        _grid.Columns.Add("High", "고가")            ' 7
-        _grid.Columns.Add("Low", "저가")             ' 8
-        _grid.Columns.Add("Strength", "체결강도")     ' 9
-        _grid.Columns.Add("State", "상태")           ' 10
-        _grid.Columns.Add("Candles", "캔들")          ' 11
+        _grid.Columns.Add("Code", "코드")                 ' 0
+        _grid.Columns.Add("Name", "종목명")                ' 1
+        _grid.Columns.Add("Source", "소스")                ' 2
+        _grid.Columns.Add("Price", "현재가")                ' 3
+        _grid.Columns.Add("CapturePrice", "포착가")         ' 4
+        _grid.Columns.Add("Change", "전일비")               ' 5
+        _grid.Columns.Add("ChangeRate", "등락률%")          ' 6
+        _grid.Columns.Add("Score", "점수")                  ' 7
+        _grid.Columns.Add("ScoreRank", "점수순위")          ' 8
+        _grid.Columns.Add("HighestRisePct", "최고상승%")    ' 9
+        _grid.Columns.Add("HighestRiseRank", "최고상승순위") ' 10
+        _grid.Columns.Add("RankGap", "순위차")              ' 11
+        _grid.Columns.Add("Volume", "거래량")               ' 12
+        _grid.Columns.Add("High", "고가")                   ' 13
+        _grid.Columns.Add("Low", "저가")                    ' 14
+        _grid.Columns.Add("Strength", "체결강도")           ' 15
+        _grid.Columns.Add("State", "상태")                  ' 16
+        _grid.Columns.Add("Candles", "캔들")                ' 17
 
         _grid.Columns(0).Width = 70
         _grid.Columns(1).Width = 100
         _grid.Columns(2).Width = 80
         _grid.Columns(3).Width = 75
-        _grid.Columns(4).Width = 65
+        _grid.Columns(4).Width = 75
         _grid.Columns(5).Width = 65
-        _grid.Columns(6).Width = 80
-        _grid.Columns(7).Width = 70
-        _grid.Columns(8).Width = 70
-        _grid.Columns(9).Width = 60
-        _grid.Columns(10).Width = 60
-        _grid.Columns(11).Width = 50
+        _grid.Columns(6).Width = 65
+        _grid.Columns(7).Width = 60
+        _grid.Columns(8).Width = 60
+        _grid.Columns(9).Width = 75
+        _grid.Columns(10).Width = 75
+        _grid.Columns(11).Width = 60
+        _grid.Columns(12).Width = 80
+        _grid.Columns(13).Width = 70
+        _grid.Columns(14).Width = 70
+        _grid.Columns(15).Width = 60
+        _grid.Columns(16).Width = 60
+        _grid.Columns(17).Width = 50
 
         ' 오른쪽 정렬 (숫자)
-        For i = 3 To 11
+        For i = 3 To 17
             _grid.Columns(i).DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight
         Next
 
@@ -196,7 +214,10 @@ Public Class StockInfoForm
 
         ' TOP N 필터: 등락률 상위 N개만 표시
         If _topNFilterActive Then
-            items = items.OrderByDescending(Function(x) x.ChangeRate).Take(TOP_N_COUNT).ToList()
+            items = items.OrderByDescending(Function(x) x.FinalScore).
+                  ThenByDescending(Function(x) x.ChangeRate).
+                  Take(TOP_N_COUNT).
+                  ToList()
         End If
 
         ' 행 수 맞추기
@@ -230,15 +251,23 @@ Public Class StockInfoForm
     Private Sub FillRow(row As DataGridViewRow, item As StockInfoItem)
         row.Cells(_colCode).Value = item.Code
         row.Cells(_colName).Value = item.Name
+
         If Not String.IsNullOrWhiteSpace(item.SourceDetail) AndAlso
-           item.SourceDetail.IndexOf("KOSDAQ150", StringComparison.OrdinalIgnoreCase) >= 0 Then
+   item.SourceDetail.IndexOf("KOSDAQ150", StringComparison.OrdinalIgnoreCase) >= 0 Then
             row.Cells(_colSource).Value = "KOSDAQ150"
         Else
             row.Cells(_colSource).Value = item.SourceText()
         End If
+
         row.Cells(_colPrice).Value = item.Price.ToString("N0")
+        row.Cells(_colCapturePrice).Value = item.CapturePrice.ToString("N0")
         row.Cells(_colChange).Value = item.Change.ToString("N0")
         row.Cells(_colChangeRate).Value = item.ChangeRate.ToString("0.00")
+        row.Cells(_colScore).Value = item.FinalScore.ToString("0.0")
+        row.Cells(_colScoreRank).Value = item.ScoreRank.ToString()
+        row.Cells(_colHighestRisePct).Value = item.HighestRisePct.ToString("0.00")
+        row.Cells(_colHighestRiseRank).Value = item.HighestRiseRank.ToString()
+        row.Cells(_colRankGap).Value = item.ScoreVsHighRankGap.ToString()
         row.Cells(_colVolume).Value = item.Volume.ToString("N0")
         row.Cells(_colHigh).Value = item.High.ToString("N0")
         row.Cells(_colLow).Value = item.Low.ToString("N0")
@@ -272,6 +301,23 @@ Public Class StockInfoForm
             Case Else
                 row.Cells(_colState).Style.ForeColor = Color.Orange
         End Select
+
+        If item.FinalScore >= 80 Then
+            row.Cells(_colScore).Style.ForeColor = Color.Lime
+        ElseIf item.FinalScore >= 60 Then
+            row.Cells(_colScore).Style.ForeColor = Color.Yellow
+        Else
+            row.Cells(_colScore).Style.ForeColor = Color.White
+        End If
+
+        If Math.Abs(item.ScoreVsHighRankGap) <= 2 Then
+            row.Cells(_colRankGap).Style.ForeColor = Color.LimeGreen
+        ElseIf Math.Abs(item.ScoreVsHighRankGap) <= 5 Then
+            row.Cells(_colRankGap).Style.ForeColor = Color.Orange
+        Else
+            row.Cells(_colRankGap).Style.ForeColor = Color.IndianRed
+        End If
+
     End Sub
 
     Private Sub SafeUI(action As Action)
