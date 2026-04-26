@@ -392,8 +392,6 @@ Public Class StockInfoManager
     End Function
 
     ''' <summary>캐시에서 캔들 데이터를 CandleItem 리스트로 반환 (오버레이용)</summary>
-    ''' <summary>캐시에서 캔들 데이터를 CandleItem 리스트로 반환 (오버레이용)</summary>
-    ''' <summary>캐시에서 캔들 데이터를 CandleItem 리스트로 반환 (오버레이용)</summary>
     Public Function GetCachedCandleItems(code As String) As List(Of CandleItem)
         If String.IsNullOrWhiteSpace(code) Then Return Nothing
 
@@ -447,7 +445,6 @@ Public Class StockInfoManager
         Return result
     End Function
 
-
     Public Function IsCandleRequested(code As String) As Boolean
         If String.IsNullOrWhiteSpace(code) Then Return False
         Return _candleRequested.ContainsKey(code)
@@ -484,63 +481,19 @@ Public Class StockInfoManager
 
     ''' <summary>
     ''' 실시간 틱으로 캔들 캐시를 백그라운드 업데이트.
-    ''' 차트를 열지 않아도 캔들 데이터가 항상 최신 상태 유지.
+    ''' 차트를 열지 않아도 캔들 데이터가 항상 최신 상태 유지된다.
+    ''' 실제 봉 시간은 API 체결시간을 우선 사용하고, 체결시간이 없을 때만 PC 시간을 폴백한다.
     ''' </summary>
     Private Sub UpdateCandleCache(code As String, m As Msg)
         Dim rows As List(Of Dictionary(Of String, String)) = Nothing
         If Not _candleRowsCache.TryGetValue(code, rows) Then Return
         If rows Is Nothing OrElse rows.Count = 0 Then Return
 
-        Dim price = Math.Abs(SharedUtil.SafeInt(m.Str("price", "0")))
-        If price <= 0 Then Return
-        Dim volume = Math.Abs(CLng(m.Dbl("volume")))
-
-        ' 틱 시간 → 분봉 바 시간 계산
-        Dim tickTime = DateTime.Now
-        Dim tf = RuntimeChartSettings.NormalizeMinuteTimeframe(RuntimeChartSettings.DefaultCandleTimeframe)
-        Dim minuteUnit As Integer = 1
-        If tf.Length > 1 Then Integer.TryParse(tf.Substring(1), minuteUnit)
-        If minuteUnit <= 0 Then minuteUnit = 1
-        Dim bucketMinute = (tickTime.Minute \ minuteUnit) * minuteUnit
-        Dim barTime As New DateTime(tickTime.Year, tickTime.Month, tickTime.Day, tickTime.Hour, bucketMinute, 0)
-        Dim barTimeStr = barTime.ToString("yyyyMMddHHmmss")
-
-        SyncLock rows
-            Dim lastRow = rows(rows.Count - 1)
-            Dim lastDt = If(lastRow.ContainsKey("dt"), lastRow("dt"), "")
-
-            ' 마지막 캔들과 같은 바 → 업데이트 (high/low/close/volume)
-            If lastDt = barTimeStr Then
-                Dim curHigh = SharedUtil.SafeInt(If(lastRow.ContainsKey("high"), lastRow("high"), "0"))
-                Dim curLow = SharedUtil.SafeInt(If(lastRow.ContainsKey("low"), lastRow("low"), "0"))
-                Dim curVol As Long = 0
-                Long.TryParse(If(lastRow.ContainsKey("volume"), lastRow("volume"), "0"), curVol)
-
-                If price > curHigh Then lastRow("high") = price.ToString()
-                If curLow <= 0 OrElse price < curLow Then lastRow("low") = price.ToString()
-                lastRow("close") = price.ToString()
-                lastRow("현재가") = price.ToString()
-                lastRow("volume") = (curVol + volume).ToString()
-                lastRow("거래량") = (curVol + volume).ToString()
-
-            ' 새 바 시작 (시간이 더 크면)
-            ElseIf String.Compare(barTimeStr, lastDt, StringComparison.Ordinal) > 0 Then
-                Dim newRow As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase) From {
-                    {"dt", barTimeStr},
-                    {"open", price.ToString()},
-                    {"high", price.ToString()},
-                    {"low", price.ToString()},
-                    {"close", price.ToString()},
-                    {"volume", volume.ToString()},
-                    {"시가", price.ToString()},
-                    {"고가", price.ToString()},
-                    {"저가", price.ToString()},
-                    {"현재가", price.ToString()},
-                    {"거래량", volume.ToString()}
-                }
-                rows.Add(newRow)
-            End If
-        End SyncLock
+        RealtimeCandleBuilder.UpdateRowsFromTick(rows, m, RuntimeChartSettings.DefaultCandleTimeframe)
+        SaveStrategyLabCandleSnapshot(code,
+                                      RuntimeChartSettings.DefaultCandleTimeframe,
+                                      RuntimeChartSettings.MarketDataProvider,
+                                      rows)
     End Sub
 
     ' ════════════════════════════════════════
@@ -674,11 +627,18 @@ Public Class StockInfoManager
                                        normalizedTimeframe)
             Directory.CreateDirectory(baseDir)
 
+            Dim lastRow As Dictionary(Of String, String) = rows(rows.Count - 1)
+            Dim lastTickTime As String = ""
+            If lastRow IsNot Nothing AndAlso lastRow.ContainsKey("lastTickTime") Then
+                lastTickTime = lastRow("lastTickTime")
+            End If
+
             Dim payload As New Dictionary(Of String, Object)(StringComparer.OrdinalIgnoreCase) From {
                 {"code", code},
                 {"provider", normalizedProvider},
                 {"timeframe", normalizedTimeframe},
                 {"savedAt", DateTime.Now},
+                {"lastTickTime", lastTickTime},
                 {"rows", CloneRows(rows)}
             }
 
