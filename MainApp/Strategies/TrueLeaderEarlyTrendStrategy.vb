@@ -13,6 +13,7 @@ Imports System.Collections.Generic
 ''' 핵심 원칙:
 ''' - 현재 진행 중인 봉의 미확정 지표값을 매매 조건으로 사용하지 않는다.
 ''' - 평가봉 i의 가격은 사용할 수 있지만, 지표 상태/전환은 i-1, i-2의 확정 지표로 판단한다.
+''' - SuperTrend/JMA 추세는 Direction/Slope 단순 0 비교가 아니라 Up/Down 배열의 NaN 여부를 우선 사용한다.
 ''' - 즉, 전봉까지 확정된 지표 + 현재봉 가격 돌파/이탈 확인 구조를 사용한다.
 ''' </summary>
 Public Class TrueLeaderEarlyTrendStrategy
@@ -155,8 +156,8 @@ Public Class TrueLeaderEarlyTrendStrategy
             Return False
         End If
 
-        If ctx.JmaValue > 0.0R AndAlso ctx.ClosePrice < ctx.JmaValue Then
-            reason = "현재 가격이 전봉 JMA 기준선 아래"
+        If IsValidLine(ctx.JmaActiveValue) AndAlso ctx.ClosePrice < ctx.JmaActiveValue Then
+            reason = "현재 가격이 전봉 JMA 상승 기준선 아래"
             Return False
         End If
 
@@ -232,18 +233,44 @@ Public Class TrueLeaderEarlyTrendStrategy
         ctx.GapRate = CalcGapRate(candles, index, ctx.DayOpen)
         ctx.PullbackRate = CalcPullback(ctx.ClosePrice, ctx.DayHigh)
 
-        ctx.SuperTrendDirection = GetIndicatorValue(indicatorResults, indicatorIndex, "ST", "SuperTrend", "Direction")
+        ctx.SuperTrendUp = GetIndicatorValue(indicatorResults, indicatorIndex, "ST", "SuperTrend", "Up")
+        ctx.SuperTrendDown = GetIndicatorValue(indicatorResults, indicatorIndex, "ST", "SuperTrend", "Down")
+        ctx.PrevSuperTrendUp = GetIndicatorValue(indicatorResults, prevIndicatorIndex, "ST", "SuperTrend", "Up")
+        ctx.PrevSuperTrendDown = GetIndicatorValue(indicatorResults, prevIndicatorIndex, "ST", "SuperTrend", "Down")
         ctx.SuperTrendValue = GetIndicatorValue(indicatorResults, indicatorIndex, "ST", "SuperTrend", "Value")
+        ctx.SuperTrendDirection = GetIndicatorValue(indicatorResults, indicatorIndex, "ST", "SuperTrend", "Direction")
         ctx.PrevSuperTrendDirection = GetIndicatorValue(indicatorResults, prevIndicatorIndex, "ST", "SuperTrend", "Direction")
-        ctx.SuperTrendBullish = (ctx.SuperTrendDirection > 0.0R OrElse (ctx.SuperTrendValue > 0.0R AndAlso ctx.ClosePrice >= ctx.SuperTrendValue))
-        ctx.SuperTrendTurnDown = (ctx.PrevSuperTrendDirection > 0.0R AndAlso ctx.SuperTrendDirection < 0.0R)
+        ctx.SuperTrendBullish = IsValidLine(ctx.SuperTrendUp)
+        ctx.SuperTrendBearish = IsValidLine(ctx.SuperTrendDown)
+        ctx.SuperTrendTurnUp = IsValidLine(ctx.PrevSuperTrendDown) AndAlso IsValidLine(ctx.SuperTrendUp)
+        ctx.SuperTrendTurnDown = IsValidLine(ctx.PrevSuperTrendUp) AndAlso IsValidLine(ctx.SuperTrendDown)
+        If Not ctx.SuperTrendBullish AndAlso Not ctx.SuperTrendBearish Then
+            ctx.SuperTrendBullish = (ctx.SuperTrendDirection > 0.0R OrElse (IsValidLine(ctx.SuperTrendValue) AndAlso ctx.ClosePrice >= ctx.SuperTrendValue))
+            ctx.SuperTrendTurnDown = (ctx.PrevSuperTrendDirection > 0.0R AndAlso ctx.SuperTrendDirection < 0.0R)
+        End If
 
+        ctx.JmaUp = GetIndicatorValue(indicatorResults, indicatorIndex, "JMA", "Up")
+        ctx.JmaDown = GetIndicatorValue(indicatorResults, indicatorIndex, "JMA", "Down")
+        ctx.PrevJmaUp = GetIndicatorValue(indicatorResults, prevIndicatorIndex, "JMA", "Up")
+        ctx.PrevJmaDown = GetIndicatorValue(indicatorResults, prevIndicatorIndex, "JMA", "Down")
         ctx.JmaValue = GetIndicatorValue(indicatorResults, indicatorIndex, "JMA", "Value")
         ctx.JmaSlope = GetIndicatorValue(indicatorResults, indicatorIndex, "JMA", "Slope")
         ctx.PrevJmaSlope = GetIndicatorValue(indicatorResults, prevIndicatorIndex, "JMA", "Slope")
-        ctx.JmaBullish = (ctx.JmaSlope > 0.0R OrElse (ctx.JmaValue > 0.0R AndAlso ctx.ClosePrice >= ctx.JmaValue))
-        ctx.JmaTurnUp = (ctx.PrevJmaSlope <= 0.0R AndAlso ctx.JmaSlope > 0.0R)
-        ctx.JmaTurnDown = (ctx.PrevJmaSlope >= 0.0R AndAlso ctx.JmaSlope < 0.0R)
+        ctx.JmaBullish = IsValidLine(ctx.JmaUp)
+        ctx.JmaBearish = IsValidLine(ctx.JmaDown)
+        ctx.JmaTurnUp = IsValidLine(ctx.PrevJmaDown) AndAlso IsValidLine(ctx.JmaUp)
+        ctx.JmaTurnDown = IsValidLine(ctx.PrevJmaUp) AndAlso IsValidLine(ctx.JmaDown)
+        If ctx.JmaBullish Then
+            ctx.JmaActiveValue = ctx.JmaUp
+        ElseIf IsValidLine(ctx.JmaValue) Then
+            ctx.JmaActiveValue = ctx.JmaValue
+        End If
+        If Not ctx.JmaBullish AndAlso Not ctx.JmaBearish Then
+            ctx.JmaBullish = (ctx.JmaSlope > 0.0R OrElse (IsValidLine(ctx.JmaValue) AndAlso ctx.ClosePrice >= ctx.JmaValue))
+            ctx.JmaTurnUp = (ctx.PrevJmaSlope <= 0.0R AndAlso ctx.JmaSlope > 0.0R)
+            ctx.JmaTurnDown = (ctx.PrevJmaSlope >= 0.0R AndAlso ctx.JmaSlope < 0.0R)
+            ctx.JmaActiveValue = ctx.JmaValue
+        End If
 
         ctx.Obv = GetIndicatorValue(indicatorResults, indicatorIndex, "OBV", "OBV")
         ctx.ObvSignal = GetIndicatorValue(indicatorResults, indicatorIndex, "OBV", "Signal")
@@ -509,6 +536,10 @@ Public Class TrueLeaderEarlyTrendStrategy
         Return value / baseValue
     End Function
 
+    Private Shared Function IsValidLine(value As Double) As Boolean
+        Return Not Double.IsNaN(value) AndAlso Not Double.IsInfinity(value)
+    End Function
+
     Private Shared Function Clamp(value As Double, minValue As Double, maxValue As Double) As Double
         If value < minValue Then Return minValue
         If value > maxValue Then Return maxValue
@@ -531,12 +562,24 @@ Public Class TrueLeaderEarlyTrendStrategy
         Public Property SuperTrendValue As Double = Double.NaN
         Public Property SuperTrendDirection As Double = Double.NaN
         Public Property PrevSuperTrendDirection As Double = Double.NaN
+        Public Property SuperTrendUp As Double = Double.NaN
+        Public Property SuperTrendDown As Double = Double.NaN
+        Public Property PrevSuperTrendUp As Double = Double.NaN
+        Public Property PrevSuperTrendDown As Double = Double.NaN
         Public Property SuperTrendBullish As Boolean = False
+        Public Property SuperTrendBearish As Boolean = False
+        Public Property SuperTrendTurnUp As Boolean = False
         Public Property SuperTrendTurnDown As Boolean = False
         Public Property JmaValue As Double = Double.NaN
+        Public Property JmaActiveValue As Double = Double.NaN
         Public Property JmaSlope As Double = Double.NaN
         Public Property PrevJmaSlope As Double = Double.NaN
+        Public Property JmaUp As Double = Double.NaN
+        Public Property JmaDown As Double = Double.NaN
+        Public Property PrevJmaUp As Double = Double.NaN
+        Public Property PrevJmaDown As Double = Double.NaN
         Public Property JmaBullish As Boolean = False
+        Public Property JmaBearish As Boolean = False
         Public Property JmaTurnUp As Boolean = False
         Public Property JmaTurnDown As Boolean = False
         Public Property Obv As Double = Double.NaN
