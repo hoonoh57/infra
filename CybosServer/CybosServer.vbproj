@@ -16,13 +16,16 @@
   </ItemGroup>
   <ItemGroup>
     <Reference Include="Interop.CPSYSDIBLib">
-      <HintPath>C:\Users\haoru\Desktop\2025\Template\lib\Interop.CPSYSDIBLib.dll</HintPath>
+      <HintPath>..\lib\cybos\Interop.CPSYSDIBLib.dll</HintPath>
+      <Private>true</Private>
     </Reference>
     <Reference Include="Interop.CPUTILLib">
-      <HintPath>C:\Users\haoru\Desktop\2025\Template\lib\Interop.CPUTILLib.dll</HintPath>
+      <HintPath>..\lib\cybos\Interop.CPUTILLib.dll</HintPath>
+      <Private>true</Private>
     </Reference>
     <Reference Include="Interop.DSCBO1Lib">
-      <HintPath>C:\Users\haoru\Desktop\2025\Template\lib\Interop.DSCBO1Lib.dll</HintPath>
+      <HintPath>..\lib\cybos\Interop.DSCBO1Lib.dll</HintPath>
+      <Private>true</Private>
     </Reference>
   </ItemGroup>
 </Project>
