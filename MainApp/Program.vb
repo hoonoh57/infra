@@ -17,7 +17,7 @@ Module Program
         AppLogger.I.Info("  프로세스 시작")
         AppLogger.I.Info("═══════════════════════════════════════")
 
-        ' ── 0) CybosPlus 로그인 확인 + CybosServer 실행 (필수, 가장 먼저) ──
+        ' ── 0) CybosPlus 로그인 확인 + CybosServer 실행 + READY 확인 ──
         If Not LaunchAndVerifyCybosServer() Then
             MessageBox.Show(
                 "CybosPlus(Cybos5)를 먼저 로그인하세요!" & vbCrLf & vbCrLf &
@@ -26,14 +26,21 @@ Module Program
                 "Cybos 연결 실패",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error)
-            Return  ' 프로그램 종료
+            Return
         End If
 
-        ' ── 1) KiwoomServer 실행 ──
-        LaunchServerIfNotRunning("KiwoomServer")
-        System.Threading.Thread.Sleep(1000) ' KiwoomServer 초기화 대기
+        ' ── 1) KiwoomServer 실행 + READY 확인 ──
+        If Not LaunchAndVerifyKiwoomServer() Then
+            MessageBox.Show(
+                "KiwoomServer 준비 확인에 실패했습니다." & vbCrLf & vbCrLf &
+                "Kiwoom OpenAPI 서버 프로세스와 파이프 연결 상태를 확인하세요.",
+                "Kiwoom 연결 실패",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning)
+            Return
+        End If
 
-        ' ── 2) 브릿지 시작 (32‑bit 서버 연결) ──
+        ' ── 2) 브릿지 시작 (READY 확인 후 연결) ──
         AppLogger.I.Info("브릿지 시작 중...", "Boot")
 
         Dim cybosBridge As New CybosBridge()
@@ -72,46 +79,36 @@ Module Program
     End Sub
 
     ''' <summary>
-    ''' CybosServer를 시작하고, CybosPlus 연결 상태를 확인한다.
-    ''' CybosServer가 시작 후 곧바로 죽으면 CybosPlus가 미로그인 상태이다.
+    ''' CybosServer를 시작하고 NamedPipe READY 응답까지 확인한다.
     ''' </summary>
     Private Function LaunchAndVerifyCybosServer() As Boolean
         Try
-            ' 이미 실행 중이면 OK
+            Dim proc As Process = Nothing
             Dim existing = Process.GetProcessesByName("CybosServer")
             If existing.Length > 0 Then
-                AppLogger.I.Info($"[CybosServer] 이미 실행 중 (PID: {existing(0).Id})", "Boot")
-                Return True
-            End If
-
-            ' 서버 EXE 경로 찾기
-            Dim serverExe = FindServerExe("CybosServer")
-            If String.IsNullOrEmpty(serverExe) Then
-                AppLogger.I.Error("[CybosServer] 서버 EXE를 찾을 수 없습니다.", "Boot")
-                Return False
-            End If
-
-            ' CybosServer 시작
-            Dim psi As New ProcessStartInfo With {
-                .FileName = serverExe,
-                .WorkingDirectory = Path.GetDirectoryName(serverExe),
-                .UseShellExecute = True,
-                .WindowStyle = ProcessWindowStyle.Minimized
-            }
-            Dim proc = Process.Start(psi)
-            AppLogger.I.Info($"[CybosServer] 시작 중... ({serverExe})", "Boot")
-
-            ' 2초간 대기하면서 프로세스 생존 확인
-            ' CybosPlus 미로그인이면 CybosEngine 생성자가 실패하고 서버가 즉시 종료됨
-            For i = 0 To 7  ' 총 2초 (250ms × 8)
-                System.Threading.Thread.Sleep(250)
-                If proc.HasExited Then
-                    AppLogger.I.Error("[CybosServer] CybosPlus 미연결로 서버 종료됨", "Boot")
+                proc = existing(0)
+                AppLogger.I.Info($"[CybosServer] 이미 실행 중 (PID: {proc.Id})", "Boot")
+            Else
+                Dim serverExe = FindServerExe("CybosServer")
+                If String.IsNullOrEmpty(serverExe) Then
+                    AppLogger.I.Error("[CybosServer] 서버 EXE를 찾을 수 없습니다.", "Boot")
                     Return False
                 End If
-            Next
 
-            AppLogger.I.Info("[CybosServer] 서버 정상 실행 확인됨 ✓", "Boot")
+                Dim psi As New ProcessStartInfo With {
+                    .FileName = serverExe,
+                    .WorkingDirectory = Path.GetDirectoryName(serverExe),
+                    .UseShellExecute = True,
+                    .WindowStyle = ProcessWindowStyle.Minimized
+                }
+                proc = Process.Start(psi)
+                AppLogger.I.Info($"[CybosServer] 시작 중... ({serverExe})", "Boot")
+            End If
+
+            If Not WaitProcessAlive(proc, "CybosServer", 2000) Then Return False
+            If Not ServerReadyProbe.WaitForReady("CybosPipe", "연결상태", "CybosServer", 12000, 250) Then Return False
+
+            AppLogger.I.Info("[CybosServer] 서버 READY 확인 완료 ✓", "Boot")
             Return True
 
         Catch ex As Exception
@@ -121,20 +118,39 @@ Module Program
     End Function
 
     ''' <summary>
-    ''' 32비트 서버 프로세스가 실행되지 않았으면 자동 실행한다.
+    ''' KiwoomServer를 시작하고 NamedPipe READY 응답까지 확인한다.
     ''' </summary>
-    Private Sub LaunchServerIfNotRunning(serverName As String)
+    Private Function LaunchAndVerifyKiwoomServer() As Boolean
+        Try
+            Dim proc As Process = LaunchServerIfNotRunning("KiwoomServer")
+            If proc IsNot Nothing AndAlso Not WaitProcessAlive(proc, "KiwoomServer", 2000) Then Return False
+            If Not ServerReadyProbe.WaitForReady("KiwoomPipe", "status", "KiwoomServer", 12000, 250) Then Return False
+
+            AppLogger.I.Info("[KiwoomServer] 서버 READY 확인 완료 ✓", "Boot")
+            Return True
+
+        Catch ex As Exception
+            AppLogger.I.Error($"[KiwoomServer] 확인 실패: {ex.Message}", "Boot")
+            Return False
+        End Try
+    End Function
+
+    ''' <summary>
+    ''' 지정 서버 프로세스가 실행되지 않았으면 자동 실행하고 Process를 반환한다.
+    ''' 이미 실행 중이면 기존 Process를 반환한다.
+    ''' </summary>
+    Private Function LaunchServerIfNotRunning(serverName As String) As Process
         Try
             Dim existing = Process.GetProcessesByName(serverName)
             If existing.Length > 0 Then
                 AppLogger.I.Info($"[{serverName}] 이미 실행 중 (PID: {existing(0).Id})", "Boot")
-                Return
+                Return existing(0)
             End If
 
             Dim serverExe = FindServerExe(serverName)
             If String.IsNullOrEmpty(serverExe) Then
                 AppLogger.I.Warn($"[{serverName}] 서버 EXE 없음", "Boot")
-                Return
+                Return Nothing
             End If
 
             Dim psi As New ProcessStartInfo With {
@@ -143,22 +159,54 @@ Module Program
                 .UseShellExecute = True,
                 .WindowStyle = ProcessWindowStyle.Minimized
             }
-            Process.Start(psi)
+            Dim proc As Process = Process.Start(psi)
             AppLogger.I.Info($"[{serverName}] 서버 프로세스 시작됨", "Boot")
+            Return proc
 
         Catch ex As Exception
             AppLogger.I.Error($"[{serverName}] 서버 시작 실패: {ex.Message}", "Boot")
+            Return Nothing
         End Try
-    End Sub
+    End Function
+
+    Private Function WaitProcessAlive(proc As Process, serverName As String, waitMs As Integer) As Boolean
+        If proc Is Nothing Then Return True
+
+        Dim elapsed As Integer = 0
+        Do While elapsed < waitMs
+            System.Threading.Thread.Sleep(250)
+            elapsed += 250
+            Try
+                If proc.HasExited Then
+                    AppLogger.I.Error($"[{serverName}] 서버 프로세스가 초기화 중 종료됨", "Boot")
+                    Return False
+                End If
+            Catch ex As Exception
+                AppLogger.I.Warn($"[{serverName}] 프로세스 생존 확인 실패: {ex.Message}", "Boot")
+                Return True
+            End Try
+        Loop
+
+        Return True
+    End Function
 
     ''' <summary>
-    ''' 솔루션 루트/{서버명}/bin/Debug/net481/{서버명}.exe 경로를 찾는다.
+    ''' 서버 EXE 경로를 찾는다. 배포/Debug/Release 경로를 순서대로 탐색한다.
     ''' </summary>
     Private Function FindServerExe(serverName As String) As String
         Dim mainExeDir = AppDomain.CurrentDomain.BaseDirectory
         Dim solutionRoot = Path.GetFullPath(Path.Combine(mainExeDir, "..", "..", "..", ".."))
-        Dim serverExe = Path.Combine(solutionRoot, serverName, "bin", "Debug", "net481", $"{serverName}.exe")
-        If File.Exists(serverExe) Then Return serverExe
+        Dim candidates As String() = {
+            Path.Combine(mainExeDir, "servers", serverName, $"{serverName}.exe"),
+            Path.Combine(mainExeDir, $"{serverName}.exe"),
+            Path.Combine(solutionRoot, serverName, "bin", "Debug", "net481", $"{serverName}.exe"),
+            Path.Combine(solutionRoot, serverName, "bin", "Release", "net481", $"{serverName}.exe")
+        }
+
+        For Each candidate As String In candidates
+            If File.Exists(candidate) Then Return candidate
+        Next
+
         Return Nothing
     End Function
 
