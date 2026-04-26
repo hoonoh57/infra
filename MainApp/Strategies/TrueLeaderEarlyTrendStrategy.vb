@@ -9,6 +9,11 @@ Imports System.Collections.Generic
 ''' 진성대장주 초입 Top3 전략.
 ''' 조건검색으로 압축된 종목 중에서 대장성, 대세상승 초입, 진입 안전성을 동시에 만족할 때만 매수 신호를 낸다.
 ''' TickIntensity는 단독 매수 조건이 아니라 LeaderScore와 TradePriorityScore를 구성하는 핵심 증거로 사용한다.
+'''
+''' 핵심 원칙:
+''' - 현재 진행 중인 봉의 미확정 지표값을 매매 조건으로 사용하지 않는다.
+''' - 평가봉 i의 가격은 사용할 수 있지만, 지표 상태/전환은 i-1, i-2의 확정 지표로 판단한다.
+''' - 즉, 전봉까지 확정된 지표 + 현재봉 가격 돌파/이탈 확인 구조를 사용한다.
 ''' </summary>
 Public Class TrueLeaderEarlyTrendStrategy
     Implements IStrategy
@@ -57,16 +62,15 @@ Public Class TrueLeaderEarlyTrendStrategy
                              candles As List(Of CandleItem),
                              indicatorResults As Dictionary(Of String, List(Of IndicatorResult))) As List(Of StrategySignal) Implements IStrategy.Evaluate
         Dim signals As New List(Of StrategySignal)()
-        If candles Is Nothing OrElse candles.Count < 30 Then Return signals
+        If candles Is Nothing OrElse candles.Count < 35 Then Return signals
 
         Dim inPosition As Boolean = False
         Dim entryPrice As Double = 0.0R
-        Dim entryIndex As Integer = -1
         Dim highestSinceEntry As Double = 0.0R
         Dim buyCount As Integer = 0
 
         Dim i As Integer
-        For i = 1 To candles.Count - 1
+        For i = 2 To candles.Count - 1
             Dim ctx As LeaderContext = BuildContext(candles, indicatorResults, i)
             If ctx Is Nothing Then Continue For
 
@@ -79,7 +83,6 @@ Public Class TrueLeaderEarlyTrendStrategy
                     signals.Add(CreateSignal(stockCode, candles(i), sellType, sellReason, ctx.TradePriorityScore))
                     inPosition = False
                     entryPrice = 0.0R
-                    entryIndex = -1
                     highestSinceEntry = 0.0R
                 End If
             Else
@@ -90,7 +93,6 @@ Public Class TrueLeaderEarlyTrendStrategy
                         signals.Add(CreateSignal(stockCode, candles(i), buyType, buyReason, ctx.TradePriorityScore))
                         inPosition = True
                         entryPrice = ctx.ClosePrice
-                        entryIndex = i
                         highestSinceEntry = ctx.ClosePrice
                         buyCount += 1
                     End If
@@ -134,26 +136,31 @@ Public Class TrueLeaderEarlyTrendStrategy
         End If
 
         If Not ctx.SuperTrendBullish Then
-            reason = "SuperTrend 상승 아님"
+            reason = "전봉 기준 SuperTrend 상승 아님"
             Return False
         End If
 
         If Not ctx.ObvBullish Then
-            reason = "OBV가 Signal 아래"
+            reason = "전봉 기준 OBV가 Signal 아래"
             Return False
         End If
 
         If Not ctx.JmaTurnUp AndAlso Not ctx.JmaBullish Then
-            reason = "JMA 상승/재상승 확인 부족"
+            reason = "전봉 기준 JMA 상승/재상승 확인 부족"
             Return False
         End If
 
         If ctx.RawTickPowerScore < 45.0R Then
-            reason = "TickIntensity 파생강도 부족"
+            reason = "전봉 기준 TickIntensity 파생강도 부족"
             Return False
         End If
 
-        reason = String.Format("BuyReady: Leader={0:0.0}, Trend={1:0.0}, Safety={2:0.0}, Tick={3:0.0}",
+        If ctx.JmaValue > 0.0R AndAlso ctx.ClosePrice < ctx.JmaValue Then
+            reason = "현재 가격이 전봉 JMA 기준선 아래"
+            Return False
+        End If
+
+        reason = String.Format("BuyReady(전봉지표+현재가격): Leader={0:0.0}, Trend={1:0.0}, Safety={2:0.0}, Tick={3:0.0}",
                                ctx.LeaderScore,
                                ctx.TrendStartScore,
                                ctx.EntrySafetyScore,
@@ -178,7 +185,7 @@ Public Class TrueLeaderEarlyTrendStrategy
         Dim profitPct As Double = ((ctx.ClosePrice / entryPrice) - 1.0R) * 100.0R
 
         If ctx.SuperTrendTurnDown Then
-            reason = String.Format("SuperTrend 하락전환 방어매도, 수익률={0:0.00}%", profitPct)
+            reason = String.Format("전봉 기준 SuperTrend 하락전환 방어매도, 수익률={0:0.00}%", profitPct)
             signalType = SignalType.StrongSell
             Return True
         End If
@@ -190,7 +197,7 @@ Public Class TrueLeaderEarlyTrendStrategy
         End If
 
         If profitPct >= TargetProfitPct AndAlso ctx.JmaTurnDown Then
-            reason = String.Format("목표수익 달성 후 JMA 하락전환, 수익률={0:0.00}%", profitPct)
+            reason = String.Format("목표수익 달성 후 전봉 기준 JMA 하락전환, 수익률={0:0.00}%", profitPct)
             signalType = SignalType.Sell
             Return True
         End If
@@ -208,12 +215,15 @@ Public Class TrueLeaderEarlyTrendStrategy
     Private Function BuildContext(candles As List(Of CandleItem),
                                   indicatorResults As Dictionary(Of String, List(Of IndicatorResult)),
                                   index As Integer) As LeaderContext
-        If index <= 0 OrElse index >= candles.Count Then Return Nothing
+        If index < 2 OrElse index >= candles.Count Then Return Nothing
 
+        Dim indicatorIndex As Integer = index - 1
+        Dim prevIndicatorIndex As Integer = index - 2
         Dim c As CandleItem = candles(index)
-        Dim prev As CandleItem = candles(index - 1)
         Dim ctx As New LeaderContext()
         ctx.Index = index
+        ctx.IndicatorIndex = indicatorIndex
+        ctx.PrevIndicatorIndex = prevIndicatorIndex
         ctx.TimeStamp = c.Dt
         ctx.ClosePrice = CDbl(c.Close)
         ctx.DayOpen = FindDayOpen(candles, index)
@@ -222,35 +232,35 @@ Public Class TrueLeaderEarlyTrendStrategy
         ctx.GapRate = CalcGapRate(candles, index, ctx.DayOpen)
         ctx.PullbackRate = CalcPullback(ctx.ClosePrice, ctx.DayHigh)
 
-        ctx.SuperTrendDirection = GetIndicatorValue(indicatorResults, index, "ST", "SuperTrend", "Direction")
-        ctx.SuperTrendValue = GetIndicatorValue(indicatorResults, index, "ST", "SuperTrend", "Value")
-        ctx.PrevSuperTrendDirection = GetIndicatorValue(indicatorResults, index - 1, "ST", "SuperTrend", "Direction")
+        ctx.SuperTrendDirection = GetIndicatorValue(indicatorResults, indicatorIndex, "ST", "SuperTrend", "Direction")
+        ctx.SuperTrendValue = GetIndicatorValue(indicatorResults, indicatorIndex, "ST", "SuperTrend", "Value")
+        ctx.PrevSuperTrendDirection = GetIndicatorValue(indicatorResults, prevIndicatorIndex, "ST", "SuperTrend", "Direction")
         ctx.SuperTrendBullish = (ctx.SuperTrendDirection > 0.0R OrElse (ctx.SuperTrendValue > 0.0R AndAlso ctx.ClosePrice >= ctx.SuperTrendValue))
         ctx.SuperTrendTurnDown = (ctx.PrevSuperTrendDirection > 0.0R AndAlso ctx.SuperTrendDirection < 0.0R)
 
-        ctx.JmaValue = GetIndicatorValue(indicatorResults, index, "JMA", "Value")
-        ctx.JmaSlope = GetIndicatorValue(indicatorResults, index, "JMA", "Slope")
-        ctx.PrevJmaSlope = GetIndicatorValue(indicatorResults, index - 1, "JMA", "Slope")
+        ctx.JmaValue = GetIndicatorValue(indicatorResults, indicatorIndex, "JMA", "Value")
+        ctx.JmaSlope = GetIndicatorValue(indicatorResults, indicatorIndex, "JMA", "Slope")
+        ctx.PrevJmaSlope = GetIndicatorValue(indicatorResults, prevIndicatorIndex, "JMA", "Slope")
         ctx.JmaBullish = (ctx.JmaSlope > 0.0R OrElse (ctx.JmaValue > 0.0R AndAlso ctx.ClosePrice >= ctx.JmaValue))
         ctx.JmaTurnUp = (ctx.PrevJmaSlope <= 0.0R AndAlso ctx.JmaSlope > 0.0R)
         ctx.JmaTurnDown = (ctx.PrevJmaSlope >= 0.0R AndAlso ctx.JmaSlope < 0.0R)
 
-        ctx.Obv = GetIndicatorValue(indicatorResults, index, "OBV", "OBV")
-        ctx.ObvSignal = GetIndicatorValue(indicatorResults, index, "OBV", "Signal")
-        ctx.PrevObv = GetIndicatorValue(indicatorResults, index - 1, "OBV", "OBV")
+        ctx.Obv = GetIndicatorValue(indicatorResults, indicatorIndex, "OBV", "OBV")
+        ctx.ObvSignal = GetIndicatorValue(indicatorResults, indicatorIndex, "OBV", "Signal")
+        ctx.PrevObv = GetIndicatorValue(indicatorResults, prevIndicatorIndex, "OBV", "OBV")
         ctx.ObvBullish = (Not Double.IsNaN(ctx.Obv) AndAlso Not Double.IsNaN(ctx.ObvSignal) AndAlso ctx.Obv > ctx.ObvSignal)
         ctx.ObvImproving = (Not Double.IsNaN(ctx.PrevObv) AndAlso ctx.Obv > ctx.PrevObv)
 
-        ctx.TickSum = Math.Abs(GetIndicatorValue(indicatorResults, index, "TICKINT", "TickSum"))
-        ctx.TickMa5 = Math.Abs(GetIndicatorValue(indicatorResults, index, "TICKINT", "MA5"))
-        ctx.TickMa20 = Math.Abs(GetIndicatorValue(indicatorResults, index, "TICKINT", "MA20"))
-        ctx.PrevTickSum = Math.Abs(GetIndicatorValue(indicatorResults, index - 1, "TICKINT", "TickSum"))
+        ctx.TickSum = Math.Abs(GetIndicatorValue(indicatorResults, indicatorIndex, "TICKINT", "TickSum"))
+        ctx.TickMa5 = Math.Abs(GetIndicatorValue(indicatorResults, indicatorIndex, "TICKINT", "MA5"))
+        ctx.TickMa20 = Math.Abs(GetIndicatorValue(indicatorResults, indicatorIndex, "TICKINT", "MA20"))
+        ctx.PrevTickSum = Math.Abs(GetIndicatorValue(indicatorResults, prevIndicatorIndex, "TICKINT", "TickSum"))
         ctx.TickRatio = SafeDiv(ctx.TickSum, ctx.TickMa20)
         ctx.TickSlope = ctx.TickSum - ctx.TickMa5
         ctx.TickAccel = (ctx.TickSum - ctx.PrevTickSum)
-        ctx.TickPersist = CountTickPersist(indicatorResults, index, 5)
+        ctx.TickPersist = CountTickPersist(indicatorResults, indicatorIndex, 5)
 
-        ctx.TurnoverAccel = CalcTurnoverAccel(candles, index)
+        ctx.TurnoverAccel = CalcTurnoverAccel(candles, indicatorIndex)
         ctx.PriceAccel = CalcPriceAccel(candles, index)
 
         ctx.RawTickPowerScore = CalcRawTickPower(ctx)
@@ -445,7 +455,7 @@ Public Class TrueLeaderEarlyTrendStrategy
     End Function
 
     Private Shared Function CalcTurnoverAccel(candles As List(Of CandleItem), index As Integer) As Double
-        If candles Is Nothing OrElse index < 5 Then Return 0.0R
+        If candles Is Nothing OrElse index < 5 OrElse index >= candles.Count Then Return 0.0R
         Dim currentTurnover As Double = GetTurnover(candles(index))
         Dim sum As Double = 0.0R
         Dim count As Integer = 0
@@ -509,6 +519,8 @@ Public Class TrueLeaderEarlyTrendStrategy
 #Region "Internal Context"
     Private Class LeaderContext
         Public Property Index As Integer = 0
+        Public Property IndicatorIndex As Integer = 0
+        Public Property PrevIndicatorIndex As Integer = 0
         Public Property TimeStamp As DateTime = DateTime.MinValue
         Public Property ClosePrice As Double = 0.0R
         Public Property DayOpen As Double = 0.0R
