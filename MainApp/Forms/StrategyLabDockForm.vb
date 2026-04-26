@@ -1,4 +1,5 @@
 Imports System.Diagnostics
+Imports System.Drawing
 Imports System.IO
 Imports System.Windows.Forms
 
@@ -53,7 +54,6 @@ Public Class StrategyLabDockForm
 
         Try
             If _process IsNot Nothing AndAlso Not _process.HasExited Then
-                _process.MainWindowHandle.ToString()
                 Return
             End If
 
