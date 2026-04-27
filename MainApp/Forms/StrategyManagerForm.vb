@@ -29,9 +29,23 @@ Public Class StrategyManagerForm
         _onApply = onApply
         _onApplyHardcoded = onApplyHardcoded
         _store = StrategyPersistenceService.LoadStore()
+        AddFactoryBuiltInStrategies()
         EnsureDefaultData()
         InitializeUI()
         RefreshStrategyTree()
+    End Sub
+
+    Private Sub AddFactoryBuiltInStrategies()
+        Dim strategies As List(Of IStrategy) = BuiltInStrategyFactory.GetAllStrategies()
+        If strategies Is Nothing Then Return
+
+        For Each strategy As IStrategy In strategies
+            If strategy Is Nothing Then Continue For
+            Dim exists As Boolean = _builtInStrategies.Any(Function(item As IStrategy) String.Equals(item.Name, strategy.Name, StringComparison.OrdinalIgnoreCase))
+            If Not exists Then
+                _builtInStrategies.Add(strategy)
+            End If
+        Next
     End Sub
 
     Private ReadOnly Property AllStrategies As List(Of StrategyDefinition)
