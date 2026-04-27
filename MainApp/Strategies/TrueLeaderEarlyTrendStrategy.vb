@@ -14,6 +14,7 @@ Imports System.Collections.Generic
 ''' - 현재 진행 중인 봉의 미확정 지표값을 매매 조건으로 사용하지 않는다.
 ''' - 평가봉 i의 가격은 사용할 수 있지만, 지표 상태/전환은 i-1, i-2의 확정 지표로 판단한다.
 ''' - SuperTrend/JMA 추세는 Direction/Slope 단순 0 비교가 아니라 Up/Down 배열의 NaN 여부를 우선 사용한다.
+''' - 기본 초입은 시가대비 저위험 구간을 우선하지만, 2차 VI 전 대장주 구간은 강한 TickIntensity가 유지될 때만 예외적으로 허용한다.
 ''' - 즉, 전봉까지 확정된 지표 + 현재봉 가격 돌파/이탈 확인 구조를 사용한다.
 ''' </summary>
 Public Class TrueLeaderEarlyTrendStrategy
@@ -32,6 +33,11 @@ Public Class TrueLeaderEarlyTrendStrategy
     Public Property ReboundConfirmPct As Double = 0.5R
     Public Property ViTriggerPct As Double = 10.0R
     Public Property ViSafetyMarginPct As Double = 0.5R
+    Public Property SecondViLeaderMinOpenRise As Double = 11.0R
+    Public Property SecondViLeaderMaxOpenRise As Double = 16.0R
+    Public Property SecondViMinTickIntensity As Double = 10.0R
+    Public Property SecondViMinTickMa5 As Double = 10.0R
+    Public Property SecondViEntrySafetyScore As Double = 85.0R
 #End Region
 
 #Region "IStrategy"
@@ -161,6 +167,18 @@ Public Class TrueLeaderEarlyTrendStrategy
             Return False
         End If
 
+        If ctx.IsSecondViLeaderEntry Then
+            reason = String.Format("SecondVI Leader BuyReady: OpenRise={0:0.00}%, Tick={1:0.00}, TickMA5={2:0.00}, Leader={3:0.0}, Trend={4:0.0}, Safety={5:0.0}",
+                                   ctx.OpenRiseRate,
+                                   ctx.TickSum,
+                                   ctx.TickMa5,
+                                   ctx.LeaderScore,
+                                   ctx.TrendStartScore,
+                                   ctx.EntrySafetyScore)
+            signalType = SignalType.StrongBuy
+            Return True
+        End If
+
         reason = String.Format("BuyReady(전봉지표+현재가격): Leader={0:0.0}, Trend={1:0.0}, Safety={2:0.0}, Tick={3:0.0}",
                                ctx.LeaderScore,
                                ctx.TrendStartScore,
@@ -191,8 +209,14 @@ Public Class TrueLeaderEarlyTrendStrategy
             Return True
         End If
 
-        If ctx.OpenRiseRate >= (ViTriggerPct - ViSafetyMarginPct) AndAlso profitPct > 0.0R Then
+        If ctx.OpenRiseRate >= (ViTriggerPct - ViSafetyMarginPct) AndAlso profitPct > 0.0R AndAlso Not ctx.IsSecondViLeaderEntry Then
             reason = String.Format("VI 접근 위험회피 매도, 시가대비={0:0.00}%, 수익률={1:0.00}%", ctx.OpenRiseRate, profitPct)
+            signalType = SignalType.Sell
+            Return True
+        End If
+
+        If ctx.OpenRiseRate > SecondViLeaderMaxOpenRise AndAlso profitPct > 0.0R Then
+            reason = String.Format("2차 VI 대장주 허용상한 초과 위험회피 매도, 시가대비={0:0.00}%, 수익률={1:0.00}%", ctx.OpenRiseRate, profitPct)
             signalType = SignalType.Sell
             Return True
         End If
@@ -289,6 +313,7 @@ Public Class TrueLeaderEarlyTrendStrategy
 
         ctx.TurnoverAccel = CalcTurnoverAccel(candles, indicatorIndex)
         ctx.PriceAccel = CalcPriceAccel(candles, index)
+        ctx.IsSecondViLeaderEntry = IsSecondViLeaderEntryZone(ctx)
 
         ctx.RawTickPowerScore = CalcRawTickPower(ctx)
         ctx.LeaderScore = CalcLeaderScore(ctx)
@@ -296,6 +321,15 @@ Public Class TrueLeaderEarlyTrendStrategy
         ctx.EntrySafetyScore = CalcEntrySafetyScore(ctx)
         ctx.TradePriorityScore = ctx.LeaderScore * ctx.TrendStartScore * ctx.EntrySafetyScore / 10000.0R
         Return ctx
+    End Function
+
+    Private Function IsSecondViLeaderEntryZone(ctx As LeaderContext) As Boolean
+        If ctx Is Nothing Then Return False
+        If ctx.OpenRiseRate < SecondViLeaderMinOpenRise Then Return False
+        If ctx.OpenRiseRate > SecondViLeaderMaxOpenRise Then Return False
+        If ctx.TickSum < SecondViMinTickIntensity Then Return False
+        If ctx.TickMa5 < SecondViMinTickMa5 Then Return False
+        Return True
     End Function
 
     Private Function CalcRawTickPower(ctx As LeaderContext) As Double
@@ -315,6 +349,7 @@ Public Class TrueLeaderEarlyTrendStrategy
         If ctx.JmaBullish Then score += 10.0R
         If ctx.SuperTrendBullish Then score += 10.0R
         If ctx.TurnoverAccel >= 1.5R Then score += 5.0R
+        If ctx.IsSecondViLeaderEntry Then score += 10.0R
         Return Clamp(score, 0.0R, 100.0R)
     End Function
 
@@ -329,6 +364,7 @@ Public Class TrueLeaderEarlyTrendStrategy
         If ctx.ObvBullish Then score += 20.0R
         If ctx.TickRatio >= 1.3R AndAlso ctx.TickSlope > 0.0R Then score += 15.0R
         If ctx.PriceAccel > 0.0R Then score += 5.0R
+        If ctx.IsSecondViLeaderEntry AndAlso ctx.TickSum >= SecondViMinTickIntensity AndAlso ctx.TickMa5 >= SecondViMinTickMa5 Then score += 10.0R
         Return Clamp(score, 0.0R, 100.0R)
     End Function
 
@@ -337,8 +373,17 @@ Public Class TrueLeaderEarlyTrendStrategy
         Dim dynamicMaxOpenRise As Double = Math.Min(MaxOpenRiseForNewBuy, ViTriggerPct - TargetProfitPct - ViSafetyMarginPct)
         If dynamicMaxOpenRise < 0.0R Then dynamicMaxOpenRise = 0.0R
 
+        If ctx.IsSecondViLeaderEntry Then
+            ctx.BlockReason = ""
+            Return Clamp(SecondViEntrySafetyScore, 0.0R, 100.0R)
+        End If
+
         If ctx.OpenRiseRate > dynamicMaxOpenRise Then
-            ctx.BlockReason = String.Format("시가대비 {0:0.00}%: 목표수익 공간/VI 위험", ctx.OpenRiseRate)
+            ctx.BlockReason = String.Format("시가대비 {0:0.00}%: 초입 매수상한 {1:0.00}% 초과, 2차VI 대장주 조건 미충족(Tick={2:0.00}, TickMA5={3:0.00})",
+                                            ctx.OpenRiseRate,
+                                            dynamicMaxOpenRise,
+                                            ctx.TickSum,
+                                            ctx.TickMa5)
             Return 0.0R
         End If
 
@@ -542,7 +587,7 @@ Public Class TrueLeaderEarlyTrendStrategy
 
     Private Shared Function Clamp(value As Double, minValue As Double, maxValue As Double) As Double
         If value < minValue Then Return minValue
-        If value > maxValue Then Return maxValue
+        If value > maxValue Then Return value
         Return value
     End Function
 #End Region
@@ -603,6 +648,7 @@ Public Class TrueLeaderEarlyTrendStrategy
         Public Property EntrySafetyScore As Double = 0.0R
         Public Property TradePriorityScore As Double = 0.0R
         Public Property BlockReason As String = ""
+        Public Property IsSecondViLeaderEntry As Boolean = False
     End Class
 #End Region
 
