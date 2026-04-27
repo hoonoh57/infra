@@ -12,6 +12,7 @@ Imports System.Collections.Generic
 Public NotInheritable Class BuiltInStrategyFactory
 
     Public Const TRUE_LEADER_EARLY_TREND_TOP3 As String = "TrueLeaderEarlyTrendTop3"
+    Public Const TRUE_LEADER_EARLY_TREND_TOP3_V3 As String = "TrueLeaderEarlyTrendTop3V3"
 
     Private Sub New()
     End Sub
@@ -21,11 +22,19 @@ Public NotInheritable Class BuiltInStrategyFactory
 
         Dim normalizedName As String = strategyName.Trim()
         If String.Equals(normalizedName, TRUE_LEADER_EARLY_TREND_TOP3, StringComparison.OrdinalIgnoreCase) Then
-            Return New TrueLeaderEarlyTrendStrategyV2()
+            Return New TrueLeaderEarlyTrendStrategyV3()
+        End If
+
+        If String.Equals(normalizedName, TRUE_LEADER_EARLY_TREND_TOP3_V3, StringComparison.OrdinalIgnoreCase) Then
+            Return New TrueLeaderEarlyTrendStrategyV3()
         End If
 
         If String.Equals(normalizedName, "진성대장주 초입 Top3 전략", StringComparison.OrdinalIgnoreCase) Then
-            Return New TrueLeaderEarlyTrendStrategyV2()
+            Return New TrueLeaderEarlyTrendStrategyV3()
+        End If
+
+        If String.Equals(normalizedName, "진성대장주 초입 Top3 전략 V3 - RecentTickCross", StringComparison.OrdinalIgnoreCase) Then
+            Return New TrueLeaderEarlyTrendStrategyV3()
         End If
 
         Return Nothing
@@ -33,18 +42,18 @@ Public NotInheritable Class BuiltInStrategyFactory
 
     Public Shared Function GetAllStrategies() As List(Of IStrategy)
         Dim items As New List(Of IStrategy)()
-        items.Add(New TrueLeaderEarlyTrendStrategyV2())
+        items.Add(New TrueLeaderEarlyTrendStrategyV3())
         Return items
     End Function
 
     Public Shared Function GetDisplayItems() As List(Of BuiltInStrategyDisplayItem)
         Dim result As New List(Of BuiltInStrategyDisplayItem)()
 
-        Dim strategy As IStrategy = New TrueLeaderEarlyTrendStrategyV2()
+        Dim strategy As IStrategy = New TrueLeaderEarlyTrendStrategyV3()
         Dim item As New BuiltInStrategyDisplayItem()
         item.Name = strategy.Name
         item.DisplayName = strategy.DisplayName
-        item.Description = "조건검색 후보 중 TickIntensity5MA 10 이상 + TickIntensity의 5MA 상승돌파, SuperTrend, JMA, OBV, 진입안전성을 결합하여 2차 VI 전 대장주 재가속 구간을 판단합니다."
+        item.Description = "조건검색 후보 중 TickIntensity5MA 10 이상 + 최근 N봉 내 TickIntensity의 5MA 상승돌파 + 현재 틱강도 붕괴 방지, SuperTrend, JMA, OBV를 결합하여 2차 VI 전 대장주 재가속 구간을 판단합니다."
         result.Add(item)
 
         Return result
