@@ -16,15 +16,15 @@
   </ItemGroup>
   <ItemGroup>
     <Reference Include="Interop.CPSYSDIBLib">
-      <HintPath>..\lib\cybos\Interop.CPSYSDIBLib.dll</HintPath>
+      <HintPath>..\..\lib\Interop.CPSYSDIBLib.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="Interop.CPUTILLib">
-      <HintPath>..\lib\cybos\Interop.CPUTILLib.dll</HintPath>
+      <HintPath>..\..\lib\Interop.CPUTILLib.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="Interop.DSCBO1Lib">
-      <HintPath>..\lib\cybos\Interop.DSCBO1Lib.dll</HintPath>
+      <HintPath>..\..\lib\Interop.DSCBO1Lib.dll</HintPath>
       <Private>true</Private>
     </Reference>
   </ItemGroup>
