@@ -60,9 +60,40 @@ Public Class ChartForm
     End Sub
 
     Private Sub OnStrategySettingRequested(sender As Object, e As EventArgs)
-        Using f As New StrategyManagerForm(
-            Sub(strat) _chart.ApplyStrategy(strat),
-            Sub(hardcoded) _chart.ApplyStrategy(hardcoded))
+        Using f As New StrategyManagerForm(AddressOf ApplyStrategyDefinitionAndAnalyze,
+                                           AddressOf ApplyHardcodedStrategyAndAnalyze)
+            f.ShowDialog(Me)
+        End Using
+    End Sub
+
+    Private Sub ApplyStrategyDefinitionAndAnalyze(strat As StrategyDefinition)
+        If strat Is Nothing Then Return
+
+        _chart.ApplyStrategy(strat)
+
+        Dim builtIn As IStrategy = BuiltInStrategyFactory.CreateStrategy(strat.Name)
+        If builtIn IsNot Nothing Then
+            RunStrategyAnalysis(builtIn)
+            Return
+        End If
+
+        AppLogger.I.Info($"전략 적용 완료: {strat.Name}. 사용자 정의 StrategyDefinition은 차트 적용만 수행했습니다.", "ChartStrategy")
+    End Sub
+
+    Private Sub ApplyHardcodedStrategyAndAnalyze(strategy As IStrategy)
+        If strategy Is Nothing Then Return
+
+        _chart.ApplyStrategy(strategy)
+        RunStrategyAnalysis(strategy)
+    End Sub
+
+    Private Sub RunStrategyAnalysis(strategy As IStrategy)
+        If strategy Is Nothing Then Return
+
+        Dim result As ChartStrategyAnalysisResult = ChartStrategyAnalysisService.Run(_chart, strategy)
+        AppLogger.I.Info($"전략 분석: {result.StockCode} / {result.StrategyDisplayName} / 신호 {result.SignalCount}건 / 거래 {result.TradeCount}건 / {result.Message}", "ChartStrategy")
+
+        Using f As New StrategyBacktestResultForm(result)
             f.ShowDialog(Me)
         End Using
     End Sub
@@ -108,7 +139,7 @@ Public Class ChartForm
 
         MessageBus.I.Emit(topic,
                           "code", requestCode,
-                          "stockCode", requestCode, ' FastChartControl handles "stockCode" or "code"
+                          "stockCode", requestCode,
                           "provider", RuntimeChartSettings.MarketDataProvider,
                           "timeframe", RuntimeChartSettings.DefaultCandleTimeframe,
                           "count", count)
