@@ -16,11 +16,11 @@
   </ItemGroup>
   <ItemGroup>
     <Reference Include="AxInterop.KHOpenAPILib">
-      <HintPath>..\lib\kiwoom\AxInterop.KHOpenAPILib.dll</HintPath>
+      <HintPath>..\..\lib\AxInterop.KHOpenAPILib.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="Interop.KHOpenAPILib">
-      <HintPath>..\lib\kiwoom\Interop.KHOpenAPILib.dll</HintPath>
+      <HintPath>..\..\lib\Interop.KHOpenAPILib.dll</HintPath>
       <Private>true</Private>
     </Reference>
   </ItemGroup>
