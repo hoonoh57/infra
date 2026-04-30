@@ -1,9 +1,8 @@
-' ═══════════════════════════════════════════════════════════════
+﻿' ═══════════════════════════════════════════════════════════════
 ' SnapshotService.vb — 시장 데이터 스냅샷 생성 서비스
 ' ═══════════════════════════════════════════════════════════════
 
 Imports MainApp.Models
-Imports MainApp.ChartEngine.Models
 Imports System.Collections.Generic
 Imports System
 
@@ -115,3 +114,4 @@ Namespace Services
         End Sub
     End Class
 End Namespace
+

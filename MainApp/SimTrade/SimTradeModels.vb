@@ -68,7 +68,32 @@ Namespace SimTrade
         ' ── 종목 포착 ──
         Public Property ConditionName As String = ""
         Public Property ConditionIndex As Integer = -1
-        Public Property UseRealtimeCondition As Boolean = True
+                Public Property UseRealtimeCondition As Boolean = True
+
+        ' ── TopN 매수 게이트 ──
+        ' False 기본값: 기존 가동 로직을 절대 변경하지 않음.
+        ' True 설정 시 Ready/Trading 종목 중 TopN 점수 미포함 종목은 매수 차단.
+        Public Property EnableTopNFilter As Boolean = False
+        Public Property TopNCount As Integer = 10
+
+        ' ── TopN 점수 가중치 ──
+        ' 기존 Top10Filter 고정값과 동일한 기본값:
+        ' Tick 25 + Amount 20 + Trend(ST+JMA) 25 + Momentum(RSI+등락률+거래량) 30 = 100
+        Public Property TopTickWeight As Double = 25.0
+        Public Property TopAmountWeight As Double = 20.0
+        Public Property TopTrendWeight As Double = 25.0
+        Public Property TopMomentumWeight As Double = 30.0
+
+        ' ── TopN 가중치 프리셋 상태 ──
+        ' 0 기본형, 1 틱강도 중심형, 2 거래대금 중심형, 3 추세 중심형, 4 실적기반 자동
+        Public Property TopNPresetIndex As Integer = 0
+
+        ' True이면 향후 백테스트/실전 누적 성과 기반으로 TopN 가중치를 자동 제안/적용하는 모드.
+        ' 현재 단계에서는 UI 선택 상태만 보존하고, 실제 자동 최적화는 백테스트 엔진 단계에서 연결한다.
+        Public Property EnableAutoTopNWeightPreset As Boolean = False
+
+        ' 향후 자동 산출 결과 설명/출처 표시에 사용.
+        Public Property AutoTopNWeightSource As String = ""
 
         ' ── 모멘텀/거래량 강화 (v4.0) ──
         Public Property MACD_RequireAllPositive As Boolean = True    ' ← 신규
@@ -243,6 +268,11 @@ Namespace SimTrade
 
         ' ── 신호/필터 ──
         Public Property LastSignal As String = ""
+        Public Property TopNRank As Integer = 0
+        Public Property TopNScore As Double = 0
+        Public Property TopTickScore As Double = 0
+        Public Property TopAmountScore As Double = 0
+        Public Property TopTrendScore As Double = 0
         Public Property LastSignalTime As DateTime = DateTime.MinValue
         Public Property LastBuyTime As DateTime = DateTime.MinValue
         Public Property FilterResults As New Dictionary(Of String, Boolean)
@@ -308,6 +338,11 @@ Namespace SimTrade
         Public Property Candles As New List(Of CandleItem)
         Public Property Engine As New IndicatorEngine
         Public Property LastSignal As String = ""
+        Public Property TopNRank As Integer = 0
+        Public Property TopNScore As Double = 0
+        Public Property TopTickScore As Double = 0
+        Public Property TopAmountScore As Double = 0
+        Public Property TopTrendScore As Double = 0
         Public Property AddedTime As DateTime = DateTime.Now
         Public Property HighSinceBuy As Integer = 0
         Public Property IsSubscribed As Boolean = False
@@ -317,3 +352,8 @@ Namespace SimTrade
 #End Region
 
 End Namespace
+
+
+
+
+

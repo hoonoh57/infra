@@ -1,4 +1,4 @@
-' TickIntensity_Indicator.vb
+﻿' TickIntensity_Indicator.vb
 Imports [Shared]
 
 Public Class TickIntensity_Indicator
@@ -129,7 +129,30 @@ Public Class TickIntensity_Indicator
                     tickSums(i) = Single.NaN
                     tickSigned(i) = Single.NaN
                 End If
-            Next
+                        Next
+
+            ' ── 날짜 mismatch 보정 ──
+            ' Cybos 틱 타임스탬프 날짜와 분봉 캔들 날짜가 어긋나면
+            ' pStart~pEnd 직접 비교가 전부 0이 될 수 있다.
+            ' 이 경우 실제 틱 타임스탬프의 TimeOfDay만 기준으로 다시 매칭한다.
+            If hasAnyTick AndAlso _tickBars.Count > 0 Then
+                Dim matchedTicks As Integer = 0
+                For i = 0 To count - 1
+                    If Not Single.IsNaN(tickSums(i)) AndAlso tickSums(i) > 0 Then
+                        matchedTicks += CInt(tickSums(i))
+                    End If
+                Next
+
+                If matchedTicks = 0 Then
+                    For i = 0 To count - 1
+                        Dim pStart As DateTime = candles(i).Dt
+                        Dim pEnd As DateTime = pStart.Add(span)
+                        Dim cntByTime As Integer = CountTicksByTimeOfDay(_tickBars, pStart.TimeOfDay, pEnd.TimeOfDay)
+                        tickSums(i) = CSng(cntByTime)
+                        tickSigned(i) = ApplyCandleDirection(candles(i), tickSums(i))
+                    Next
+                End If
+            End If
         End SyncLock
 
         ' ── 폴백: 틱 데이터 없을 때 CandleItem.NormalizedTickSum 사용 ──
@@ -201,11 +224,16 @@ Public Class TickIntensity_Indicator
                 End If
             End While
 
-            Dim k = lo
+                        Dim k = lo
             While k < _tickBars.Count AndAlso _tickBars(k) < pEnd
                 cnt += 1
                 k += 1
             End While
+
+            ' UpdateLast 날짜 mismatch 보정
+            If cnt = 0 AndAlso _tickBars.Count > 0 Then
+                cnt = CountTicksByTimeOfDay(_tickBars, pStart.TimeOfDay, pEnd.TimeOfDay)
+            End If
         End SyncLock
 
         If Not hasAnyTick Then
@@ -266,6 +294,33 @@ Public Class TickIntensity_Indicator
         Return New DateTime(ts.Year, ts.Month, ts.Day, ts.Hour, minute, 0)
     End Function
 
+
+    Private Shared Function CountTicksByTimeOfDay(ticks As List(Of DateTime),
+                                                  startTime As TimeSpan,
+                                                  endTime As TimeSpan) As Integer
+        If ticks Is Nothing OrElse ticks.Count = 0 Then Return 0
+
+        Dim cnt As Integer = 0
+
+        If endTime > startTime Then
+            For i As Integer = 0 To ticks.Count - 1
+                Dim tod As TimeSpan = ticks(i).TimeOfDay
+                If tod >= startTime AndAlso tod < endTime Then
+                    cnt += 1
+                End If
+            Next
+        Else
+            ' 자정 넘어가는 예외 구간 방어
+            For i As Integer = 0 To ticks.Count - 1
+                Dim tod As TimeSpan = ticks(i).TimeOfDay
+                If tod >= startTime OrElse tod < endTime Then
+                    cnt += 1
+                End If
+            Next
+        End If
+
+        Return cnt
+    End Function
     Private Shared Function ApplyCandleDirection(candle As CandleItem, tickSum As Single) As Single
         If Single.IsNaN(tickSum) Then Return Single.NaN
         If candle.Close < candle.Open Then Return -tickSum
@@ -290,3 +345,6 @@ Public Class TickIntensity_Indicator
         Return result
     End Function
 End Class
+
+
+

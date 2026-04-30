@@ -192,6 +192,11 @@ Namespace SimTrade
             snap.HasPosition = s.HasPosition
             snap.CurrentPnLRate = s.CurrentPnLRate
             snap.LastSignal = s.LastSignal
+            snap.TopNRank = s.TopNRank
+            snap.TopNScore = s.TopNScore
+            snap.TopTickScore = s.TopTickScore
+            snap.TopAmountScore = s.TopAmountScore
+            snap.TopTrendScore = s.TopTrendScore
             snap.HighSinceBuy = s.HighSinceBuy
             snap.CandleCount = If(s.Candles IsNot Nothing, s.Candles.Count, 0)
             snap.TickBarCount = s.TickBarCount
@@ -312,6 +317,11 @@ Namespace SimTrade
         Public Property HasPosition As Boolean = False
         Public Property CurrentPnLRate As Double = 0
         Public Property LastSignal As String = ""
+        Public Property TopNRank As Integer = 0
+        Public Property TopNScore As Double = 0
+        Public Property TopTickScore As Double = 0
+        Public Property TopAmountScore As Double = 0
+        Public Property TopTrendScore As Double = 0
         Public Property HighSinceBuy As Integer = 0
         Public Property CandleCount As Integer = 0
         Public Property TickBarCount As Integer = 0
@@ -319,3 +329,7 @@ Namespace SimTrade
     End Class
 
 End Namespace
+
+
+
+

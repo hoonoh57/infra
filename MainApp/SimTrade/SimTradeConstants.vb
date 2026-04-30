@@ -37,7 +37,7 @@ Namespace SimTrade
         Public ReadOnly WATCH_COLUMNS As String() =
             {"코드", "종목명", "현재가", "등락률", "거래량",
              "ST", "JMA", "TickSum", "OBV", "RSI", "MACD",
-             "상태", "신호", "봉수"}
+             "TopN", "TopScore", "TopTick", "TopAmt", "TopTrend", "상태", "신호", "봉수"}
 
         ' ── UI 그리드 컬럼 (Position) ──
         Public ReadOnly POSITION_COLUMNS As String() =
@@ -147,3 +147,4 @@ Namespace SimTrade
 #End Region
 
 End Namespace
+

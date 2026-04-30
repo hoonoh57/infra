@@ -1,4 +1,4 @@
-' ═══════════════════════════════════════════════════════════════
+﻿' ═══════════════════════════════════════════════════════════════
 ' Program.vb — 진입점
 ' ═══════════════════════════════════════════════════════════════
 
@@ -99,6 +99,7 @@ Module Program
                     .FileName = serverExe,
                     .WorkingDirectory = Path.GetDirectoryName(serverExe),
                     .UseShellExecute = True,
+                .Verb = "runas",
                     .WindowStyle = ProcessWindowStyle.Minimized
                 }
                 proc = Process.Start(psi)
@@ -197,6 +198,8 @@ Module Program
         Dim mainExeDir = AppDomain.CurrentDomain.BaseDirectory
         Dim solutionRoot = Path.GetFullPath(Path.Combine(mainExeDir, "..", "..", "..", ".."))
         Dim candidates As String() = {
+            Path.Combine(solutionRoot, serverName, "bin", "x86", "Debug", "net481", $"{serverName}.exe"),
+            Path.Combine(solutionRoot, serverName, "bin", "x86", "Release", "net481", $"{serverName}.exe"),
             Path.Combine(mainExeDir, "servers", serverName, $"{serverName}.exe"),
             Path.Combine(mainExeDir, $"{serverName}.exe"),
             Path.Combine(solutionRoot, serverName, "bin", "Debug", "net481", $"{serverName}.exe"),
@@ -204,10 +207,15 @@ Module Program
         }
 
         For Each candidate As String In candidates
-            If File.Exists(candidate) Then Return candidate
+            If File.Exists(candidate) Then
+                AppLogger.I.Info($"[{serverName}] EXE 경로 확인: {candidate}", "Boot")
+                Return candidate
+            End If
         Next
 
         Return Nothing
     End Function
 
 End Module
+
+

@@ -30,6 +30,7 @@ Namespace SimTrade
         Private _candleBuilder As CandleBuilder
         Private _signalEvaluator As SignalEvaluator
         Private _filterEngine As FilterEngine
+        Private _top10Filter As Top10Filter
         Private _orderSimulator As OrderSimulator
         Private _adaptiveCalc As AdaptiveParamCalc
 
@@ -51,8 +52,37 @@ Namespace SimTrade
         ' ── 틱 진단 ──
         Private _tickDiagCount As Integer = 0
 
+        ' ── TopN 변경 감지 로그 ──
+        Private _lastTopNCodes As New List(Of String)()
+        Private _lastTop1Code As String = ""
+        Private _lastTopNLogTime As DateTime = DateTime.MinValue
+        Private Const TOPN_CHANGE_LOG_INTERVAL_SEC As Integer = 20
+
 #End Region
 
+
+#Region "TopN 프리셋 표시"
+
+        Public Function GetTopNPresetName() As String
+            Select Case _settings.TopNPresetIndex
+                Case 1
+                    Return "틱강도 중심형"
+                Case 2
+                    Return "거래대금 중심형"
+                Case 3
+                    Return "추세 중심형"
+                Case 4
+                    Return "실적기반 자동"
+                Case Else
+                    Return "기본형"
+            End Select
+        End Function
+
+        Public Function GetTopNWeightSummary() As String
+            Return $"Tick={_settings.TopTickWeight:F0}, Amt={_settings.TopAmountWeight:F0}, Trend={_settings.TopTrendWeight:F0}, Mom={_settings.TopMomentumWeight:F0}"
+        End Function
+
+#End Region
 #Region "속성"
 
         Public ReadOnly Property IsRunning As Boolean
@@ -130,6 +160,7 @@ Namespace SimTrade
             _candleBuilder = New CandleBuilder(_settings)
             _signalEvaluator = New SignalEvaluator(_settings)
             _filterEngine = New FilterEngine(_settings)
+            _top10Filter = New Top10Filter(_settings, _settings.TopNCount)
             _orderSimulator = New OrderSimulator(_settings, _stateManager)
             _adaptiveCalc = New AdaptiveParamCalc(_settings)
 
@@ -168,6 +199,7 @@ Namespace SimTrade
             MessageBus.I.On(Topics.CANDLE_LOADED, AddressOf OnCandleDownloaded)
 
             _view.Log($"▶ 모의매매 시작 (v4.2) — 조건식: {_conditionName}")
+            _view.Log($"★ TopN 프리셋: {GetTopNPresetName()} | {GetTopNWeightSummary()} | 필터={If(_settings.EnableTopNFilter, "ON", "OFF")}")
 
             ' 비동기 초기 로드
             Threading.ThreadPool.QueueUserWorkItem(
@@ -303,6 +335,7 @@ Namespace SimTrade
 
                             _candleBuilder.InitializeFromHistory(code, state.Candles)
                             state.Engine.CalculateAll(state.Candles)
+                            LogTickIntensityDiagnostics(state, tickCount, "AfterCalculateAll")
 
                             ' ★ 디버그: TickIntensity 계산 결과 확인
                             Dim dbgTi = SimTradeHelper.FindResult(state.Engine.Results, "TICKINT_")
@@ -315,12 +348,13 @@ Namespace SimTrade
 
 
 
+                            SyncStatePriceFromCandles(state)
                             UpdateStateIndicators(state)
                             ComputeReferenceCandle(state)
 
                             _stateManager.TransitionTo(code, DataState.Ready)
                             Threading.Interlocked.Increment(_readyCount)
-                            _view.Log($"[감시추가] {code} {name} — 캐시캔들 {state.Candles.Count}개 → Ready (총 {_stateManager.TotalCount}종목)")
+                            _view.Log($"[감시추가] {code} {name} — 캐시캔들 {state.Candles.Count}개 → Ready 현재가={state.CurrentPrice:N0}, 거래량={state.DayVolume:N0} (총 {_stateManager.TotalCount}종목)")
                         Else
                             _stateManager.TransitionTo(code, DataState.Downloading)
                             StockInfoManager.I.AddStocks({code}, DataSourceType.조건검색, "SimTrade")
@@ -445,6 +479,8 @@ Namespace SimTrade
 
                         _candleBuilder.InitializeFromHistory(code, state.Candles)
                         state.Engine.CalculateAll(state.Candles)
+                        LogTickIntensityDiagnostics(state, tickCount, "AfterCalculateAll")
+                        SyncStatePriceFromCandles(state)
                         UpdateStateIndicators(state)
                         ComputeReferenceCandle(state)
 
@@ -455,7 +491,7 @@ Namespace SimTrade
 
                         _stateManager.TransitionTo(code, DataState.Ready)
                         Threading.Interlocked.Increment(_readyCount)
-                        _view.Log($"[캔들수신] {code} {state.Name} — {downloaded.Count}개 (총 {state.Candles.Count}개) → Ready")
+                        _view.Log($"[캔들수신] {code} {state.Name} — {downloaded.Count}개 (총 {state.Candles.Count}개) → Ready 현재가={state.CurrentPrice:N0}, 거래량={state.DayVolume:N0}")
                     Catch ex As Exception
                         _view.Log($"[캔들처리오류] {code}: {ex.Message}")
                     End Try
@@ -570,6 +606,98 @@ Namespace SimTrade
 
 #End Region
 
+
+#Region "TopN 순위 갱신"
+
+        ''' <summary>
+        ''' 현재 Ready/Trading 종목의 TopN 순위와 점수를 갱신한다.
+        ''' EnableTopNFilter 여부와 무관하게 호출 가능하다.
+        ''' UI 표시용이므로 매수/매도 주문은 발생시키지 않는다.
+        ''' </summary>
+        Public Function RefreshTopNRanking() As Top10Result
+            If _top10Filter Is Nothing Then Return Nothing
+
+            Dim activeStates As List(Of StockState) = _stateManager.GetActiveStocks()
+
+            If activeStates Is Nothing OrElse activeStates.Count = 0 Then Return Nothing
+
+            Dim topResult As Top10Result = _top10Filter.Evaluate(activeStates)
+
+            For Each activeState As StockState In activeStates
+                activeState.TopNRank = 0
+                activeState.TopNScore = 0
+                    activeState.TopTickScore = 0
+                    activeState.TopAmountScore = 0
+                    activeState.TopTrendScore = 0
+            Next
+
+            For Each topScore As Top10Score In topResult.TopStocks
+                Dim rankedState As StockState = _stateManager.GetState(topScore.Code)
+                If rankedState IsNot Nothing Then
+                    rankedState.TopNRank = topScore.Rank
+                    rankedState.TopNScore = topScore.TotalScore
+                        rankedState.TopTickScore = topScore.ScoreTickSum
+                        rankedState.TopAmountScore = topScore.ScoreTradeAmount
+                        rankedState.TopTrendScore = topScore.ScoreST + topScore.ScoreJMA
+                End If
+            Next
+            LogTopNChanges(topResult)
+            Return topResult
+        End Function
+
+
+        ''' <summary>
+        ''' TopN 순위 변화를 제한적으로 로그에 남긴다.
+        ''' 매매 판단에는 관여하지 않고 관찰/검증용 기록만 수행한다.
+        ''' </summary>
+        Private Sub LogTopNChanges(topResult As Top10Result)
+            If topResult Is Nothing OrElse topResult.TopStocks Is Nothing Then Return
+
+            Dim currentCodes As List(Of String) = topResult.GetTopCodes()
+            Dim currentTop1 As String = ""
+            If currentCodes.Count > 0 Then currentTop1 = currentCodes(0)
+
+            Dim logParts As New List(Of String)()
+
+            If _lastTopNCodes IsNot Nothing AndAlso _lastTopNCodes.Count > 0 Then
+                If _lastTop1Code <> "" AndAlso currentTop1 <> "" AndAlso
+                   Not String.Equals(_lastTop1Code, currentTop1, StringComparison.OrdinalIgnoreCase) Then
+                    logParts.Add($"1위 변경: {_lastTop1Code} → {currentTop1}")
+                End If
+
+                Dim added As New List(Of String)()
+                For Each code As String In currentCodes
+                    If Not _lastTopNCodes.Contains(code, StringComparer.OrdinalIgnoreCase) Then
+                        added.Add(code)
+                    End If
+                Next
+
+                Dim removed As New List(Of String)()
+                For Each code As String In _lastTopNCodes
+                    If Not currentCodes.Contains(code, StringComparer.OrdinalIgnoreCase) Then
+                        removed.Add(code)
+                    End If
+                Next
+
+                If added.Count > 0 Then logParts.Add($"편입: {String.Join(",", added.Take(5))}")
+                If removed.Count > 0 Then logParts.Add($"이탈: {String.Join(",", removed.Take(5))}")
+            End If
+
+            _lastTopNCodes = New List(Of String)(currentCodes)
+            _lastTop1Code = currentTop1
+
+            If logParts.Count = 0 Then Return
+
+            Dim now As DateTime = DateTime.Now
+            If _lastTopNLogTime <> DateTime.MinValue AndAlso
+               (now - _lastTopNLogTime).TotalSeconds < TOPN_CHANGE_LOG_INTERVAL_SEC Then
+                Return
+            End If
+
+            _lastTopNLogTime = now
+            _view.Log($"[TopN] {String.Join(" | ", logParts)}")
+        End Sub
+#End Region
 #Region "★ 신호 판단 — 7조건"
 
         ''' <summary>매수/매도 신호 평가 (가변 로직의 핵심)</summary>
@@ -619,6 +747,23 @@ Namespace SimTrade
                 _view.Log($"[필터경고] {state.Code} {warn.FilterId}: {warn.Detail}")
             Next
 
+
+            ' ── TopN 매수 게이트 ──
+            ' 기본값 EnableTopNFilter=False 이므로 기존 실전/모의매매 흐름은 유지된다.
+            ' True일 때만 Ready/Trading 종목 점수 순위 TopN 밖의 종목을 매수 차단한다.
+            If _settings.EnableTopNFilter Then
+                                RefreshTopNRanking()
+
+                If Not _top10Filter.IsInTop(state.Code) Then
+                    state.LastSignal = $"Top{_settings.TopNCount}미포함"
+                    Return
+                End If
+
+                Dim topRank As Integer = _top10Filter.GetRank(state.Code)
+                If topRank > 0 Then
+                    state.LastSignal = $"Top{_settings.TopNCount}통과(#{topRank})"
+                End If
+            End If
             ' ── 7조건 매수 판단 ──
             Dim holdingCount = TradeManager.I.PositionCount
             Dim cash = TradeManager.I.AvailableCash
@@ -677,6 +822,119 @@ Namespace SimTrade
 
 #End Region
 
+
+#Region "StockState ← Candle 가격 동기화"
+
+        ''' <summary>
+        ''' Cybos에서 받은 히스토리 캔들만으로도 UI 현재가/거래량/등락률이 0으로 보이지 않도록
+        ''' 마지막 캔들 기준으로 StockState 표시 필드를 보정한다.
+        ''' 실시간 Tick이 들어오면 UpdatePrice가 다시 최신값으로 덮어쓴다.
+        ''' </summary>
+        Private Sub SyncStatePriceFromCandles(state As StockState)
+            If state Is Nothing Then Return
+            If state.Candles Is Nothing OrElse state.Candles.Count = 0 Then Return
+
+            Dim lastIdx As Integer = state.Candles.Count - 1
+            Dim lastCandle As CandleItem = state.Candles(lastIdx)
+
+            If lastCandle Is Nothing Then Return
+
+            Dim lastClose As Integer = CInt(Math.Round(CDbl(lastCandle.Close)))
+            If lastClose > 0 Then
+                state.CurrentPrice = lastClose
+            End If
+
+            Dim baseDate As Date = lastCandle.Dt.Date
+            Dim dayVolume As Long = 0
+            Dim dayAmount As Long = 0
+            Dim firstOpen As Double = 0.0
+
+            For i As Integer = 0 To state.Candles.Count - 1
+                Dim c As CandleItem = state.Candles(i)
+                If c Is Nothing Then Continue For
+                If c.Dt.Date <> baseDate Then Continue For
+
+                If firstOpen <= 0 AndAlso c.Open > 0 Then
+                    firstOpen = CDbl(c.Open)
+                End If
+
+                If c.Volume > 0 Then
+                    dayVolume += CLng(c.Volume)
+
+                    Dim avgPrice As Double = (CDbl(c.Open) + CDbl(c.High) + CDbl(c.Low) + CDbl(c.Close)) / 4.0
+                    If avgPrice > 0 Then
+                        Dim amt As Double = avgPrice * CDbl(c.Volume)
+                        If amt > 0 AndAlso amt < CDbl(Long.MaxValue) Then
+                            dayAmount += CLng(amt)
+                        End If
+                    End If
+                End If
+            Next
+
+            If dayVolume > 0 Then
+                state.DayVolume = dayVolume
+            ElseIf lastCandle.Volume > 0 Then
+                state.DayVolume = CLng(lastCandle.Volume)
+            End If
+
+            If dayAmount > 0 Then
+                state.DayAmount = dayAmount
+            End If
+
+            If firstOpen > 0 AndAlso lastClose > 0 Then
+                state.ChangeRate = (CDbl(lastClose) - firstOpen) / firstOpen * 100.0
+            End If
+        End Sub
+
+#End Region
+
+#Region "TickIntensity 진단"
+
+        Private Sub LogTickIntensityDiagnostics(state As StockState, tickCount As Integer, sourceTag As String)
+            If state Is Nothing Then Return
+
+            If state.Candles Is Nothing OrElse state.Candles.Count = 0 Then
+                _view.Log($"[TickDiag] {state.Code} {sourceTag} candles=0, tickCount={tickCount}")
+                Return
+            End If
+
+            Dim firstCandle As CandleItem = state.Candles(0)
+            Dim lastCandle As CandleItem = state.Candles(state.Candles.Count - 1)
+
+            Dim lastTickCount As Integer = 0
+            Dim lastNormalizedTickSum As Double = 0.0
+
+            If lastCandle IsNot Nothing Then
+                lastTickCount = lastCandle.TickCount
+                lastNormalizedTickSum = lastCandle.NormalizedTickSum
+            End If
+
+            Dim tiLast As String = "없음"
+            Dim tiList = SimTradeHelper.FindResult(state.Engine.Results, "TICKINT_")
+
+            If tiList IsNot Nothing AndAlso tiList.Count > 0 Then
+                Dim lastTi = tiList(tiList.Count - 1)
+
+                Dim lastTickSum As Single = lastTi.Val("TickSum")
+                Dim lastMA5 As Single = lastTi.Val("MA5")
+                Dim lastMA20 As Single = lastTi.Val("MA20")
+
+                tiLast = String.Format("TickSum={0:F1}, MA5={1:F1}, MA20={2:F1}",
+                                       CDbl(lastTickSum),
+                                       CDbl(lastMA5),
+                                       CDbl(lastMA20))
+            End If
+
+            _view.Log($"[TickDiag] {state.Code} {state.Name} {sourceTag} tickCount={tickCount}, " &
+                      $"candles={state.Candles.Count}, " &
+                      $"first={firstCandle.Dt:yyyy-MM-dd HH:mm:ss}, " &
+                      $"last={lastCandle.Dt:yyyy-MM-dd HH:mm:ss}, " &
+                      $"lastCandle.TickCount={lastTickCount}, " &
+                      $"lastCandle.NTS={lastNormalizedTickSum:F1}, " &
+                      $"TI={tiLast}")
+        End Sub
+
+#End Region
 #Region "StockState ← IndicatorEngine 동기화"
 
         ''' <summary>지표 최신값 → StockState 반영 (가변 — 지표 추가 시 수정)</summary>
@@ -861,21 +1119,31 @@ Namespace SimTrade
         ''' 메인 차트(FastChartControl)와 동일한 데이터 경로를 사용.
         ''' 백그라운드 스레드에서 호출 가능 (DoEvents 미사용).
         ''' </summary>
+        ''' <summary>
+        ''' cybos API로 당일 틱 타임스탬프를 요청하여 TickIntensity_Indicator.SetTickBars에 전달.
+        ''' 차트/CircuitDesignerForm의 성공 경로와 동일하게 UI message pump 방식으로 응답을 기다린다.
+        ''' </summary>
         Public Shared Function LoadTickBarsFromCybos(code As String, engine As IndicatorEngine, Optional timeoutMs As Integer = 15000) As Integer
+            If String.IsNullOrWhiteSpace(code) Then Return 0
+            If engine Is Nothing Then Return 0
+
             Dim tickResponse As Msg = Nothing
             Dim tickCompleted As Boolean = False
+            Dim normCode As String = SharedUtil.NormalizeChartCode(code)
 
             Dim handler As Action(Of Msg) =
                 Sub(m As Msg)
                     If m Is Nothing Then Return
-                    If Not String.Equals(SharedUtil.NormalizeChartCode(m.Str("code")),
-                                         SharedUtil.NormalizeChartCode(code),
-                                         StringComparison.OrdinalIgnoreCase) Then Return
+
+                    Dim msgCode As String = SharedUtil.NormalizeChartCode(m.Str("code"))
+                    If Not String.Equals(msgCode, normCode, StringComparison.OrdinalIgnoreCase) Then Return
+
                     tickResponse = m.Clone()
                     tickCompleted = True
                 End Sub
 
             MessageBus.I.On(Topics.TICK_CANDLE_LOADED, handler)
+
             Try
                 MessageBus.I.Emit(Topics.TICK_CANDLE_REQUEST,
                                   "code", code,
@@ -884,9 +1152,11 @@ Namespace SimTrade
                                   "tickUnit", RuntimeChartSettings.DefaultTickUnit,
                                   "timeframe", RuntimeChartSettings.TickTimeframe(RuntimeChartSettings.DefaultTickUnit))
 
-                Dim sw = Environment.TickCount
-                While Not tickCompleted AndAlso Environment.TickCount - sw < timeoutMs
-                    Threading.Thread.Sleep(50)
+                Dim started As Integer = Environment.TickCount
+
+                While Not tickCompleted AndAlso Environment.TickCount - started < timeoutMs
+                    System.Windows.Forms.Application.DoEvents()
+                    Threading.Thread.Sleep(30)
                 End While
 
                 If Not tickCompleted OrElse tickResponse Is Nothing Then Return 0
@@ -895,33 +1165,59 @@ Namespace SimTrade
                 If rows Is Nothing OrElse rows.Count = 0 Then Return 0
 
                 Dim tickBars As New List(Of DateTime)(rows.Count)
+
                 For Each row In rows
-                    Dim dtVal = ""
-                    Dim tmVal = ""
-                    If row.ContainsKey("dt") Then dtVal = row("dt")
-                    If row.ContainsKey("date") Then dtVal = row("date")
-                    If row.ContainsKey("time") Then tmVal = row("time")
-                    Dim parsed = DateTime.MinValue
+                    If row Is Nothing Then Continue For
+
+                    Dim dtVal As String = ""
+                    Dim tmVal As String = ""
+
+                    If row.ContainsKey("dt") Then dtVal = row("dt").Trim()
+                    If row.ContainsKey("date") Then dtVal = row("date").Trim()
+                    If row.ContainsKey("time") Then tmVal = row("time").Trim()
+
+                    Dim parsed As DateTime = DateTime.MinValue
+
                     If dtVal <> "" AndAlso tmVal <> "" Then
-                        Dim combined = dtVal & tmVal.PadLeft(6, "0"c)
-                        DateTime.TryParseExact(combined, "yyyyMMddHHmmss",
-                            Globalization.CultureInfo.InvariantCulture,
-                            Globalization.DateTimeStyles.None, parsed)
+                        Dim combined As String = dtVal & tmVal.PadLeft(6, "0"c)
+                        DateTime.TryParseExact(combined,
+                                               "yyyyMMddHHmmss",
+                                               Globalization.CultureInfo.InvariantCulture,
+                                               Globalization.DateTimeStyles.None,
+                                               parsed)
                     ElseIf dtVal <> "" Then
-                        DateTime.TryParse(dtVal, parsed)
+                        If Not DateTime.TryParse(dtVal, parsed) Then
+                            DateTime.TryParseExact(dtVal,
+                                                   "yyyyMMddHHmmss",
+                                                   Globalization.CultureInfo.InvariantCulture,
+                                                   Globalization.DateTimeStyles.None,
+                                                   parsed)
+                        End If
                     End If
-                    If parsed <> DateTime.MinValue Then tickBars.Add(parsed)
+
+                    If parsed <> DateTime.MinValue Then
+                        tickBars.Add(parsed)
+                    End If
                 Next
 
                 If tickBars.Count = 0 Then Return 0
+
                 tickBars.Sort()
 
-                Dim tickInd = engine.GetAll().OfType(Of TickIntensity_Indicator)().FirstOrDefault()
-                If tickInd IsNot Nothing Then
-                    tickInd.SetTickBars(tickBars)
-                    Return tickBars.Count
-                End If
-                Return 0
+                Dim tickInd As TickIntensity_Indicator = Nothing
+                For Each ind As IIndicator In engine.GetAll()
+                    Dim ti As TickIntensity_Indicator = TryCast(ind, TickIntensity_Indicator)
+                    If ti IsNot Nothing Then
+                        tickInd = ti
+                        Exit For
+                    End If
+                Next
+
+                If tickInd Is Nothing Then Return 0
+
+                tickInd.SetTickBars(tickBars)
+                Return tickBars.Count
+
             Finally
                 MessageBus.I.Off(Topics.TICK_CANDLE_LOADED, handler)
             End Try
@@ -932,3 +1228,17 @@ Namespace SimTrade
     End Class
 
 End Namespace
+
+
+
+
+
+
+
+
+
+
+
+
+
+

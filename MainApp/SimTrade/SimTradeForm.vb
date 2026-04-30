@@ -181,6 +181,8 @@ Public Class SimTradeForm
     Private Sub OnTimerRefresh(sender As Object, e As EventArgs) Handles _tmrRefresh.Tick
         If Not _engine.IsRunning Then Return
 
+        Dim topResult As Top10Result = _engine.RefreshTopNRanking()
+
         Dim snapshots = _engine.Manager.GetSnapshot()
         _ui.RefreshWatchGrid(snapshots)
 
@@ -188,10 +190,22 @@ Public Class SimTradeForm
         _ui.RefreshPositionGrid(holdings)
 
         Dim stats = _engine.Simulator.GetStatsSummary()
+        Dim presetName As String = _engine.GetTopNPresetName()
         Dim readyCount = _engine.Manager.CountByState(DataState.Ready)
         Dim tradingCount = _engine.Manager.CountByState(DataState.Trading)
         Dim total = _engine.Manager.TotalCount
-        _ui.LblSummary.Text = $"종목: {total} (Ready={readyCount}, 매매={tradingCount}) | {stats}"
+        Dim top3Text As String = "-"
+        If topResult IsNot Nothing AndAlso topResult.TopStocks IsNot Nothing AndAlso topResult.TopStocks.Count > 0 Then
+            Dim topItems As New List(Of String)()
+            Dim topLimit As Integer = Math.Min(3, topResult.TopStocks.Count)
+            For i As Integer = 0 To topLimit - 1
+                Dim item As Top10Score = topResult.TopStocks(i)
+                topItems.Add($"{item.Code}({item.TotalScore:F0})")
+            Next
+            top3Text = String.Join(", ", topItems)
+        End If
+
+        _ui.LblSummary.Text = $"종목: {total} (Ready={readyCount}, 매매={tradingCount}) | 프리셋: {presetName} | Top3: {top3Text} | {stats}"
     End Sub
 
     Private Sub OnTimerLog(sender As Object, e As EventArgs) Handles _tmrLog.Tick
@@ -199,3 +213,5 @@ Public Class SimTradeForm
     End Sub
 
 End Class
+
+

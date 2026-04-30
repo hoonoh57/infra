@@ -54,15 +54,6 @@ Namespace SimTrade
         Private _lastResult As Top10Result
         Private _maxCount As Integer = 10
 
-        ' 가중치 (합계 = 100)
-        Private Const W_TICKSUM As Double = 25.0
-        Private Const W_TRADE_AMOUNT As Double = 20.0
-        Private Const W_ST As Double = 15.0
-        Private Const W_JMA As Double = 10.0
-        Private Const W_RSI As Double = 10.0
-        Private Const W_CHANGE_RATE As Double = 10.0
-        Private Const W_VOLUME As Double = 10.0
-
         Public Sub New(settings As SimTradeSettings, Optional maxCount As Integer = 10)
             _settings = settings
             _maxCount = maxCount
@@ -79,6 +70,20 @@ Namespace SimTrade
 
             result.TotalEvaluated = candidates.Count
             If candidates.Count = 0 Then Return result
+
+            Dim wTickSum As Double = Math.Max(0.0, _settings.TopTickWeight)
+            Dim wTradeAmount As Double = Math.Max(0.0, _settings.TopAmountWeight)
+            Dim wTrend As Double = Math.Max(0.0, _settings.TopTrendWeight)
+            Dim wMomentum As Double = Math.Max(0.0, _settings.TopMomentumWeight)
+
+            ' 기존 비율 유지: Trend 25 = ST 15 + JMA 10
+            Dim wST As Double = wTrend * 0.6
+            Dim wJMA As Double = wTrend * 0.4
+
+            ' 기존 비율 유지: Momentum 30 = RSI 10 + 등락률 10 + 거래량 10
+            Dim wRSI As Double = wMomentum / 3.0
+            Dim wChangeRate As Double = wMomentum / 3.0
+            Dim wVolume As Double = wMomentum / 3.0
 
             ' 정규화를 위한 최대값 계산
             Dim maxTickSum = candidates.Max(Function(s) If(Double.IsNaN(s.TickSum_Normalized), 0, s.TickSum_Normalized))
@@ -99,26 +104,26 @@ Namespace SimTrade
 
                 ' TickSum 정규화 점수 (0~25)
                 Dim tick = If(Double.IsNaN(s.TickSum_Normalized), 0, s.TickSum_Normalized)
-                sc.ScoreTickSum = (tick / maxTickSum) * W_TICKSUM
+                sc.ScoreTickSum = (tick / maxTickSum) * wTickSum
 
                 ' 거래대금 정규화 점수 (0~20)
                 Dim amt = CLng(s.CurrentPrice) * s.DayVolume
-                sc.ScoreTradeAmount = (CDbl(amt) / maxAmount) * W_TRADE_AMOUNT
+                sc.ScoreTradeAmount = (CDbl(amt) / maxAmount) * wTradeAmount
 
                 ' ST 방향 점수 (+15 또는 0)
-                sc.ScoreST = If(s.ST_Direction > 0, W_ST, 0)
+                sc.ScoreST = If(s.ST_Direction > 0, wST, 0)
 
                 ' JMA 방향 점수 (+10 또는 0)
-                sc.ScoreJMA = If(s.JMA_Direction > 0, W_JMA, 0)
+                sc.ScoreJMA = If(s.JMA_Direction > 0, wJMA, 0)
 
                 ' RSI 점수 (60~70 구간이 최적, 정규화)
                 Dim rsi = If(Double.IsNaN(s.RSI_Value), 50, s.RSI_Value)
                 If rsi >= 60 AndAlso rsi <= 70 Then
-                    sc.ScoreRSI = W_RSI
+                    sc.ScoreRSI = wRSI
                 ElseIf rsi >= 50 AndAlso rsi < 60 Then
-                    sc.ScoreRSI = W_RSI * 0.5
+                    sc.ScoreRSI = wRSI * 0.5
                 ElseIf rsi > 70 AndAlso rsi <= 80 Then
-                    sc.ScoreRSI = W_RSI * 0.7
+                    sc.ScoreRSI = wRSI * 0.7
                 Else
                     sc.ScoreRSI = 0
                 End If
@@ -126,18 +131,18 @@ Namespace SimTrade
                 ' 등락률 점수 (3~10% 최적 구간)
                 Dim chg = s.ChangeRate
                 If chg >= 3 AndAlso chg <= 10 Then
-                    sc.ScoreChangeRate = W_CHANGE_RATE
+                    sc.ScoreChangeRate = wChangeRate
                 ElseIf chg >= 1 AndAlso chg < 3 Then
-                    sc.ScoreChangeRate = W_CHANGE_RATE * 0.5
+                    sc.ScoreChangeRate = wChangeRate * 0.5
                 ElseIf chg > 10 AndAlso chg <= 15 Then
-                    sc.ScoreChangeRate = W_CHANGE_RATE * 0.6
+                    sc.ScoreChangeRate = wChangeRate * 0.6
                 Else
                     sc.ScoreChangeRate = 0
                 End If
 
                 ' 거래량 비율 점수 (0~10)
                 Dim volR = If(Double.IsNaN(s.Volume_Ratio), 0, s.Volume_Ratio)
-                sc.ScoreVolume = Math.Min((volR / maxVolRatio) * W_VOLUME, W_VOLUME)
+                sc.ScoreVolume = Math.Min((volR / maxVolRatio) * wVolume, wVolume)
 
                 sc.TotalScore = sc.ScoreTickSum + sc.ScoreTradeAmount + sc.ScoreST +
                                 sc.ScoreJMA + sc.ScoreRSI + sc.ScoreChangeRate + sc.ScoreVolume
@@ -192,3 +197,4 @@ Namespace SimTrade
     End Class
 
 End Namespace
+

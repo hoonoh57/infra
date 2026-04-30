@@ -1,9 +1,8 @@
-' ═══════════════════════════════════════════════════════════════
+﻿' ═══════════════════════════════════════════════════════════════
 ' StrategyEvaluator.vb — 전략 실행 및 신호 생성기 (Ported from C#)
 ' ═══════════════════════════════════════════════════════════════
 
 Imports MainApp.Models
-Imports MainApp.ChartEngine.Models
 Imports System.Collections.Generic
 Imports System.Linq
 
@@ -121,3 +120,4 @@ Namespace Services
         End Function
     End Class
 End Namespace
+

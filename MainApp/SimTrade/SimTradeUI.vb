@@ -49,6 +49,13 @@ Namespace SimTrade
         Public ReadOnly Property TxtForceClose As TextBox
         Public ReadOnly Property CboBuyOrder As ComboBox
         Public ReadOnly Property CboSellOrder As ComboBox
+        Public ReadOnly Property ChkEnableTopNFilter As CheckBox
+        Public ReadOnly Property NudTopNCount As NumericUpDown
+        Public ReadOnly Property CboTopNPreset As ComboBox
+        Public ReadOnly Property NudTopTickWeight As NumericUpDown
+        Public ReadOnly Property NudTopAmountWeight As NumericUpDown
+        Public ReadOnly Property NudTopTrendWeight As NumericUpDown
+        Public ReadOnly Property NudTopMomentumWeight As NumericUpDown
 
         ' ── 로그 큐 ──
         Private ReadOnly _logQueue As New System.Collections.Concurrent.ConcurrentQueue(Of String)
@@ -92,6 +99,7 @@ Namespace SimTrade
             For Each colName In SimTradeConst.WATCH_COLUMNS
                 _DgvWatch.Columns.Add(colName, colName)
             Next
+            ConfigureWatchGridColumns()
             tabWatch.Controls.Add(_DgvWatch)
 
             Dim tabPos As New TabPage("포지션")
@@ -144,7 +152,7 @@ Namespace SimTrade
 
         Private Sub BuildSettingsPanel(pnl As Panel)
             Dim y = 10
-            Const LBL_W = 120, CTRL_X = 140, ROW_H = 35
+            Const ROW_H = 35
 
             _NudST_Period = AddNumericRow(pnl, "ST Period:", 1, 50, 10, y) : y += ROW_H
             _NudST_Multiplier = AddNumericRow(pnl, "ST Multiplier:", 0.5D, 10D, 3D, y, 1) : y += ROW_H
@@ -166,15 +174,96 @@ Namespace SimTrade
 
             _CboBuyOrder = AddComboRow(pnl, "매수주문:", {"시장가", "최우선호가", "현재가"}, 1, y) : y += ROW_H
             _CboSellOrder = AddComboRow(pnl, "매도주문:", {"시장가", "최우선호가", "현재가"}, 0, y) : y += ROW_H
+            _ChkEnableTopNFilter = AddCheckRow(pnl, "TopN 필터 사용:", False, y) : y += ROW_H
+            _NudTopNCount = AddNumericRow(pnl, "TopN 개수:", 1, 50, 10, y) : y += ROW_H
+            _CboTopNPreset = AddComboRow(pnl, "TopN 프리셋:", {"기본형", "틱강도 중심형", "거래대금 중심형", "추세 중심형", "실적기반 자동"}, 0, y) : y += ROW_H
+            AddHandler _CboTopNPreset.SelectedIndexChanged, AddressOf OnTopNPresetChanged
+            _NudTopTickWeight = AddNumericRow(pnl, "Top Tick 가중치:", 0D, 100D, 25D, y, 1) : y += ROW_H
+            _NudTopAmountWeight = AddNumericRow(pnl, "Top Amount 가중치:", 0D, 100D, 20D, y, 1) : y += ROW_H
+            _NudTopTrendWeight = AddNumericRow(pnl, "Top Trend 가중치:", 0D, 100D, 25D, y, 1) : y += ROW_H
+            _NudTopMomentumWeight = AddNumericRow(pnl, "Top Momentum 가중치:", 0D, 100D, 30D, y, 1) : y += ROW_H
         End Sub
 
 #End Region
 
+
+#Region "감시 그리드 가독성"
+
+        Private Sub ConfigureWatchGridColumns()
+            If _DgvWatch Is Nothing OrElse _DgvWatch.Columns.Count = 0 Then Return
+
+            _DgvWatch.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None
+
+            SetWatchColumn("코드", 75)
+            SetWatchColumn("종목명", 130)
+            SetWatchColumn("현재가", 75)
+            SetWatchColumn("등락률", 65)
+            SetWatchColumn("거래량", 90)
+
+            SetWatchColumn("ST", 40)
+            SetWatchColumn("JMA", 45)
+            SetWatchColumn("TickSum", 70)
+            SetWatchColumn("OBV", 45)
+            SetWatchColumn("RSI", 45)
+            SetWatchColumn("MACD", 60)
+
+            SetWatchColumn("TopN", 50)
+            SetWatchColumn("TopScore", 70)
+            SetWatchColumn("TopTick", 65)
+            SetWatchColumn("TopAmt", 65)
+            SetWatchColumn("TopTrend", 75)
+
+            SetWatchColumn("상태", 60)
+            SetWatchColumn("신호", 220, DataGridViewAutoSizeColumnMode.Fill)
+            SetWatchColumn("봉수", 50)
+        End Sub
+
+        Private Sub SetWatchColumn(headerText As String,
+                                   width As Integer,
+                                   Optional autoSizeMode As DataGridViewAutoSizeColumnMode = DataGridViewAutoSizeColumnMode.None)
+            If _DgvWatch Is Nothing Then Return
+            If Not _DgvWatch.Columns.Contains(headerText) Then Return
+
+            Dim col As DataGridViewColumn = _DgvWatch.Columns(headerText)
+            col.Width = width
+            col.MinimumWidth = Math.Min(width, 40)
+            col.AutoSizeMode = autoSizeMode
+        End Sub
+
+        Private Shared Sub ApplyWatchRowStyle(row As DataGridViewRow, s As StockStateSnapshot)
+            If row Is Nothing OrElse s Is Nothing Then Return
+
+            Dim baseColor As Color = Color.FromArgb(35, 35, 35)
+            Dim foreColor As Color = Color.White
+
+            If s.TopNRank = 1 Then
+                row.DefaultCellStyle.BackColor = Color.FromArgb(75, 48, 38)
+                row.DefaultCellStyle.ForeColor = foreColor
+            ElseIf s.TopNRank = 2 Then
+                row.DefaultCellStyle.BackColor = Color.FromArgb(60, 55, 38)
+                row.DefaultCellStyle.ForeColor = foreColor
+            ElseIf s.TopNRank = 3 Then
+                row.DefaultCellStyle.BackColor = Color.FromArgb(45, 58, 50)
+                row.DefaultCellStyle.ForeColor = foreColor
+            ElseIf s.TopNRank > 0 Then
+                row.DefaultCellStyle.BackColor = Color.FromArgb(42, 48, 58)
+                row.DefaultCellStyle.ForeColor = foreColor
+            Else
+                row.DefaultCellStyle.BackColor = baseColor
+                row.DefaultCellStyle.ForeColor = foreColor
+            End If
+        End Sub
+
+#End Region
 #Region "그리드 갱신"
 
         Public Sub RefreshWatchGrid(snapshots As List(Of StockStateSnapshot))
             If snapshots Is Nothing Then Return
-            Dim sorted = snapshots.OrderBy(Function(s) s.Code).ToList()
+            Dim sorted = snapshots.
+                OrderBy(Function(s) If(s.TopNRank > 0, 0, 1)).
+                ThenBy(Function(s) If(s.TopNRank > 0, s.TopNRank, Integer.MaxValue)).
+                ThenBy(Function(s) s.Code).
+                ToList()
 
             If _DgvWatch.Rows.Count = sorted.Count Then
                 For i = 0 To sorted.Count - 1
@@ -191,15 +280,21 @@ Namespace SimTrade
                     row.Cells(8).Value = SimTradeHelper.DirectionChar(s.OBV_Direction)
                     row.Cells(9).Value = If(Double.IsNaN(s.RSI_Value), "-", s.RSI_Value.ToString("F0"))
                     row.Cells(10).Value = If(Double.IsNaN(s.MACD_Histogram), "-", s.MACD_Histogram.ToString("F2"))
-                    row.Cells(11).Value = SimTradeHelper.StateText(s.State)
-                    row.Cells(12).Value = s.LastSignal
-                    row.Cells(13).Value = s.CandleCount.ToString()
+                    row.Cells(11).Value = If(s.TopNRank > 0, s.TopNRank.ToString(), "-")
+                    row.Cells(12).Value = If(s.TopNScore > 0, s.TopNScore.ToString("F1"), "-")
+                    row.Cells(13).Value = If(s.TopTickScore > 0, s.TopTickScore.ToString("F1"), "-")
+                    row.Cells(14).Value = If(s.TopAmountScore > 0, s.TopAmountScore.ToString("F1"), "-")
+                    row.Cells(15).Value = If(s.TopTrendScore > 0, s.TopTrendScore.ToString("F1"), "-")
+                    row.Cells(16).Value = SimTradeHelper.StateText(s.State)
+                    row.Cells(17).Value = s.LastSignal
+                    row.Cells(18).Value = s.CandleCount.ToString()
+                    ApplyWatchRowStyle(row, s)
                 Next
             Else
                 _DgvWatch.SuspendLayout()
                 _DgvWatch.Rows.Clear()
                 For Each s In sorted
-                    _DgvWatch.Rows.Add(
+                    Dim rowIdx As Integer = _DgvWatch.Rows.Add(
                         s.Code, s.Name, s.CurrentPrice.ToString("N0"),
                         s.ChangeRate.ToString("F2") & "%", s.DayVolume.ToString("N0"),
                         SimTradeHelper.DirectionChar(s.ST_Direction),
@@ -208,8 +303,11 @@ Namespace SimTrade
                         SimTradeHelper.DirectionChar(s.OBV_Direction),
                         If(Double.IsNaN(s.RSI_Value), "-", s.RSI_Value.ToString("F0")),
                         If(Double.IsNaN(s.MACD_Histogram), "-", s.MACD_Histogram.ToString("F2")),
+                        If(s.TopNRank > 0, s.TopNRank.ToString(), "-"),
+                        If(s.TopNScore > 0, s.TopNScore.ToString("F1"), "-"),
                         SimTradeHelper.StateText(s.State),
                         s.LastSignal, s.CandleCount.ToString())
+                    ApplyWatchRowStyle(_DgvWatch.Rows(rowIdx), s)
                 Next
                 _DgvWatch.ResumeLayout()
             End If
@@ -268,6 +366,73 @@ Namespace SimTrade
 
 #End Region
 
+
+#Region "TopN 프리셋"
+
+        Private Sub OnTopNPresetChanged(sender As Object, e As EventArgs)
+            If _CboTopNPreset Is Nothing Then Return
+            If _NudTopTickWeight Is Nothing OrElse _NudTopAmountWeight Is Nothing OrElse
+               _NudTopTrendWeight Is Nothing OrElse _NudTopMomentumWeight Is Nothing Then Return
+
+            Select Case _CboTopNPreset.SelectedIndex
+                Case 1
+                    ' 틱강도 중심형
+                    _NudTopTickWeight.Value = 40D
+                    _NudTopAmountWeight.Value = 20D
+                    _NudTopTrendWeight.Value = 25D
+                    _NudTopMomentumWeight.Value = 15D
+
+                Case 2
+                    ' 거래대금 중심형
+                    _NudTopTickWeight.Value = 20D
+                    _NudTopAmountWeight.Value = 40D
+                    _NudTopTrendWeight.Value = 25D
+                    _NudTopMomentumWeight.Value = 15D
+
+                Case 3
+                    ' 추세 중심형
+                    _NudTopTickWeight.Value = 20D
+                    _NudTopAmountWeight.Value = 20D
+                    _NudTopTrendWeight.Value = 40D
+                    _NudTopMomentumWeight.Value = 20D
+
+                                Case 4
+                    ' 실적기반 자동
+                    ' 현재 단계에서는 기존 입력값을 유지한다.
+                    ' 향후 백테스트/실전 누적 평가 결과가 산출되면 이 4개 값을 자동 갱신한다.
+                    Return
+
+                Case Else
+                    ' 기본형
+                    _NudTopTickWeight.Value = 25D
+                    _NudTopAmountWeight.Value = 20D
+                    _NudTopTrendWeight.Value = 25D
+                    _NudTopMomentumWeight.Value = 30D
+            End Select
+        End Sub
+
+
+        Private Sub UpdateTopNPresetSelectionFromWeights()
+            If _CboTopNPreset Is Nothing Then Return
+            If _NudTopTickWeight Is Nothing OrElse _NudTopAmountWeight Is Nothing OrElse
+               _NudTopTrendWeight Is Nothing OrElse _NudTopMomentumWeight Is Nothing Then Return
+
+            Dim tick As Decimal = _NudTopTickWeight.Value
+            Dim amount As Decimal = _NudTopAmountWeight.Value
+            Dim trend As Decimal = _NudTopTrendWeight.Value
+            Dim momentum As Decimal = _NudTopMomentumWeight.Value
+
+            If tick = 40D AndAlso amount = 20D AndAlso trend = 25D AndAlso momentum = 15D Then
+                _CboTopNPreset.SelectedIndex = 1
+            ElseIf tick = 20D AndAlso amount = 40D AndAlso trend = 25D AndAlso momentum = 15D Then
+                _CboTopNPreset.SelectedIndex = 2
+            ElseIf tick = 20D AndAlso amount = 20D AndAlso trend = 40D AndAlso momentum = 20D Then
+                _CboTopNPreset.SelectedIndex = 3
+            Else
+                _CboTopNPreset.SelectedIndex = 0
+            End If
+        End Sub
+#End Region
 #Region "설정 UI ↔ SimTradeSettings"
 
         Public Sub ApplySettingsFromUI(settings As SimTradeSettings)
@@ -290,6 +455,19 @@ Namespace SimTrade
             If TimeSpan.TryParse(_TxtForceClose.Text.Trim(), ts) Then settings.ForceCloseTime = ts
             settings.BuyOrderType = CType(_CboBuyOrder.SelectedIndex, SimOrderType)
             settings.SellOrderType = CType(_CboSellOrder.SelectedIndex, SimOrderType)
+            settings.EnableTopNFilter = _ChkEnableTopNFilter.Checked
+            settings.TopNCount = CInt(_NudTopNCount.Value)
+            settings.TopTickWeight = CDbl(_NudTopTickWeight.Value)
+            settings.TopAmountWeight = CDbl(_NudTopAmountWeight.Value)
+            settings.TopTrendWeight = CDbl(_NudTopTrendWeight.Value)
+            settings.TopMomentumWeight = CDbl(_NudTopMomentumWeight.Value)
+            settings.TopNPresetIndex = If(_CboTopNPreset IsNot Nothing, _CboTopNPreset.SelectedIndex, 0)
+            settings.EnableAutoTopNWeightPreset = (settings.TopNPresetIndex = 4)
+            If settings.EnableAutoTopNWeightPreset Then
+                settings.AutoTopNWeightSource = "실적기반 자동: 향후 백테스트/실전 누적 성과 기반 자동 제안"
+            Else
+                settings.AutoTopNWeightSource = ""
+            End If
         End Sub
 
         Public Sub LoadSettingsToUI(settings As SimTradeSettings)
@@ -311,6 +489,13 @@ Namespace SimTrade
             _TxtForceClose.Text = settings.ForceCloseTime.ToString("hh\:mm")
             _CboBuyOrder.SelectedIndex = CInt(settings.BuyOrderType)
             _CboSellOrder.SelectedIndex = CInt(settings.SellOrderType)
+            _ChkEnableTopNFilter.Checked = settings.EnableTopNFilter
+            _NudTopNCount.Value = settings.TopNCount
+            _NudTopTickWeight.Value = CDec(settings.TopTickWeight)
+            _NudTopAmountWeight.Value = CDec(settings.TopAmountWeight)
+            _NudTopTrendWeight.Value = CDec(settings.TopTrendWeight)
+            _NudTopMomentumWeight.Value = CDec(settings.TopMomentumWeight)
+            UpdateTopNPresetSelectionFromWeights()
         End Sub
 
         Public Sub SetSettingsEnabled(enabled As Boolean)
@@ -450,3 +635,22 @@ Namespace SimTrade
     End Class
 
 End Namespace
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
