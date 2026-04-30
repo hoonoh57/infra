@@ -16,13 +16,16 @@
   </ItemGroup>
   <ItemGroup>
     <Reference Include="Interop.CPSYSDIBLib">
-      <HintPath>C:\Users\haoru\Desktop\2025\Template\lib\Interop.CPSYSDIBLib.dll</HintPath>
+      <HintPath Condition="Exists('..\lib\x86\cybos\Interop.CPSYSDIBLib.dll')">..\lib\x86\cybos\Interop.CPSYSDIBLib.dll</HintPath>
+      <HintPath Condition="!Exists('..\lib\x86\cybos\Interop.CPSYSDIBLib.dll')">C:\Users\haoru\Desktop\2025\Template\lib\Interop.CPSYSDIBLib.dll</HintPath>
     </Reference>
     <Reference Include="Interop.CPUTILLib">
-      <HintPath>C:\Users\haoru\Desktop\2025\Template\lib\Interop.CPUTILLib.dll</HintPath>
+      <HintPath Condition="Exists('..\lib\x86\cybos\Interop.CPUTILLib.dll')">..\lib\x86\cybos\Interop.CPUTILLib.dll</HintPath>
+      <HintPath Condition="!Exists('..\lib\x86\cybos\Interop.CPUTILLib.dll')">C:\Users\haoru\Desktop\2025\Template\lib\Interop.CPUTILLib.dll</HintPath>
     </Reference>
     <Reference Include="Interop.DSCBO1Lib">
-      <HintPath>C:\Users\haoru\Desktop\2025\Template\lib\Interop.DSCBO1Lib.dll</HintPath>
+      <HintPath Condition="Exists('..\lib\x86\cybos\Interop.DSCBO1Lib.dll')">..\lib\x86\cybos\Interop.DSCBO1Lib.dll</HintPath>
+      <HintPath Condition="!Exists('..\lib\x86\cybos\Interop.DSCBO1Lib.dll')">C:\Users\haoru\Desktop\2025\Template\lib\Interop.DSCBO1Lib.dll</HintPath>
     </Reference>
   </ItemGroup>
 </Project>
