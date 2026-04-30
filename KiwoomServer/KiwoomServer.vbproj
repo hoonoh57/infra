@@ -16,10 +16,12 @@
   </ItemGroup>
   <ItemGroup>
     <Reference Include="AxInterop.KHOpenAPILib">
-      <HintPath>C:\Users\haoru\Desktop\2025\Template\lib\AxInterop.KHOpenAPILib.dll</HintPath>
+      <HintPath Condition="Exists('..\lib\x86\kiwoom\AxInterop.KHOpenAPILib.dll')">..\lib\x86\kiwoom\AxInterop.KHOpenAPILib.dll</HintPath>
+      <HintPath Condition="!Exists('..\lib\x86\kiwoom\AxInterop.KHOpenAPILib.dll')">C:\Users\haoru\Desktop\2025\Template\lib\AxInterop.KHOpenAPILib.dll</HintPath>
     </Reference>
     <Reference Include="Interop.KHOpenAPILib">
-      <HintPath>C:\Users\haoru\Desktop\2025\Template\lib\Interop.KHOpenAPILib.dll</HintPath>
+      <HintPath Condition="Exists('..\lib\x86\kiwoom\Interop.KHOpenAPILib.dll')">..\lib\x86\kiwoom\Interop.KHOpenAPILib.dll</HintPath>
+      <HintPath Condition="!Exists('..\lib\x86\kiwoom\Interop.KHOpenAPILib.dll')">C:\Users\haoru\Desktop\2025\Template\lib\Interop.KHOpenAPILib.dll</HintPath>
     </Reference>
   </ItemGroup>
 </Project>
