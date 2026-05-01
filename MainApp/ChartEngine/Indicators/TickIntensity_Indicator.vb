@@ -70,10 +70,18 @@ Public Class TickIntensity_Indicator
 
     Public Sub SetTickBars(tickTimestamps As List(Of DateTime))
         SyncLock _tickLock
-            _tickBars = If(tickTimestamps, New List(Of DateTime))
+            _tickBars = New List(Of DateTime)()
+
+            If tickTimestamps IsNot Nothing Then
+                For i As Integer = 0 To tickTimestamps.Count - 1
+                    _tickBars.Add(NormalizeMarketTickTimestamp(tickTimestamps(i)))
+                Next
+            End If
+
             _currentRealtimeBarStart = DateTime.MinValue
             _currentRealtimeTickCount = 0
             _completedRealtimeBars.Clear()
+
             If _tickBars.Count > 1 AndAlso _tickBars(0) > _tickBars(_tickBars.Count - 1) Then
                 _tickBars.Reverse()
             End If
@@ -296,6 +304,17 @@ Public Class TickIntensity_Indicator
     Private Shared Function NormalizeRealtimeTickCount(rawTickCount As Integer) As Single
         Dim tickUnit = Math.Max(1, RuntimeChartSettings.DefaultTickUnit)
         Return CSng(rawTickCount / CSng(tickUnit))
+    End Function
+
+    Private Shared Function NormalizeMarketTickTimestamp(ts As DateTime) As DateTime
+        ' Cybos tick timestamp가 HH:mm이 아니라 00:HH:mm 형태로 파싱되는 경우 보정.
+        ' 예: 2026-04-30 00:14:59 → 2026-04-30 14:59:00
+        '     2026-04-30 00:15:30 → 2026-04-30 15:30:00
+        ' 정규장/장전 데이터 범위에서만 제한적으로 적용한다.
+        If ts.Hour = 0 AndAlso ts.Minute >= 8 AndAlso ts.Minute <= 15 Then
+            Return New DateTime(ts.Year, ts.Month, ts.Day, ts.Minute, ts.Second, 0)
+        End If
+        Return ts
     End Function
 
     Private Function AlignToBarStart(ts As DateTime) As DateTime
