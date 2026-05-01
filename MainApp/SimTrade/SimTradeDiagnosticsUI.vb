@@ -69,8 +69,15 @@ Namespace SimTrade
                 Select(Function(s As StockStateSnapshot) s.TickSum_Normalized).
                 ToList()
 
-            Dim exactSixCount As Integer = validTicks.Count(Function(v As Double) Math.Abs(v - 6.0R) < 0.0001R)
-            Dim fixedSixSuspicious As Boolean = validTicks.Count >= 3 AndAlso exactSixCount >= Math.Max(3, CInt(Math.Ceiling(validTicks.Count * 0.5R)))
+            Dim exactSixCount As Integer = 0
+            For Each v As Double In validTicks
+                If Math.Abs(v - 6.0R) < 0.0001R Then
+                    exactSixCount += 1
+                End If
+            Next
+
+            Dim fixedSixThreshold As Integer = Math.Max(3, CInt(Math.Ceiling(CDbl(validTicks.Count) * 0.5R)))
+            Dim fixedSixSuspicious As Boolean = validTicks.Count >= 3 AndAlso exactSixCount >= fixedSixThreshold
 
             _dgvTickDiag.SuspendLayout()
             _dgvTickDiag.Rows.Clear()
