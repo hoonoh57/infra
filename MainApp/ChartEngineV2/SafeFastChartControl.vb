@@ -18,6 +18,7 @@ Public Class SafeFastChartControl
     Public Event ChartProfileChanged As EventHandler
 
     Private Const FRAME_INTERVAL_MS As Integer = 16
+    Private Const RIGHT_DRAG_PADDING_BARS As Integer = 12
 
     Private ReadOnly _options As New SafeChartOptions()
     Private ReadOnly _state As New SafeChartState()
@@ -32,6 +33,7 @@ Public Class SafeFastChartControl
     Private ReadOnly _sk As SKControl
     Private ReadOnly _frameTimer As Timer
     Private ReadOnly _interaction As SafeInteractionController
+    Private ReadOnly _contextMenu As ContextMenuStrip
 
     Private _needsRepaint As Boolean = True
     Private _stockCode As String = ""
@@ -40,11 +42,13 @@ Public Class SafeFastChartControl
     Private _requestedCount As Integer = RuntimeChartSettings.DefaultChartOpenCount
 
     Public Sub New()
+        SetStyle(ControlStyles.Selectable, True)
         DoubleBuffered = True
 
         _state.VisibleCount = _options.InitialVisibleBars
         _state.CandleWidth = _options.CandleWidth
         _state.Gap = _options.CandleGap
+        _state.RightPaddingBars = RIGHT_DRAG_PADDING_BARS
 
         _sk = New SKControl()
         _sk.Dock = DockStyle.Fill
@@ -56,7 +60,11 @@ Public Class SafeFastChartControl
         AddHandler _sk.MouseMove, AddressOf OnMouseMoveSafe
         AddHandler _sk.MouseLeave, AddressOf OnMouseLeaveSafe
         AddHandler _sk.MouseWheel, AddressOf OnMouseWheelSafe
+        AddHandler _sk.MouseDoubleClick, AddressOf OnMouseDoubleClickSafe
         AddHandler _sk.Resize, Sub() RequestRepaint()
+
+        _contextMenu = BuildContextMenu()
+        _sk.ContextMenuStrip = _contextMenu
 
         _interaction = New SafeInteractionController(_state, AddressOf RequestRepaint)
 
@@ -84,6 +92,10 @@ Public Class SafeFastChartControl
             If _frameTimer IsNot Nothing Then
                 _frameTimer.Stop()
                 _frameTimer.Dispose()
+            End If
+
+            If _contextMenu IsNot Nothing Then
+                _contextMenu.Dispose()
             End If
         End If
 
@@ -161,9 +173,9 @@ Public Class SafeFastChartControl
             .ShowViLine = False,
             .ShowDayChangeLines = True,
             .ShowCrosshair = _options.ShowCrosshair,
-            .IsAutoScaleY = True,
-            .ManualMaxPrice = 0.0F,
-            .ManualMinPrice = 0.0F,
+            .IsAutoScaleY = _state.AutoScaleY,
+            .ManualMaxPrice = _state.ManualPriceHigh,
+            .ManualMinPrice = _state.ManualPriceLow,
             .CandleWidth = _state.CandleWidth,
             .Gap = _state.Gap,
             .VisibleCount = _state.VisibleCount,
@@ -214,6 +226,14 @@ Public Class SafeFastChartControl
         If options.CandleWidth > 0 Then _state.CandleWidth = options.CandleWidth
         If options.Gap >= 0 Then _state.Gap = options.Gap
         If options.VisibleCount > 0 Then _state.VisibleCount = options.VisibleCount
+
+        If options.IsAutoScaleY Then
+            _state.ResetManualPriceScale()
+        ElseIf options.ManualMaxPrice > options.ManualMinPrice Then
+            _state.AutoScaleY = False
+            _state.ManualPriceHigh = options.ManualMaxPrice
+            _state.ManualPriceLow = options.ManualMinPrice
+        End If
     End Sub
 
     Private Sub NotifyChartProfileChanged()
@@ -570,7 +590,8 @@ Public Class SafeFastChartControl
         If total <= 0 Then Return
 
         _state.VisibleCount = Math.Min(Math.Max(10, _state.VisibleCount), total)
-        _state.StartIndex = Math.Max(0, total - _state.VisibleCount)
+        Dim pad As Integer = Math.Min(RIGHT_DRAG_PADDING_BARS, Math.Max(3, CInt(Math.Round(_state.VisibleCount * 0.08R))))
+        _state.StartIndex = Math.Max(0, total - _state.VisibleCount + pad)
         _state.Clamp(total)
     End Sub
 
@@ -619,12 +640,18 @@ Public Class SafeFastChartControl
         _geo.PriceHigh = hi + pad
         _geo.PriceLow = lo - pad
         _geo.VolumeMax = volMax
+
+        If Not _state.AutoScaleY AndAlso _state.ManualPriceHigh > _state.ManualPriceLow Then
+            _geo.PriceHigh = _state.ManualPriceHigh
+            _geo.PriceLow = _state.ManualPriceLow
+        End If
     End Sub
 
     Private Sub RenderTitle(canvas As SKCanvas, candles As List(Of CandleItem))
         Using p As New SKPaint With {.Color = SafeChartPalette.TextBright, .TextSize = 12.0F, .IsAntialias = True}
             Dim last As CandleItem = candles(candles.Count - 1)
-            Dim text As String = $"SAFE V2 {_stockCode} {_stockName}  Indicators={_indicatorEngine.GetAll().Count}  Bars={candles.Count}  Last={last.Dt:yyyy-MM-dd HH:mm}  C={last.Close:N0}"
+            Dim yMode As String = If(_state.AutoScaleY, "AUTO", "MANUAL")
+            Dim text As String = $"SAFE V2 {_stockCode} {_stockName}  Indicators={_indicatorEngine.GetAll().Count}  Bars={candles.Count}  Last={last.Dt:yyyy-MM-dd HH:mm}  C={last.Close:N0}  Y={yMode}"
             canvas.DrawText(text, 12.0F, 18.0F, p)
         End Using
     End Sub
@@ -639,7 +666,11 @@ Public Class SafeFastChartControl
     End Sub
 
     Private Sub OnMouseDownSafe(sender As Object, e As MouseEventArgs)
-        _interaction.OnMouseDown(e)
+        If e Is Nothing Then Return
+        _sk.Focus()
+        If e.Button = MouseButtons.Left Then
+            _interaction.OnMouseDown(e, _buffer.Count, _geo.MainRect.Right, _geo.PriceHigh, _geo.PriceLow)
+        End If
     End Sub
 
     Private Sub OnMouseUpSafe(sender As Object, e As MouseEventArgs)
@@ -657,4 +688,90 @@ Public Class SafeFastChartControl
     Private Sub OnMouseWheelSafe(sender As Object, e As MouseEventArgs)
         _interaction.OnMouseWheel(e, _buffer.Count)
     End Sub
+
+    Private Sub OnMouseDoubleClickSafe(sender As Object, e As MouseEventArgs)
+        If e Is Nothing Then Return
+        If e.Button = MouseButtons.Left Then
+            _interaction.ResetPriceScale()
+            NotifyChartProfileChanged()
+        End If
+    End Sub
+
+    Private Function BuildContextMenu() As ContextMenuStrip
+        Dim menu As New ContextMenuStrip()
+
+        Dim mnuLatest As New ToolStripMenuItem("최신봉으로 이동")
+        AddHandler mnuLatest.Click,
+            Sub()
+                _interaction.MoveToLatest(_buffer.Count)
+            End Sub
+        menu.Items.Add(mnuLatest)
+
+        Dim mnuShowAll As New ToolStripMenuItem("전체 보기")
+        AddHandler mnuShowAll.Click,
+            Sub()
+                If _buffer.Count > 0 Then
+                    _state.StartIndex = 0
+                    _state.VisibleCount = _buffer.Count
+                    _state.Clamp(_buffer.Count)
+                    RequestRepaint()
+                    NotifyChartProfileChanged()
+                End If
+            End Sub
+        menu.Items.Add(mnuShowAll)
+
+        Dim mnuResetY As New ToolStripMenuItem("Y축 자동 복귀")
+        AddHandler mnuResetY.Click,
+            Sub()
+                _interaction.ResetPriceScale()
+                NotifyChartProfileChanged()
+            End Sub
+        menu.Items.Add(mnuResetY)
+
+        menu.Items.Add(New ToolStripSeparator())
+
+        Dim mnuCross As New ToolStripMenuItem("십자선 표시")
+        mnuCross.CheckOnClick = True
+        AddHandler mnuCross.DropDownOpening, Sub() mnuCross.Checked = _options.ShowCrosshair
+        AddHandler mnuCross.Click,
+            Sub()
+                _options.ShowCrosshair = mnuCross.Checked
+                RequestRepaint()
+                NotifyChartProfileChanged()
+            End Sub
+        menu.Items.Add(mnuCross)
+
+        Dim mnuCurrentLine As New ToolStripMenuItem("현재가선 표시")
+        mnuCurrentLine.CheckOnClick = True
+        AddHandler mnuCurrentLine.DropDownOpening, Sub() mnuCurrentLine.Checked = _options.ShowCurrentPriceLine
+        AddHandler mnuCurrentLine.Click,
+            Sub()
+                _options.ShowCurrentPriceLine = mnuCurrentLine.Checked
+                RequestRepaint()
+                NotifyChartProfileChanged()
+            End Sub
+        menu.Items.Add(mnuCurrentLine)
+
+        Dim mnuPrevLine As New ToolStripMenuItem("전일종가선 표시")
+        mnuPrevLine.CheckOnClick = True
+        AddHandler mnuPrevLine.DropDownOpening, Sub() mnuPrevLine.Checked = _options.ShowPrevCloseLine
+        AddHandler mnuPrevLine.Click,
+            Sub()
+                _options.ShowPrevCloseLine = mnuPrevLine.Checked
+                RequestRepaint()
+                NotifyChartProfileChanged()
+            End Sub
+        menu.Items.Add(mnuPrevLine)
+
+        menu.Items.Add(New ToolStripSeparator())
+
+        Dim mnuSave As New ToolStripMenuItem("현재 차트 상태 저장")
+        AddHandler mnuSave.Click,
+            Sub()
+                NotifyChartProfileChanged()
+            End Sub
+        menu.Items.Add(mnuSave)
+
+        Return menu
+    End Function
 End Class
