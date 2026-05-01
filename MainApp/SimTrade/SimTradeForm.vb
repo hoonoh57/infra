@@ -19,6 +19,7 @@ Public Class SimTradeForm
     ' ── UI 빌더 ──
     Private ReadOnly _ui As New SimTradeUI()
     Private ReadOnly _diagnostics As New SimTradeDiagnosticsUI()
+    Private ReadOnly _btnDataCheck As New Button()
 
     ' ── 타이머 ──
     Private WithEvents _tmrRefresh As New Timer()
@@ -34,19 +35,41 @@ Public Class SimTradeForm
 
     Public Sub New()
         _ui.Build(Me)
+        InstallDataCheckButton()
         _diagnostics.Build(_ui.TabControl)
         _engine = New SimTradeEngine(_settings, Me)
 
         AddHandler _ui.BtnCondition.Click, AddressOf OnConditionClick
         AddHandler _ui.BtnStart.Click, AddressOf OnStartClick
         AddHandler _ui.BtnStop.Click, AddressOf OnStopClick
-        AddHandler _ui.BtnCircuit.Click, AddressOf OnCircuitClick    ' ★ 추가
+        AddHandler _ui.BtnCircuit.Click, AddressOf OnCircuitClick
+        AddHandler _btnDataCheck.Click, AddressOf OnDataCheckClick
+        AddHandler _ui.DgvWatch.CellDoubleClick, AddressOf OnWatchGridCellDoubleClick
 
         _tmrRefresh.Interval = SimTradeConst.REFRESH_TIMER_INTERVAL_MS
         _tmrLog.Interval = SimTradeConst.LOG_TIMER_INTERVAL_MS
         _tmrLog.Start()
 
         _ui.LoadSettingsToUI(_settings)
+    End Sub
+
+    Private Sub InstallDataCheckButton()
+        _btnDataCheck.Text = "데이터확인"
+        _btnDataCheck.Width = 90
+        _btnDataCheck.Height = 30
+        _btnDataCheck.Left = 370
+        _btnDataCheck.Top = 10
+        _btnDataCheck.FlatStyle = FlatStyle.Flat
+        _btnDataCheck.BackColor = Color.FromArgb(60, 60, 65)
+        _btnDataCheck.ForeColor = Color.White
+
+        For Each ctrl As Control In Me.Controls
+            Dim pnl As Panel = TryCast(ctrl, Panel)
+            If pnl IsNot Nothing AndAlso pnl.Dock = DockStyle.Top Then
+                pnl.Controls.Add(_btnDataCheck)
+                Exit For
+            End If
+        Next
     End Sub
 
 
@@ -59,6 +82,7 @@ Public Class SimTradeForm
         Log("★ 엔진: CandleBuilder + SignalEvaluator(7조건) + FilterEngine(6종) + OrderSimulator")
         Log($"★ 캔들 간격: 개장={_settings.CandleInterval_Open}초, 초반={_settings.CandleInterval_EarlyMorning}초, 정상={_settings.CandleInterval_Normal}초")
         Log("★ 수익검증: TickSum 진단 / 순위→수익 검증 탭이 활성화되었습니다.")
+        Log("★ 데이터확인: 감시그리드 종목 선택 후 [데이터확인] 또는 행 더블클릭으로 내부 데이터 전체 확인")
     End Sub
 
     Private Sub SimTradeForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles MyBase.FormClosing
@@ -82,7 +106,49 @@ Public Class SimTradeForm
 
 
     ' ═══════════════════════════════════════
-    ' 회로 디자이너                            ★ 추가
+    ' 데이터 확인
+    ' ═══════════════════════════════════════
+
+    Private Sub OnDataCheckClick(sender As Object, e As EventArgs)
+        ShowSelectedStockDataDebug()
+    End Sub
+
+    Private Sub OnWatchGridCellDoubleClick(sender As Object, e As DataGridViewCellEventArgs)
+        If e Is Nothing OrElse e.RowIndex < 0 Then Return
+        ShowSelectedStockDataDebug()
+    End Sub
+
+    Private Sub ShowSelectedStockDataDebug()
+        Dim code As String = GetSelectedWatchCode()
+        If String.IsNullOrWhiteSpace(code) Then
+            MessageBox.Show(Me, "감시 그리드에서 먼저 종목을 선택하세요.", "데이터 확인", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+
+        Dim state As StockState = _engine.Manager.GetState(code)
+        If state Is Nothing Then
+            MessageBox.Show(Me, "선택 종목의 상태를 찾을 수 없습니다: " & code, "데이터 확인", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        Dim frm As New SimTradeStockDataDebugForm(state)
+        frm.Show(Me)
+        Log("[데이터확인] " & state.Code & " " & state.Name & " 내부 데이터 창 열림")
+    End Sub
+
+    Private Function GetSelectedWatchCode() As String
+        If _ui Is Nothing OrElse _ui.DgvWatch Is Nothing Then Return ""
+        If _ui.DgvWatch.CurrentRow Is Nothing Then Return ""
+        If _ui.DgvWatch.CurrentRow.Cells Is Nothing OrElse _ui.DgvWatch.CurrentRow.Cells.Count = 0 Then Return ""
+
+        Dim value As Object = _ui.DgvWatch.CurrentRow.Cells(0).Value
+        If value Is Nothing Then Return ""
+        Return value.ToString().Trim()
+    End Function
+
+
+    ' ═══════════════════════════════════════
+    ' 회로 디자이너
     ' ═══════════════════════════════════════
 
     Private Sub OnCircuitClick(sender As Object, e As EventArgs)
