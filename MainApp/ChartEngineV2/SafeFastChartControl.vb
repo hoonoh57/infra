@@ -603,7 +603,7 @@ Public Class SafeFastChartControl
         If candles.Count = 0 Then Return
 
         _state.Clamp(candles.Count)
-        _geo.Build(e.Info.Width, e.Info.Height, _options)
+        _geo.Build(e.Info.Width, e.Info.Height, _options, GetActivePanelIndexes())
         BuildVisibleRanges(candles)
 
         _axisRenderer.Render(canvas, candles, _state, _geo)
@@ -613,6 +613,19 @@ Public Class SafeFastChartControl
         RenderCrosshair(canvas, candles)
         RenderTitle(canvas, candles)
     End Sub
+
+    Private Function GetActivePanelIndexes() As List(Of Integer)
+        Dim panels As New List(Of Integer)()
+
+        For Each ind As IIndicator In _indicatorEngine.GetAll()
+            If ind Is Nothing Then Continue For
+            If ind.PanelIndex <= 0 Then Continue For
+            If Not panels.Contains(ind.PanelIndex) Then panels.Add(ind.PanelIndex)
+        Next
+
+        panels.Sort()
+        Return panels
+    End Function
 
     Private Sub BuildVisibleRanges(candles As List(Of CandleItem))
         Dim endIdx As Integer = _state.EndIndex(candles.Count)
@@ -651,7 +664,7 @@ Public Class SafeFastChartControl
         Using p As New SKPaint With {.Color = SafeChartPalette.TextBright, .TextSize = 12.0F, .IsAntialias = True}
             Dim last As CandleItem = candles(candles.Count - 1)
             Dim yMode As String = If(_state.AutoScaleY, "AUTO", "MANUAL")
-            Dim text As String = $"SAFE V2 {_stockCode} {_stockName}  Indicators={_indicatorEngine.GetAll().Count}  Bars={candles.Count}  Last={last.Dt:yyyy-MM-dd HH:mm}  C={last.Close:N0}  Y={yMode}"
+            Dim text As String = $"SAFE V2 {_stockCode} {_stockName}  Indicators={_indicatorEngine.GetAll().Count}  Panels={GetActivePanelIndexes().Count}  Bars={candles.Count}  Last={last.Dt:yyyy-MM-dd HH:mm}  C={last.Close:N0}  Y={yMode}"
             canvas.DrawText(text, 12.0F, 18.0F, p)
         End Using
     End Sub
