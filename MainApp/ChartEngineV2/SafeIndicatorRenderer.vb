@@ -11,6 +11,7 @@ Public Class SafeIndicatorRenderer
     Private ReadOnly _histBull As New SKPaint With {.Style = SKPaintStyle.Fill, .Color = SafeChartPalette.Bull, .IsAntialias = False}
     Private ReadOnly _histBear As New SKPaint With {.Style = SKPaintStyle.Fill, .Color = SafeChartPalette.Bear, .IsAntialias = False}
     Private ReadOnly _textPaint As New SKPaint With {.Color = SafeChartPalette.AxisText, .TextSize = 11.0F, .IsAntialias = True}
+    Private ReadOnly _borderPaint As New SKPaint With {.Style = SKPaintStyle.Stroke, .Color = SafeChartPalette.Grid, .StrokeWidth = 1.0F, .IsAntialias = False}
 
     Public Sub RenderIndicators(canvas As SKCanvas,
                                 indicators As List(Of IIndicator),
@@ -21,8 +22,8 @@ Public Class SafeIndicatorRenderer
         If canvas Is Nothing OrElse indicators Is Nothing OrElse results Is Nothing OrElse candles Is Nothing Then Return
         If indicators.Count = 0 OrElse candles.Count = 0 Then Return
 
-        Dim panelCursorY As Single = geo.IndicatorRect.Top + 14.0F
         Dim colorIndex As Integer = 0
+        Dim panelLegendCount As New Dictionary(Of Integer, Integer)()
 
         For Each ind As IIndicator In indicators
             If ind Is Nothing Then Continue For
@@ -34,26 +35,14 @@ Public Class SafeIndicatorRenderer
             If ind.PanelIndex <= 0 Then
                 RenderOverlayLines(canvas, ind, list, candles, state, geo, colorIndex)
             Else
-                RenderPanelIndicator(canvas, ind, list, candles, state, geo, colorIndex, panelCursorY)
-                panelCursorY += 14.0F
+                Dim legendIndex As Integer = 0
+                If panelLegendCount.ContainsKey(ind.PanelIndex) Then legendIndex = panelLegendCount(ind.PanelIndex)
+                RenderPanelIndicator(canvas, ind, list, candles, state, geo, colorIndex, legendIndex)
+                panelLegendCount(ind.PanelIndex) = legendIndex + 1
             End If
 
             colorIndex += 1
         Next
-    End Sub
-
-    Public Sub RenderTickIntensity(canvas As SKCanvas,
-                                   tickResults As List(Of IndicatorResult),
-                                   candles As List(Of CandleItem),
-                                   state As SafeChartState,
-                                   geo As SafeChartGeometry)
-        If canvas Is Nothing OrElse tickResults Is Nothing OrElse candles Is Nothing Then Return
-        If tickResults.Count = 0 OrElse candles.Count = 0 Then Return
-
-        Dim fake As New List(Of IIndicator)()
-        Dim dict As New Dictionary(Of String, List(Of IndicatorResult))(StringComparer.OrdinalIgnoreCase)
-        dict("TICKINT_1") = tickResults
-        RenderTickLike(canvas, "TICKINT_1", tickResults, candles, state, geo, 0)
     End Sub
 
     Private Sub RenderOverlayLines(canvas As SKCanvas,
@@ -73,6 +62,8 @@ Public Class SafeIndicatorRenderer
             DrawLineOnMain(canvas, list, key, state, geo, color)
             keyIndex += 1
         Next
+
+        canvas.DrawText(ind.Name, geo.MainRect.Left + 4.0F, geo.MainRect.Top + 14.0F + 14.0F * colorIndex, _textPaint)
     End Sub
 
     Private Sub RenderPanelIndicator(canvas As SKCanvas,
@@ -82,9 +73,12 @@ Public Class SafeIndicatorRenderer
                                      state As SafeChartState,
                                      geo As SafeChartGeometry,
                                      colorIndex As Integer,
-                                     legendY As Single)
+                                     legendIndex As Integer)
+        Dim panelRect As SKRect = geo.GetPanelRect(ind.PanelIndex)
+        canvas.DrawRect(panelRect, _borderPaint)
+
         If IsTickIntensityResult(list) Then
-            RenderTickLike(canvas, ind.Name, list, candles, state, geo, colorIndex)
+            RenderTickLike(canvas, ind.Name, list, candles, state, geo, panelRect, colorIndex, legendIndex)
             Return
         End If
 
@@ -118,11 +112,11 @@ Public Class SafeIndicatorRenderer
         For Each key As String In keys
             If IsNonDrawableKey(key) Then Continue For
             Dim color As SKColor = SafeChartPalette.IndicatorColors((colorIndex + keyIndex) Mod SafeChartPalette.IndicatorColors.Length)
-            DrawLineOnPanel(canvas, list, key, state, geo, minVal, maxVal, color)
+            DrawLineOnPanel(canvas, list, key, state, geo, panelRect, minVal, maxVal, color)
             keyIndex += 1
         Next
 
-        canvas.DrawText(ind.Name, geo.IndicatorRect.Left + 4.0F, legendY, _textPaint)
+        canvas.DrawText(ind.Name, panelRect.Left + 4.0F, panelRect.Top + 14.0F + 14.0F * legendIndex, _textPaint)
     End Sub
 
     Private Sub RenderTickLike(canvas As SKCanvas,
@@ -131,7 +125,9 @@ Public Class SafeIndicatorRenderer
                                candles As List(Of CandleItem),
                                state As SafeChartState,
                                geo As SafeChartGeometry,
-                               colorIndex As Integer)
+                               panelRect As SKRect,
+                               colorIndex As Integer,
+                               legendIndex As Integer)
         Dim endIdx As Integer = Math.Min(state.EndIndex(candles.Count), list.Count - 1)
         If endIdx < state.StartIndex Then Return
 
@@ -141,21 +137,21 @@ Public Class SafeIndicatorRenderer
             If Not Single.IsNaN(v) AndAlso v > maxVal Then maxVal = v
         Next
 
-        Dim zeroY As Single = geo.YForIndicator(0.0F, -maxVal, maxVal)
+        Dim zeroY As Single = geo.YForIndicator(0.0F, -maxVal, maxVal, panelRect)
         For i As Integer = state.StartIndex To endIdx
             Dim v As Single = list(i).Val("TickSum")
             If Single.IsNaN(v) Then Continue For
 
             Dim x As Single = geo.XForIndex(i, state)
-            Dim y As Single = geo.YForIndicator(v, -maxVal, maxVal)
+            Dim y As Single = geo.YForIndicator(v, -maxVal, maxVal, panelRect)
             Dim halfW As Single = Math.Max(1.0F, state.CandleWidth / 2.0F)
             Dim p As SKPaint = If(v >= 0, _histBull, _histBear)
             canvas.DrawRect(New SKRect(x - halfW, Math.Min(y, zeroY), x + halfW, Math.Max(y, zeroY)), p)
         Next
 
-        DrawLineOnPanel(canvas, list, "MA5", state, geo, -maxVal, maxVal, SafeChartPalette.IndicatorColors(1))
-        DrawLineOnPanel(canvas, list, "MA20", state, geo, -maxVal, maxVal, SafeChartPalette.IndicatorColors(4))
-        canvas.DrawText(name, geo.IndicatorRect.Left + 4.0F, geo.IndicatorRect.Top + 14.0F, _textPaint)
+        DrawLineOnPanel(canvas, list, "MA5", state, geo, panelRect, -maxVal, maxVal, SafeChartPalette.IndicatorColors(1))
+        DrawLineOnPanel(canvas, list, "MA20", state, geo, panelRect, -maxVal, maxVal, SafeChartPalette.IndicatorColors(4))
+        canvas.DrawText(name, panelRect.Left + 4.0F, panelRect.Top + 14.0F + 14.0F * legendIndex, _textPaint)
     End Sub
 
     Private Sub DrawLineOnMain(canvas As SKCanvas,
@@ -194,6 +190,7 @@ Public Class SafeIndicatorRenderer
                                 key As String,
                                 state As SafeChartState,
                                 geo As SafeChartGeometry,
+                                panelRect As SKRect,
                                 minVal As Single,
                                 maxVal As Single,
                                 color As SKColor)
@@ -210,7 +207,7 @@ Public Class SafeIndicatorRenderer
             End If
 
             Dim x As Single = geo.XForIndex(i, state)
-            Dim y As Single = geo.YForIndicator(v, minVal, maxVal)
+            Dim y As Single = geo.YForIndicator(v, minVal, maxVal, panelRect)
             If Not started Then
                 path.MoveTo(x, y)
                 started = True
@@ -251,7 +248,6 @@ Public Class SafeIndicatorRenderer
 
     Private Shared Function IsNonDrawableKey(key As String) As Boolean
         If String.IsNullOrWhiteSpace(key) Then Return True
-        If String.Equals(key, "Signal", StringComparison.OrdinalIgnoreCase) Then Return True
         If String.Equals(key, "Direction", StringComparison.OrdinalIgnoreCase) Then Return True
         Return False
     End Function
