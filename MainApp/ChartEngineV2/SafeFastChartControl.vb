@@ -1,9 +1,10 @@
-﻿Option Strict On
+Option Strict On
 Option Explicit On
 Option Infer Off
 
 Imports System
 Imports System.Collections.Generic
+Imports System.Globalization
 Imports System.Windows.Forms
 Imports [Shared]
 Imports SkiaSharp
@@ -163,7 +164,7 @@ Public Class SafeFastChartControl
         Dim tickBars As New List(Of DateTime)(rows.Count)
 
         For Each row As Dictionary(Of String, String) In rows
-            Dim dt As DateTime = MarketDataRowParser.ParseCandleDateTime(row)
+            Dim dt As DateTime = ParseCandleDateTime(row)
             If dt <> DateTime.MinValue Then tickBars.Add(dt)
         Next
 
@@ -220,13 +221,122 @@ Public Class SafeFastChartControl
         If row Is Nothing Then Return Nothing
 
         Dim ci As New CandleItem()
-        ci.Dt = MarketDataRowParser.ParseCandleDateTime(row)
+        ci.Dt = ParseCandleDateTime(row)
         ci.Open = RowSingle(row, "open", "시가")
         ci.High = RowSingle(row, "high", "고가")
         ci.Low = RowSingle(row, "low", "저가")
         ci.Close = RowSingle(row, "close", "현재가")
         ci.Volume = RowLong(row, "volume", "거래량")
         Return ci
+    End Function
+
+    Private Shared Function ParseCandleDateTime(row As Dictionary(Of String, String)) As DateTime
+        If row Is Nothing Then Return DateTime.MinValue
+
+        Dim dtText As String = RowString(row, "dt", "datetime", "dateTime", "일시")
+        If Not String.IsNullOrWhiteSpace(dtText) Then
+            Dim parsedDt As DateTime = ParseDateTimeText(dtText)
+            If parsedDt <> DateTime.MinValue Then Return parsedDt
+        End If
+
+        Dim dateText As String = RowString(row, "date", "일자")
+        Dim timeText As String = RowString(row, "time", "시간")
+
+        If String.IsNullOrWhiteSpace(dateText) Then Return DateTime.MinValue
+
+        Dim baseDate As DateTime = ParseDateText(dateText)
+        If baseDate = DateTime.MinValue Then Return DateTime.MinValue
+
+        If String.IsNullOrWhiteSpace(timeText) Then Return baseDate
+
+        Dim cleanTime As String = OnlyDigits(timeText)
+        If cleanTime.Length <= 0 Then Return baseDate
+
+        If cleanTime.Length < 6 Then cleanTime = cleanTime.PadLeft(6, "0"c)
+        If cleanTime.Length > 6 Then cleanTime = cleanTime.Substring(cleanTime.Length - 6, 6)
+
+        Dim hh As Integer = 0
+        Dim mm As Integer = 0
+        Dim ss As Integer = 0
+
+        If Not Integer.TryParse(cleanTime.Substring(0, 2), hh) Then Return baseDate
+        If Not Integer.TryParse(cleanTime.Substring(2, 2), mm) Then Return baseDate
+        If Not Integer.TryParse(cleanTime.Substring(4, 2), ss) Then Return baseDate
+
+        If hh < 0 OrElse hh > 23 Then Return baseDate
+        If mm < 0 OrElse mm > 59 Then Return baseDate
+        If ss < 0 OrElse ss > 59 Then Return baseDate
+
+        Return New DateTime(baseDate.Year, baseDate.Month, baseDate.Day, hh, mm, ss)
+    End Function
+
+    Private Shared Function ParseDateTimeText(value As String) As DateTime
+        Dim s As String = If(value, "").Trim()
+        If s.Length <= 0 Then Return DateTime.MinValue
+
+        Dim parsed As DateTime
+        If DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, parsed) Then Return parsed
+        If DateTime.TryParse(s, CultureInfo.CurrentCulture, DateTimeStyles.None, parsed) Then Return parsed
+
+        Dim digits As String = OnlyDigits(s)
+        If digits.Length >= 14 Then
+            digits = digits.Substring(0, 14)
+            If DateTime.TryParseExact(digits, "yyyyMMddHHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, parsed) Then Return parsed
+        End If
+
+        If digits.Length = 12 Then
+            If DateTime.TryParseExact(digits, "yyyyMMddHHmm", CultureInfo.InvariantCulture, DateTimeStyles.None, parsed) Then Return parsed
+        End If
+
+        If digits.Length = 8 Then
+            If DateTime.TryParseExact(digits, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, parsed) Then Return parsed
+        End If
+
+        Return DateTime.MinValue
+    End Function
+
+    Private Shared Function ParseDateText(value As String) As DateTime
+        Dim s As String = If(value, "").Trim()
+        If s.Length <= 0 Then Return DateTime.MinValue
+
+        Dim parsed As DateTime
+        If DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, parsed) Then Return parsed.Date
+        If DateTime.TryParse(s, CultureInfo.CurrentCulture, DateTimeStyles.None, parsed) Then Return parsed.Date
+
+        Dim digits As String = OnlyDigits(s)
+        If digits.Length >= 8 Then
+            digits = digits.Substring(0, 8)
+            If DateTime.TryParseExact(digits, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, parsed) Then Return parsed.Date
+        End If
+
+        Return DateTime.MinValue
+    End Function
+
+    Private Shared Function RowString(row As Dictionary(Of String, String), ParamArray keys As String()) As String
+        If row Is Nothing OrElse keys Is Nothing Then Return ""
+
+        For i As Integer = 0 To keys.Length - 1
+            Dim key As String = keys(i)
+            If String.IsNullOrWhiteSpace(key) Then Continue For
+
+            Dim value As String = ""
+            If row.TryGetValue(key, value) Then Return If(value, "")
+        Next
+
+        Return ""
+    End Function
+
+    Private Shared Function OnlyDigits(value As String) As String
+        If String.IsNullOrEmpty(value) Then Return ""
+
+        Dim chars As Char() = value.ToCharArray()
+        Dim buffer As New System.Text.StringBuilder(chars.Length)
+
+        For i As Integer = 0 To chars.Length - 1
+            If Char.IsDigit(chars(i)) Then buffer.Append(chars(i))
+        Next
+
+        Return buffer.ToString()
     End Function
 
     Private Shared Function RowSingle(row As Dictionary(Of String, String), key1 As String, key2 As String) As Single
@@ -363,4 +473,3 @@ Public Class SafeFastChartControl
         _interaction.OnMouseWheel(e, _buffer.Count)
     End Sub
 End Class
-
