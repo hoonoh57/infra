@@ -9,9 +9,13 @@ Imports System.Windows.Forms
 Imports [Shared]
 Imports SkiaSharp
 Imports SkiaSharp.Views.Desktop
+Imports MainApp.Models
+Imports MainApp.Services
 
 Public Class SafeFastChartControl
     Inherits UserControl
+
+    Public Event ChartProfileChanged As EventHandler
 
     Private Const FRAME_INTERVAL_MS As Integer = 16
 
@@ -19,7 +23,7 @@ Public Class SafeFastChartControl
     Private ReadOnly _state As New SafeChartState()
     Private ReadOnly _buffer As New SafeChartDataBuffer()
     Private ReadOnly _geo As New SafeChartGeometry()
-    Private ReadOnly _indicator As New SafeChartIndicatorBridge()
+    Private ReadOnly _indicatorEngine As New IndicatorEngine()
 
     Private ReadOnly _axisRenderer As New SafeAxisRenderer()
     Private ReadOnly _candleRenderer As New SafeCandleRenderer()
@@ -98,14 +102,7 @@ Public Class SafeFastChartControl
                           "timeframe", RuntimeChartSettings.DefaultCandleTimeframe,
                           "count", _requestedCount)
 
-        Dim tickUnit As Integer = RuntimeChartSettings.DefaultTickUnit
-        MessageBus.I.Emit(Topics.TICK_CANDLE_REQUEST,
-                          "code", _stockCode,
-                          "provider", RuntimeChartSettings.MarketDataProvider,
-                          "count", RuntimeChartSettings.TickRequestMinCount,
-                          "tickUnit", tickUnit,
-                          "timeframe", RuntimeChartSettings.TickTimeframe(tickUnit))
-
+        RequestAuxiliaryIndicatorData()
         MessageBus.I.Emit(Topics.REALTIME_SUBSCRIBE, "codes", _stockCode)
 
         RequestRepaint()
@@ -113,9 +110,114 @@ Public Class SafeFastChartControl
 
     Public Sub LoadCandles(candles As List(Of CandleItem), Optional prevClose As Single = 0.0F)
         _buffer.SetCandles(candles, prevClose)
-        _indicator.CalculateAll(_buffer.Snapshot())
+        _indicatorEngine.CalculateAll(_buffer.Snapshot())
         MoveToLatest()
+        RequestAuxiliaryIndicatorData()
         RequestRepaint()
+    End Sub
+
+    Public Sub AddIndicator(ind As IIndicator)
+        If ind Is Nothing Then Return
+        _indicatorEngine.Register(ind)
+        If _buffer.Count > 0 Then
+            _indicatorEngine.CalculateAll(_buffer.Snapshot())
+            RequestAuxiliaryIndicatorData()
+        End If
+        RequestRepaint()
+        NotifyChartProfileChanged()
+    End Sub
+
+    Public Sub RemoveIndicator(name As String)
+        If String.IsNullOrWhiteSpace(name) Then Return
+        _indicatorEngine.Remove(name)
+        RequestRepaint()
+        NotifyChartProfileChanged()
+    End Sub
+
+    Public Sub ReCalculate()
+        If _buffer.Count <= 0 Then Return
+        _indicatorEngine.CalculateAll(_buffer.Snapshot())
+        RequestRepaint()
+    End Sub
+
+    Public Function ExportChartProfile() As ChartProfileData
+        Dim profile As New ChartProfileData()
+        Dim order As Integer = 0
+
+        For Each ind As IIndicator In _indicatorEngine.GetAll()
+            order += 1
+            profile.Indicators.Add(New ChartProfileIndicatorItem With {
+                .IndicatorType = GetIndicatorTypeName(ind),
+                .IndicatorName = ind.Name,
+                .DisplayOrder = order,
+                .PanelIndex = ind.PanelIndex,
+                .Parameters = New Dictionary(Of String, Object)(If(ind.Parameters, New Dictionary(Of String, Object)()), StringComparer.OrdinalIgnoreCase)
+            })
+        Next
+
+        profile.ContextOptions = New ChartProfileContextOptions With {
+            .ShowCurrentPriceLine = _options.ShowCurrentPriceLine,
+            .ShowPrevCloseLine = _options.ShowPrevCloseLine,
+            .ShowViLine = False,
+            .ShowDayChangeLines = True,
+            .ShowCrosshair = _options.ShowCrosshair,
+            .IsAutoScaleY = True,
+            .ManualMaxPrice = 0.0F,
+            .ManualMinPrice = 0.0F,
+            .CandleWidth = _state.CandleWidth,
+            .Gap = _state.Gap,
+            .VisibleCount = _state.VisibleCount,
+            .PanelHeightRatio = _options.IndicatorPanelRatio
+        }
+
+        Return profile
+    End Function
+
+    Public Sub ApplyChartProfile(profile As ChartProfileData)
+        If profile Is Nothing Then Return
+
+        _indicatorEngine.Clear()
+
+        Dim indicators As List(Of ChartProfileIndicatorItem) = If(profile.Indicators, New List(Of ChartProfileIndicatorItem)())
+        indicators.Sort(Function(a As ChartProfileIndicatorItem, b As ChartProfileIndicatorItem) a.DisplayOrder.CompareTo(b.DisplayOrder))
+
+        For Each item As ChartProfileIndicatorItem In indicators
+            If item Is Nothing Then Continue For
+            Dim indicator As IIndicator = CreateIndicatorByType(item.IndicatorType)
+            If indicator Is Nothing Then Continue For
+
+            If item.Parameters IsNot Nothing AndAlso item.Parameters.Count > 0 Then
+                indicator.Parameters = New Dictionary(Of String, Object)(item.Parameters, StringComparer.OrdinalIgnoreCase)
+            End If
+
+            _indicatorEngine.Register(indicator)
+        Next
+
+        ApplyChartContextOptions(profile.ContextOptions)
+
+        If _buffer.Count > 0 Then
+            _indicatorEngine.CalculateAll(_buffer.Snapshot())
+            RequestAuxiliaryIndicatorData()
+        End If
+
+        RequestRepaint()
+    End Sub
+
+    Private Sub ApplyChartContextOptions(options As ChartProfileContextOptions)
+        If options Is Nothing Then Return
+
+        _options.ShowCurrentPriceLine = options.ShowCurrentPriceLine
+        _options.ShowPrevCloseLine = options.ShowPrevCloseLine
+        _options.ShowCrosshair = options.ShowCrosshair
+        _options.IndicatorPanelRatio = If(options.PanelHeightRatio > 0, options.PanelHeightRatio, _options.IndicatorPanelRatio)
+
+        If options.CandleWidth > 0 Then _state.CandleWidth = options.CandleWidth
+        If options.Gap >= 0 Then _state.Gap = options.Gap
+        If options.VisibleCount > 0 Then _state.VisibleCount = options.VisibleCount
+    End Sub
+
+    Private Sub NotifyChartProfileChanged()
+        RaiseEvent ChartProfileChanged(Me, EventArgs.Empty)
     End Sub
 
     Private Sub OnCandleLoaded(m As Msg)
@@ -173,13 +275,13 @@ Public Class SafeFastChartControl
 
         If InvokeRequired Then
             BeginInvoke(Sub()
-                            _indicator.SetTickBars(tickBars)
-                            _indicator.CalculateAll(_buffer.Snapshot())
+                            ApplyTickBarsToRegisteredIndicators(tickBars)
+                            _indicatorEngine.CalculateAll(_buffer.Snapshot())
                             RequestRepaint()
                         End Sub)
         Else
-            _indicator.SetTickBars(tickBars)
-            _indicator.CalculateAll(_buffer.Snapshot())
+            ApplyTickBarsToRegisteredIndicators(tickBars)
+            _indicatorEngine.CalculateAll(_buffer.Snapshot())
             RequestRepaint()
         End If
     End Sub
@@ -211,11 +313,88 @@ Public Class SafeFastChartControl
     End Sub
 
     Private Sub ApplyRealtimeTick(price As Single, volume As Long, tickTime As DateTime)
-        _indicator.AddRealtimeTick(tickTime)
+        For Each ind As IIndicator In _indicatorEngine.GetAll()
+            Dim tickInd As TickIntensity_Indicator = TryCast(ind, TickIntensity_Indicator)
+            If tickInd IsNot Nothing Then tickInd.AddTick(tickTime)
+        Next
+
         _buffer.UpdateLastFromTick(price, volume, tickTime, 1)
-        _indicator.UpdateLast(_buffer.Snapshot())
+        _indicatorEngine.UpdateLast(_buffer.Snapshot())
         RequestRepaint()
     End Sub
+
+    Private Sub ApplyTickBarsToRegisteredIndicators(tickBars As List(Of DateTime))
+        For Each ind As IIndicator In _indicatorEngine.GetAll()
+            Dim tickInd As TickIntensity_Indicator = TryCast(ind, TickIntensity_Indicator)
+            If tickInd IsNot Nothing Then tickInd.SetTickBars(tickBars)
+        Next
+    End Sub
+
+    Private Sub RequestAuxiliaryIndicatorData()
+        Dim hasTickIntensity As Boolean = False
+
+        For Each ind As IIndicator In _indicatorEngine.GetAll()
+            If TypeOf ind Is TickIntensity_Indicator Then
+                hasTickIntensity = True
+                Exit For
+            End If
+        Next
+
+        If hasTickIntensity Then
+            Dim tickUnit As Integer = RuntimeChartSettings.DefaultTickUnit
+            MessageBus.I.Emit(Topics.TICK_CANDLE_REQUEST,
+                              "code", _stockCode,
+                              "provider", RuntimeChartSettings.MarketDataProvider,
+                              "count", RuntimeChartSettings.TickRequestMinCount,
+                              "tickUnit", tickUnit,
+                              "timeframe", RuntimeChartSettings.TickTimeframe(tickUnit))
+        End If
+    End Sub
+
+    Private Shared Function GetIndicatorTypeName(ind As IIndicator) As String
+        If ind Is Nothing Then Return ""
+        Return ind.GetType().Name
+    End Function
+
+    Private Shared Function CreateIndicatorByType(typeName As String) As IIndicator
+        Dim t As String = If(typeName, "").Trim()
+        If t = "" Then Return Nothing
+
+        Select Case t.ToUpperInvariant()
+            Case "MA_INDICATOR", "MA"
+                Return New MA_Indicator()
+            Case "RSI_INDICATOR", "RSI"
+                Return New RSI_Indicator()
+            Case "MACD_INDICATOR", "MACD"
+                Return New MACD_Indicator()
+            Case "BOLLINGER_INDICATOR", "BOLLINGER", "BB"
+                Return New Bollinger_Indicator()
+            Case "SUPER TREND", "SUPER_TREND", "SUPERTREND", "SUPERTREND_INDICATOR"
+                Return New SuperTrend_Indicator()
+            Case "VWAP_INDICATOR", "VWAP"
+                Return New VWAP_Indicator()
+            Case "VOLUME_INDICATOR", "VOLUME"
+                Return New Volume_Indicator()
+            Case "OBV_INDICATOR", "OBV"
+                Return New OBV_Indicator()
+            Case "DISPARITY_INDICATOR", "DISPARITY"
+                Return New Disparity_Indicator()
+            Case "JMA_INDICATOR", "JMA"
+                Return New JMA_Indicator()
+            Case "TICKINTENSITY_INDICATOR", "TICKINTENSITY", "TICKINT"
+                Return New TickIntensity_Indicator()
+            Case "TRADESTRENGTH_INDICATOR", "TRADESTRENGTH"
+                Return New TradeStrength_Indicator()
+            Case "PROGRAMTRADE_INDICATOR", "PROGRAMTRADE"
+                Return New ProgramTrade_Indicator()
+            Case "CUMTRADEAMOUNT_INDICATOR", "CUMTRADEAMOUNT"
+                Return New CumTradeAmount_Indicator()
+            Case "SECTORLEADER_INDICATOR", "SECTORLEADER"
+                Return New SectorLeader_Indicator()
+        End Select
+
+        Return Nothing
+    End Function
 
     Private Shared Function RowToCandle(row As Dictionary(Of String, String)) As CandleItem
         If row Is Nothing Then Return Nothing
@@ -252,16 +431,22 @@ Public Class SafeFastChartControl
         Dim cleanTime As String = OnlyDigits(timeText)
         If cleanTime.Length <= 0 Then Return baseDate
 
-        If cleanTime.Length < 6 Then cleanTime = cleanTime.PadLeft(6, "0"c)
-        If cleanTime.Length > 6 Then cleanTime = cleanTime.Substring(cleanTime.Length - 6, 6)
-
         Dim hh As Integer = 0
         Dim mm As Integer = 0
         Dim ss As Integer = 0
 
-        If Not Integer.TryParse(cleanTime.Substring(0, 2), hh) Then Return baseDate
-        If Not Integer.TryParse(cleanTime.Substring(2, 2), mm) Then Return baseDate
-        If Not Integer.TryParse(cleanTime.Substring(4, 2), ss) Then Return baseDate
+        If cleanTime.Length <= 4 Then
+            cleanTime = cleanTime.PadLeft(4, "0"c)
+            If Not Integer.TryParse(cleanTime.Substring(0, 2), hh) Then Return baseDate
+            If Not Integer.TryParse(cleanTime.Substring(2, 2), mm) Then Return baseDate
+            ss = 0
+        Else
+            If cleanTime.Length < 6 Then cleanTime = cleanTime.PadLeft(6, "0"c)
+            If cleanTime.Length > 6 Then cleanTime = cleanTime.Substring(cleanTime.Length - 6, 6)
+            If Not Integer.TryParse(cleanTime.Substring(0, 2), hh) Then Return baseDate
+            If Not Integer.TryParse(cleanTime.Substring(2, 2), mm) Then Return baseDate
+            If Not Integer.TryParse(cleanTime.Substring(4, 2), ss) Then Return baseDate
+        End If
 
         If hh < 0 OrElse hh > 23 Then Return baseDate
         If mm < 0 OrElse mm > 59 Then Return baseDate
@@ -402,7 +587,7 @@ Public Class SafeFastChartControl
 
         _axisRenderer.Render(canvas, candles, _state, _geo)
         _candleRenderer.Render(canvas, candles, _state, _geo, _options)
-        _indicatorRenderer.RenderTickIntensity(canvas, _indicator.GetTickResults(), candles, _state, _geo)
+        _indicatorRenderer.RenderIndicators(canvas, _indicatorEngine.GetAll(), _indicatorEngine.Results, candles, _state, _geo)
 
         RenderCrosshair(canvas, candles)
         RenderTitle(canvas, candles)
@@ -439,7 +624,7 @@ Public Class SafeFastChartControl
     Private Sub RenderTitle(canvas As SKCanvas, candles As List(Of CandleItem))
         Using p As New SKPaint With {.Color = SafeChartPalette.TextBright, .TextSize = 12.0F, .IsAntialias = True}
             Dim last As CandleItem = candles(candles.Count - 1)
-            Dim text As String = $"SAFE V2 {_stockCode} {_stockName}  Bars={candles.Count}  Last={last.Dt:yyyy-MM-dd HH:mm}  C={last.Close:N0}"
+            Dim text As String = $"SAFE V2 {_stockCode} {_stockName}  Indicators={_indicatorEngine.GetAll().Count}  Bars={candles.Count}  Last={last.Dt:yyyy-MM-dd HH:mm}  C={last.Close:N0}"
             canvas.DrawText(text, 12.0F, 18.0F, p)
         End Using
     End Sub
