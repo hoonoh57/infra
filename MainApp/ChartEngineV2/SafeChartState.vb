@@ -1,4 +1,4 @@
-﻿Option Strict On
+Option Strict On
 Option Explicit On
 Option Infer Off
 
@@ -19,12 +19,23 @@ Public Class SafeChartState
     Public Property MouseY As Single = 0.0F
 
     Public Property IsDragging As Boolean = False
+    Public Property IsDraggingPrice As Boolean = False
     Public Property DragStartX As Integer = 0
+    Public Property DragStartY As Integer = 0
     Public Property DragStartIndex As Integer = 0
+    Public Property DragStartPriceHigh As Single = 0.0F
+    Public Property DragStartPriceLow As Single = 0.0F
+
+    Public Property RightPaddingBars As Integer = 12
 
     Public Function EndIndex(totalCount As Integer) As Integer
         If totalCount <= 0 Then Return -1
         Return Math.Min(totalCount - 1, StartIndex + Math.Max(1, VisibleCount) - 1)
+    End Function
+
+    Public Function LatestStartIndex(totalCount As Integer) As Integer
+        If totalCount <= 0 Then Return 0
+        Return Math.Max(0, totalCount - Math.Max(1, VisibleCount))
     End Function
 
     Public Sub Clamp(totalCount As Integer)
@@ -36,8 +47,15 @@ Public Class SafeChartState
         If VisibleCount < 5 Then VisibleCount = 5
         If VisibleCount > totalCount Then VisibleCount = totalCount
 
-        Dim maxStart As Integer = Math.Max(0, totalCount - VisibleCount)
+        Dim maxStart As Integer = Math.Max(0, totalCount - VisibleCount + Math.Max(0, RightPaddingBars))
         If StartIndex < 0 Then StartIndex = 0
         If StartIndex > maxStart Then StartIndex = maxStart
+    End Sub
+
+    Public Sub ResetManualPriceScale()
+        AutoScaleY = True
+        ManualPriceHigh = 0.0F
+        ManualPriceLow = 0.0F
+        IsDraggingPrice = False
     End Sub
 End Class
