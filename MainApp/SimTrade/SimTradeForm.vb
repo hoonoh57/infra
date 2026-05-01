@@ -18,6 +18,7 @@ Public Class SimTradeForm
 
     ' ── UI 빌더 ──
     Private ReadOnly _ui As New SimTradeUI()
+    Private ReadOnly _diagnostics As New SimTradeDiagnosticsUI()
 
     ' ── 타이머 ──
     Private WithEvents _tmrRefresh As New Timer()
@@ -33,6 +34,7 @@ Public Class SimTradeForm
 
     Public Sub New()
         _ui.Build(Me)
+        _diagnostics.Build(_ui.TabControl)
         _engine = New SimTradeEngine(_settings, Me)
 
         AddHandler _ui.BtnCondition.Click, AddressOf OnConditionClick
@@ -56,6 +58,7 @@ Public Class SimTradeForm
         Log("모의매매 폼 로드 (v4.2). 조건식을 선택한 뒤 [시작]을 누르세요.")
         Log("★ 엔진: CandleBuilder + SignalEvaluator(7조건) + FilterEngine(6종) + OrderSimulator")
         Log($"★ 캔들 간격: 개장={_settings.CandleInterval_Open}초, 초반={_settings.CandleInterval_EarlyMorning}초, 정상={_settings.CandleInterval_Normal}초")
+        Log("★ 수익검증: TickSum 진단 / 순위→수익 검증 탭이 활성화되었습니다.")
     End Sub
 
     Private Sub SimTradeForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles MyBase.FormClosing
@@ -183,17 +186,18 @@ Public Class SimTradeForm
 
         Dim topResult As Top10Result = _engine.RefreshTopNRanking()
 
-        Dim snapshots = _engine.Manager.GetSnapshot()
+        Dim snapshots As List(Of StockStateSnapshot) = _engine.Manager.GetSnapshot()
         _ui.RefreshWatchGrid(snapshots)
+        _diagnostics.Refresh(snapshots, topResult)
 
-        Dim holdings = _engine.Manager.GetHoldingStocks()
+        Dim holdings As List(Of StockState) = _engine.Manager.GetHoldingStocks()
         _ui.RefreshPositionGrid(holdings)
 
-        Dim stats = _engine.Simulator.GetStatsSummary()
+        Dim stats As String = _engine.Simulator.GetStatsSummary()
         Dim presetName As String = _engine.GetTopNPresetName()
-        Dim readyCount = _engine.Manager.CountByState(DataState.Ready)
-        Dim tradingCount = _engine.Manager.CountByState(DataState.Trading)
-        Dim total = _engine.Manager.TotalCount
+        Dim readyCount As Integer = _engine.Manager.CountByState(DataState.Ready)
+        Dim tradingCount As Integer = _engine.Manager.CountByState(DataState.Trading)
+        Dim total As Integer = _engine.Manager.TotalCount
         Dim top3Text As String = "-"
         If topResult IsNot Nothing AndAlso topResult.TopStocks IsNot Nothing AndAlso topResult.TopStocks.Count > 0 Then
             Dim topItems As New List(Of String)()
