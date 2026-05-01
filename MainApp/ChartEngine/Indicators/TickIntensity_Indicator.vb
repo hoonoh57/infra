@@ -14,6 +14,7 @@ Public Class TickIntensity_Indicator
     Private _currentRealtimeTickCount As Integer = 0
     Private ReadOnly _completedRealtimeBars As New Dictionary(Of DateTime, Single)
     Private ReadOnly _tickLock As New Object()
+
     Public ReadOnly Property TickBarCount As Integer
         Get
             SyncLock _tickLock
@@ -22,6 +23,15 @@ Public Class TickIntensity_Indicator
         End Get
     End Property
 
+    ''' <summary>
+    ''' 디버그/검증용 원본 tick timestamp 스냅샷.
+    ''' 지표 내부 상태를 외부에서 수정하지 못하도록 복사본을 반환한다.
+    ''' </summary>
+    Public Function GetTickBarsSnapshot() As List(Of DateTime)
+        SyncLock _tickLock
+            Return New List(Of DateTime)(_tickBars)
+        End SyncLock
+    End Function
 
     Public Sub New(Optional timeframeMinutes As Integer = 1)
         _timeframeMinutes = timeframeMinutes
@@ -129,7 +139,7 @@ Public Class TickIntensity_Indicator
                     tickSums(i) = Single.NaN
                     tickSigned(i) = Single.NaN
                 End If
-                        Next
+            Next
 
             ' ── 날짜 mismatch 보정 ──
             ' Cybos 틱 타임스탬프 날짜와 분봉 캔들 날짜가 어긋나면
@@ -224,7 +234,7 @@ Public Class TickIntensity_Indicator
                 End If
             End While
 
-                        Dim k = lo
+            Dim k = lo
             While k < _tickBars.Count AndAlso _tickBars(k) < pEnd
                 cnt += 1
                 k += 1
@@ -283,17 +293,16 @@ Public Class TickIntensity_Indicator
         Return r
     End Function
 
-        Private Shared Function NormalizeRealtimeTickCount(rawTickCount As Integer) As Single
-            Dim tickUnit = Math.Max(1, RuntimeChartSettings.DefaultTickUnit)
-            Return CSng(rawTickCount / CSng(tickUnit))
-        End Function
+    Private Shared Function NormalizeRealtimeTickCount(rawTickCount As Integer) As Single
+        Dim tickUnit = Math.Max(1, RuntimeChartSettings.DefaultTickUnit)
+        Return CSng(rawTickCount / CSng(tickUnit))
+    End Function
 
     Private Function AlignToBarStart(ts As DateTime) As DateTime
         Dim minuteStep = Math.Max(1, _timeframeMinutes)
         Dim minute = (ts.Minute \ minuteStep) * minuteStep
         Return New DateTime(ts.Year, ts.Month, ts.Day, ts.Hour, minute, 0)
     End Function
-
 
     Private Shared Function CountTicksByTimeOfDay(ticks As List(Of DateTime),
                                                   startTime As TimeSpan,
@@ -321,6 +330,7 @@ Public Class TickIntensity_Indicator
 
         Return cnt
     End Function
+
     Private Shared Function ApplyCandleDirection(candle As CandleItem, tickSum As Single) As Single
         If Single.IsNaN(tickSum) Then Return Single.NaN
         If candle.Close < candle.Open Then Return -tickSum
