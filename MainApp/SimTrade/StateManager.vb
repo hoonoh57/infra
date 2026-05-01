@@ -8,6 +8,10 @@
 '   ① IsValidTransition: Detected→Ready, Downloading→Ready 허용
 '     (캐시 히트 시 Analyzing 단계 불필요, 현재 아키텍처에서 Analyzing 미사용)
 '   ② TransitionTo: SyncLock 범위 최소화, 로깅 확인용 반환값 유지
+' [v4.2 진단 보강]
+'   ③ UI 스냅샷 TickSum은 StockState 복사값보다 IndicatorEngine 최신 TICKINT 결과를 우선 사용
+'      - 잘못 복사된 TickSum_Normalized가 감시 그리드에 정상값처럼 표시되는 문제 방지
+'      - 매매/TopN 계산 로직은 변경하지 않고 표시 신뢰성부터 확보
 ' ═══════════════════════════════════════════════════════════════
 
 Imports System.Collections.Concurrent
@@ -184,7 +188,29 @@ Namespace SimTrade
             snap.DayAmount = s.DayAmount
             snap.ST_Direction = s.ST_Direction
             snap.JMA_Direction = s.JMA_Direction
-            snap.TickSum_Normalized = s.TickSum_Normalized
+
+            Dim indicatorTick As Double = Double.NaN
+            Dim indicatorMA5 As Double = Double.NaN
+            Dim indicatorMA20 As Double = Double.NaN
+            Dim hasIndicatorTick As Boolean = TryGetLatestTickIntensity(s, indicatorTick, indicatorMA5, indicatorMA20)
+
+            ' 표시 신뢰성 우선:
+            ' 감시 그리드는 복사값이 아니라 실제 IndicatorEngine 최신 TICKINT 결과를 우선 표시한다.
+            ' 이로써 StockState.TickSum_Normalized가 2.0 같은 잘못된 중간값으로 오염되어도 화면에 정상값처럼 보이지 않는다.
+            If hasIndicatorTick Then
+                snap.TickSum_Normalized = indicatorTick
+                snap.TickMA5_Normalized = indicatorMA5
+                snap.TickMA20_Normalized = indicatorMA20
+                snap.StateTickSum_Normalized = s.TickSum_Normalized
+                snap.TickSource = "Indicator"
+            Else
+                snap.TickSum_Normalized = s.TickSum_Normalized
+                snap.TickMA5_Normalized = s.TickMA5_Normalized
+                snap.TickMA20_Normalized = s.TickMA20_Normalized
+                snap.StateTickSum_Normalized = s.TickSum_Normalized
+                snap.TickSource = "State"
+            End If
+
             snap.OBV_Direction = s.OBV_Direction
             snap.RSI_Value = s.RSI_Value
             snap.MACD_Histogram = s.MACD_Histogram
@@ -202,6 +228,41 @@ Namespace SimTrade
             snap.TickBarCount = s.TickBarCount
 
             Return snap
+        End Function
+
+        Private Shared Function TryGetLatestTickIntensity(s As StockState,
+                                                          ByRef tickSum As Double,
+                                                          ByRef ma5 As Double,
+                                                          ByRef ma20 As Double) As Boolean
+            tickSum = Double.NaN
+            ma5 = Double.NaN
+            ma20 = Double.NaN
+
+            If s Is Nothing Then Return False
+            If s.Engine Is Nothing Then Return False
+            If s.Engine.Results Is Nothing Then Return False
+
+            For Each kv As KeyValuePair(Of String, List(Of IndicatorResult)) In s.Engine.Results
+                If kv.Key Is Nothing Then Continue For
+                If Not kv.Key.StartsWith("TICKINT_", StringComparison.OrdinalIgnoreCase) Then Continue For
+                If kv.Value Is Nothing OrElse kv.Value.Count = 0 Then Continue For
+
+                Dim lastResult As IndicatorResult = kv.Value(kv.Value.Count - 1)
+                If lastResult Is Nothing Then Return False
+
+                Dim rawTick As Single = lastResult.Val("TickSum")
+                Dim rawMA5 As Single = lastResult.Val("MA5")
+                Dim rawMA20 As Single = lastResult.Val("MA20")
+
+                If Single.IsNaN(rawTick) OrElse Single.IsInfinity(rawTick) Then Return False
+
+                tickSum = CDbl(rawTick)
+                If Not Single.IsNaN(rawMA5) AndAlso Not Single.IsInfinity(rawMA5) Then ma5 = CDbl(rawMA5)
+                If Not Single.IsNaN(rawMA20) AndAlso Not Single.IsInfinity(rawMA20) Then ma20 = CDbl(rawMA20)
+                Return True
+            Next
+
+            Return False
         End Function
 
         ' ════════════════════════════════════════
@@ -310,6 +371,10 @@ Namespace SimTrade
         Public Property ST_Direction As Double = Double.NaN
         Public Property JMA_Direction As Double = Double.NaN
         Public Property TickSum_Normalized As Double = Double.NaN
+        Public Property TickMA5_Normalized As Double = Double.NaN
+        Public Property TickMA20_Normalized As Double = Double.NaN
+        Public Property StateTickSum_Normalized As Double = Double.NaN
+        Public Property TickSource As String = ""
         Public Property OBV_Direction As Double = Double.NaN
         Public Property RSI_Value As Double = Double.NaN
         Public Property MACD_Histogram As Double = Double.NaN
