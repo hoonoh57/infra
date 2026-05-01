@@ -10,10 +10,6 @@ Imports System.Windows.Forms
 
 Namespace SimTrade
 
-    ''' <summary>
-    ''' 모의매매 선택 종목 데이터 확인 다이얼로그.
-    ''' 기존 매매/지표 계산 경로를 변경하지 않고, 현재 StockState 내부 데이터를 탭별로 일괄 확인한다.
-    ''' </summary>
     Public Class SimTradeStockDataDebugForm
         Inherits Form
 
@@ -25,9 +21,9 @@ Namespace SimTrade
 
         Private ReadOnly _gridSummary As DataGridView
         Private ReadOnly _gridMinuteCandles As DataGridView
-        Private ReadOnly _gridTickSource As DataGridView
+        Private ReadOnly _gridRawTicks As DataGridView
+        Private ReadOnly _gridTickMap As DataGridView
         Private ReadOnly _gridIndicators As DataGridView
-        Private ReadOnly _gridTick As DataGridView
         Private ReadOnly _gridTopN As DataGridView
         Private ReadOnly _gridTradeState As DataGridView
         Private ReadOnly _txtRawDump As TextBox
@@ -36,9 +32,7 @@ Namespace SimTrade
             _state = state
 
             Me.Text = "종목 데이터 확인"
-            If _state IsNot Nothing Then
-                Me.Text = "종목 데이터 확인 - [" & _state.Code & "] " & _state.Name
-            End If
+            If _state IsNot Nothing Then Me.Text = "종목 데이터 확인 - [" & _state.Code & "] " & _state.Name
             Me.Size = New Size(1280, 820)
             Me.StartPosition = FormStartPosition.CenterParent
             Me.BackColor = Color.FromArgb(30, 30, 30)
@@ -57,26 +51,10 @@ Namespace SimTrade
             _lblTitle.ForeColor = Color.Cyan
             _lblTitle.Font = New Font("맑은 고딕", 9.0F, FontStyle.Bold)
 
-            _btnRefresh = New Button()
-            _btnRefresh.Text = "새로고침"
-            _btnRefresh.Width = 90
-            _btnRefresh.Height = 28
-            _btnRefresh.Top = 8
-            _btnRefresh.Left = 810
-            _btnRefresh.FlatStyle = FlatStyle.Flat
-            _btnRefresh.BackColor = Color.FromArgb(60, 60, 65)
-            _btnRefresh.ForeColor = Color.White
+            _btnRefresh = CreateButton("새로고침", 810, 8)
             AddHandler _btnRefresh.Click, AddressOf OnRefreshClick
 
-            _btnCopy = New Button()
-            _btnCopy.Text = "Raw 복사"
-            _btnCopy.Width = 90
-            _btnCopy.Height = 28
-            _btnCopy.Top = 8
-            _btnCopy.Left = 910
-            _btnCopy.FlatStyle = FlatStyle.Flat
-            _btnCopy.BackColor = Color.FromArgb(60, 60, 65)
-            _btnCopy.ForeColor = Color.White
+            _btnCopy = CreateButton("Raw 복사", 910, 8)
             AddHandler _btnCopy.Click, AddressOf OnCopyClick
 
             topPanel.Controls.Add(_lblTitle)
@@ -88,11 +66,12 @@ Namespace SimTrade
 
             _gridSummary = CreateGrid()
             _gridMinuteCandles = CreateGrid()
-            _gridTickSource = CreateGrid()
+            _gridRawTicks = CreateGrid()
+            _gridTickMap = CreateGrid()
             _gridIndicators = CreateGrid()
-            _gridTick = CreateGrid()
             _gridTopN = CreateGrid()
             _gridTradeState = CreateGrid()
+
             _txtRawDump = New TextBox()
             _txtRawDump.Dock = DockStyle.Fill
             _txtRawDump.Multiline = True
@@ -105,9 +84,9 @@ Namespace SimTrade
 
             AddTab("요약", _gridSummary)
             AddTab("캔들(1분봉)", _gridMinuteCandles)
-            AddTab("틱/30틱 데이터", _gridTickSource)
+            AddTab("틱원본(30틱)", _gridRawTicks)
+            AddTab("틱→1분봉 매핑", _gridTickMap)
             AddTab("지표", _gridIndicators)
-            AddTab("TickIntensity", _gridTick)
             AddTab("TopN 점수", _gridTopN)
             AddTab("매매/신호", _gridTradeState)
             AddTab("Raw Dump", _txtRawDump)
@@ -119,6 +98,19 @@ Namespace SimTrade
             RefreshAll()
         End Sub
 
+        Private Shared Function CreateButton(text As String, x As Integer, y As Integer) As Button
+            Dim btn As New Button()
+            btn.Text = text
+            btn.Width = 90
+            btn.Height = 28
+            btn.Left = x
+            btn.Top = y
+            btn.FlatStyle = FlatStyle.Flat
+            btn.BackColor = Color.FromArgb(60, 60, 65)
+            btn.ForeColor = Color.White
+            Return btn
+        End Function
+
         Private Sub AddTab(title As String, ctrl As Control)
             Dim page As New TabPage(title)
             page.BackColor = Color.FromArgb(30, 30, 30)
@@ -129,9 +121,9 @@ Namespace SimTrade
         Private Sub BuildColumns()
             AddKeyValueColumns(_gridSummary)
             AddCandleColumns(_gridMinuteCandles)
-            AddTickSourceColumns(_gridTickSource)
+            AddRawTickColumns(_gridRawTicks)
+            AddTickMapColumns(_gridTickMap)
             AddIndicatorColumns(_gridIndicators)
-            AddTickColumns(_gridTick)
             AddKeyValueColumns(_gridTopN)
             AddKeyValueColumns(_gridTradeState)
         End Sub
@@ -142,40 +134,43 @@ Namespace SimTrade
                 Return
             End If
 
+            Dim rawTicks As List(Of DateTime) = GetRawTickTimestamps()
+
             _lblTitle.Text = "[" & _state.Code & "] " & _state.Name &
                              " | State=" & _state.State.ToString() &
                              " | 1분봉=" & _state.Candles.Count.ToString() &
                              " | TickBarCount=" & _state.TickBarCount.ToString() &
+                             " | RawTicks=" & rawTicks.Count.ToString() &
                              " | LastSignal=" & _state.LastSignal
 
-            RefreshSummary()
+            RefreshSummary(rawTicks)
             RefreshMinuteCandles()
-            RefreshTickSource()
+            RefreshRawTicks(rawTicks)
+            RefreshTickMap(rawTicks)
             RefreshIndicators()
-            RefreshTickIntensity()
             RefreshTopN()
             RefreshTradeState()
-            RefreshRawDump()
+            RefreshRawDump(rawTicks)
         End Sub
 
-        Private Sub RefreshSummary()
+        Private Sub RefreshSummary(rawTicks As List(Of DateTime))
             _gridSummary.Rows.Clear()
             AddKV(_gridSummary, "Code", _state.Code)
             AddKV(_gridSummary, "Name", _state.Name)
             AddKV(_gridSummary, "State", _state.State.ToString())
             AddKV(_gridSummary, "CurrentPrice", _state.CurrentPrice.ToString("N0"))
-            AddKV(_gridSummary, "Ask1", _state.Ask1.ToString("N0"))
-            AddKV(_gridSummary, "Bid1", _state.Bid1.ToString("N0"))
             AddKV(_gridSummary, "ChangeRate", _state.ChangeRate.ToString("F2") & "%")
             AddKV(_gridSummary, "DayVolume", _state.DayVolume.ToString("N0"))
             AddKV(_gridSummary, "DayAmount", _state.DayAmount.ToString("N0"))
-            AddKV(_gridSummary, "Strength", _state.Strength.ToString("F2"))
             AddKV(_gridSummary, "MinuteCandleCount", _state.Candles.Count.ToString())
             AddKV(_gridSummary, "LastMinuteCandleTime", GetLastCandleTimeText())
-            AddKV(_gridSummary, "TickBarCount", _state.TickBarCount.ToString())
+            AddKV(_gridSummary, "TickBarCount(State)", _state.TickBarCount.ToString())
+            AddKV(_gridSummary, "RawTickTimestampCount", rawTicks.Count.ToString("N0"))
+            AddKV(_gridSummary, "RawTickFirst", If(rawTicks.Count > 0, rawTicks(0).ToString("yyyy-MM-dd HH:mm:ss"), "-"))
+            AddKV(_gridSummary, "RawTickLast", If(rawTicks.Count > 0, rawTicks(rawTicks.Count - 1).ToString("yyyy-MM-dd HH:mm:ss"), "-"))
             AddKV(_gridSummary, "MinuteCandle.TickCount.Sum", GetMinuteCandleTickCountSum().ToString("N0"))
             AddKV(_gridSummary, "MinuteCandle.NTS.SumAbs", GetMinuteCandleNormalizedTickAbsSum().ToString("F2"))
-            AddKV(_gridSummary, "TickSourceDiagnosis", GetTickSourceDiagnosis())
+            AddKV(_gridSummary, "TickSourceDiagnosis", GetTickSourceDiagnosis(rawTicks))
             AddKV(_gridSummary, "TickSum_Normalized", FormatDouble(_state.TickSum_Normalized))
             AddKV(_gridSummary, "TickMA5_Normalized", FormatDouble(_state.TickMA5_Normalized))
             AddKV(_gridSummary, "TickMA20_Normalized", FormatDouble(_state.TickMA20_Normalized))
@@ -201,30 +196,38 @@ Namespace SimTrade
             For i As Integer = 0 To _state.Candles.Count - 1
                 Dim c As CandleItem = _state.Candles(i)
                 If c Is Nothing Then Continue For
-                _gridMinuteCandles.Rows.Add(i.ToString(),
-                                            c.Dt.ToString("yyyy-MM-dd HH:mm:ss"),
-                                            c.Open.ToString("N0"),
-                                            c.High.ToString("N0"),
-                                            c.Low.ToString("N0"),
-                                            c.Close.ToString("N0"),
-                                            c.Volume.ToString("N0"),
-                                            c.TickCount.ToString(),
-                                            c.NormalizedTickSum.ToString("F2"),
-                                            DiagnoseMinuteCandleTick(c))
+                _gridMinuteCandles.Rows.Add(i.ToString(), c.Dt.ToString("yyyy-MM-dd HH:mm:ss"),
+                                            c.Open.ToString("N0"), c.High.ToString("N0"),
+                                            c.Low.ToString("N0"), c.Close.ToString("N0"),
+                                            c.Volume.ToString("N0"), c.TickCount.ToString(),
+                                            c.NormalizedTickSum.ToString("F2"), DiagnoseMinuteCandleTick(c))
             Next
         End Sub
 
-        Private Sub RefreshTickSource()
-            _gridTickSource.Rows.Clear()
+        Private Sub RefreshRawTicks(rawTicks As List(Of DateTime))
+            _gridRawTicks.Rows.Clear()
+            If rawTicks Is Nothing OrElse rawTicks.Count = 0 Then
+                _gridRawTicks.Rows.Add("-", "-", "-", "TickIntensity_Indicator 내부 원본 tick timestamp 없음")
+                Return
+            End If
+
+            For i As Integer = 0 To rawTicks.Count - 1
+                Dim ts As DateTime = rawTicks(i)
+                _gridRawTicks.Rows.Add(i.ToString(), ts.ToString("yyyy-MM-dd HH:mm:ss"), ts.TimeOfDay.ToString(), DiagnoseRawTickTimestamp(ts))
+            Next
+        End Sub
+
+        Private Sub RefreshTickMap(rawTicks As List(Of DateTime))
+            _gridTickMap.Rows.Clear()
             If _state.Candles Is Nothing Then Return
 
             Dim tickResults As List(Of IndicatorResult) = FindTickIntensityResults()
-            Dim maxCount As Integer = _state.Candles.Count
 
-            For i As Integer = 0 To maxCount - 1
+            For i As Integer = 0 To _state.Candles.Count - 1
                 Dim c As CandleItem = _state.Candles(i)
                 If c Is Nothing Then Continue For
 
+                Dim rawMatched As Integer = CountRawTicksInMinute(rawTicks, c.Dt)
                 Dim tickSumText As String = "-"
                 Dim ma5Text As String = "-"
                 Dim ma20Text As String = "-"
@@ -240,15 +243,10 @@ Namespace SimTrade
                     End If
                 End If
 
-                _gridTickSource.Rows.Add(i.ToString(),
-                                         c.Dt.ToString("yyyy-MM-dd HH:mm:ss"),
-                                         c.TickCount.ToString(),
-                                         c.NormalizedTickSum.ToString("F2"),
-                                         tickSumText,
-                                         ma5Text,
-                                         ma20Text,
-                                         If(indicatorExists, "Y", "N"),
-                                         DiagnoseTickSourceRow(c, indicatorExists, tickSumText))
+                _gridTickMap.Rows.Add(i.ToString(), c.Dt.ToString("yyyy-MM-dd HH:mm:ss"),
+                                      rawMatched.ToString(), c.TickCount.ToString(), c.NormalizedTickSum.ToString("F2"),
+                                      tickSumText, ma5Text, ma20Text, If(indicatorExists, "Y", "N"),
+                                      DiagnoseTickMapRow(rawMatched, c, indicatorExists, tickSumText))
             Next
         End Sub
 
@@ -268,54 +266,10 @@ Namespace SimTrade
                         _gridIndicators.Rows.Add(indName, r.Index.ToString(), r.PanelIndex.ToString(), "", "")
                     Else
                         For Each v As KeyValuePair(Of String, Single) In r.Values
-                            _gridIndicators.Rows.Add(indName,
-                                                     r.Index.ToString(),
-                                                     r.PanelIndex.ToString(),
-                                                     v.Key,
-                                                     FormatSingle(v.Value))
+                            _gridIndicators.Rows.Add(indName, r.Index.ToString(), r.PanelIndex.ToString(), v.Key, FormatSingle(v.Value))
                         Next
                     End If
                 Next
-            Next
-        End Sub
-
-        Private Sub RefreshTickIntensity()
-            _gridTick.Rows.Clear()
-            If _state.Candles Is Nothing OrElse _state.Candles.Count = 0 Then Return
-            If _state.Engine Is Nothing OrElse _state.Engine.Results Is Nothing Then Return
-
-            Dim tickResults As List(Of IndicatorResult) = FindTickIntensityResults()
-
-            If tickResults Is Nothing Then
-                _gridTick.Rows.Add("-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "TickIntensity 결과 없음")
-                Return
-            End If
-
-            Dim maxCount As Integer = Math.Min(_state.Candles.Count, tickResults.Count)
-            For i As Integer = 0 To maxCount - 1
-                Dim c As CandleItem = _state.Candles(i)
-                Dim r As IndicatorResult = tickResults(i)
-                Dim tickSum As Single = r.Val("TickSum")
-                Dim ma5 As Single = r.Val("MA5")
-                Dim ma20 As Single = r.Val("MA20")
-                Dim absTick As Single = If(Single.IsNaN(tickSum), Single.NaN, Math.Abs(tickSum))
-                Dim diff As Double = Double.NaN
-                If Not Single.IsNaN(tickSum) Then
-                    diff = CDbl(absTick) - Math.Abs(c.NormalizedTickSum)
-                End If
-
-                _gridTick.Rows.Add(i.ToString(),
-                                   c.Dt.ToString("HH:mm:ss"),
-                                   c.Open.ToString("N0"),
-                                   c.Close.ToString("N0"),
-                                   FormatSingle(tickSum),
-                                   FormatSingle(absTick),
-                                   FormatSingle(ma5),
-                                   FormatSingle(ma20),
-                                   c.NormalizedTickSum.ToString("F2"),
-                                   c.TickCount.ToString(),
-                                   If(Double.IsNaN(diff), "-", diff.ToString("F2")),
-                                   DiagnoseTickRow(c, tickSum, ma5, ma20))
             Next
         End Sub
 
@@ -357,7 +311,7 @@ Namespace SimTrade
             End If
         End Sub
 
-        Private Sub RefreshRawDump()
+        Private Sub RefreshRawDump(rawTicks As List(Of DateTime))
             Dim sb As New StringBuilder()
             If _state Is Nothing Then
                 _txtRawDump.Text = "NO STATE"
@@ -370,14 +324,17 @@ Namespace SimTrade
             sb.AppendLine("State=" & _state.State.ToString())
             sb.AppendLine("CurrentPrice=" & _state.CurrentPrice.ToString())
             sb.AppendLine("ChangeRate=" & _state.ChangeRate.ToString("F4"))
-            sb.AppendLine("DayVolume=" & _state.DayVolume.ToString())
-            sb.AppendLine("DayAmount=" & _state.DayAmount.ToString())
             sb.AppendLine("MinuteCandleCount=" & _state.Candles.Count.ToString())
             sb.AppendLine("LastMinuteCandleTime=" & GetLastCandleTimeText())
-            sb.AppendLine("TickBarCount=" & _state.TickBarCount.ToString())
+            sb.AppendLine("TickBarCount(State)=" & _state.TickBarCount.ToString())
+            sb.AppendLine("RawTickTimestampCount=" & rawTicks.Count.ToString())
+            If rawTicks.Count > 0 Then
+                sb.AppendLine("RawTickFirst=" & rawTicks(0).ToString("yyyy-MM-dd HH:mm:ss"))
+                sb.AppendLine("RawTickLast=" & rawTicks(rawTicks.Count - 1).ToString("yyyy-MM-dd HH:mm:ss"))
+            End If
             sb.AppendLine("MinuteCandle.TickCount.Sum=" & GetMinuteCandleTickCountSum().ToString())
             sb.AppendLine("MinuteCandle.NTS.SumAbs=" & GetMinuteCandleNormalizedTickAbsSum().ToString("F2"))
-            sb.AppendLine("TickSourceDiagnosis=" & GetTickSourceDiagnosis())
+            sb.AppendLine("TickSourceDiagnosis=" & GetTickSourceDiagnosis(rawTicks))
             sb.AppendLine("TickSum_Normalized=" & FormatDouble(_state.TickSum_Normalized))
             sb.AppendLine("TickMA5_Normalized=" & FormatDouble(_state.TickMA5_Normalized))
             sb.AppendLine("TickMA20_Normalized=" & FormatDouble(_state.TickMA20_Normalized))
@@ -391,9 +348,7 @@ Namespace SimTrade
                 Dim indicators As List(Of IIndicator) = _state.Engine.GetAll()
                 For i As Integer = 0 To indicators.Count - 1
                     Dim ind As IIndicator = indicators(i)
-                    If ind IsNot Nothing Then
-                        sb.AppendLine(i.ToString() & ": " & ind.Name & " / " & ind.DisplayName & " / Panel=" & ind.PanelIndex.ToString())
-                    End If
+                    If ind IsNot Nothing Then sb.AppendLine(i.ToString() & ": " & ind.Name & " / " & ind.DisplayName & " / Panel=" & ind.PanelIndex.ToString())
                 Next
             End If
             sb.AppendLine()
@@ -403,12 +358,16 @@ Namespace SimTrade
                 For Each kv As KeyValuePair(Of String, List(Of IndicatorResult)) In _state.Engine.Results
                     Dim cnt As Integer = If(kv.Value Is Nothing, 0, kv.Value.Count)
                     sb.AppendLine(kv.Key & " => " & cnt.ToString() & " rows")
-                    If kv.Value IsNot Nothing AndAlso kv.Value.Count > 0 Then
-                        Dim last As IndicatorResult = kv.Value(kv.Value.Count - 1)
-                        sb.AppendLine("  Last: " & last.ToString())
-                    End If
+                    If kv.Value IsNot Nothing AndAlso kv.Value.Count > 0 Then sb.AppendLine("  Last: " & kv.Value(kv.Value.Count - 1).ToString())
                 Next
             End If
+            sb.AppendLine()
+
+            sb.AppendLine("=== Recent Raw Tick Timestamps ===")
+            Dim startRaw As Integer = Math.Max(0, rawTicks.Count - 50)
+            For i As Integer = startRaw To rawTicks.Count - 1
+                sb.AppendLine(i.ToString() & " " & rawTicks(i).ToString("yyyy-MM-dd HH:mm:ss"))
+            Next
             sb.AppendLine()
 
             sb.AppendLine("=== Recent Minute Candles ===")
@@ -417,12 +376,9 @@ Namespace SimTrade
                 For i As Integer = startIndex To _state.Candles.Count - 1
                     Dim c As CandleItem = _state.Candles(i)
                     sb.AppendLine(i.ToString() & " " & c.Dt.ToString("yyyy-MM-dd HH:mm:ss") &
-                                  " O=" & c.Open.ToString("N0") &
-                                  " H=" & c.High.ToString("N0") &
-                                  " L=" & c.Low.ToString("N0") &
-                                  " C=" & c.Close.ToString("N0") &
-                                  " V=" & c.Volume.ToString() &
-                                  " TC=" & c.TickCount.ToString() &
+                                  " O=" & c.Open.ToString("N0") & " H=" & c.High.ToString("N0") &
+                                  " L=" & c.Low.ToString("N0") & " C=" & c.Close.ToString("N0") &
+                                  " V=" & c.Volume.ToString() & " TC=" & c.TickCount.ToString() &
                                   " NTS=" & c.NormalizedTickSum.ToString("F2"))
                 Next
             End If
@@ -430,12 +386,26 @@ Namespace SimTrade
             _txtRawDump.Text = sb.ToString()
         End Sub
 
+        Private Function GetRawTickTimestamps() As List(Of DateTime)
+            Dim ticks As New List(Of DateTime)()
+            If _state Is Nothing OrElse _state.Engine Is Nothing Then Return ticks
+
+            Dim indicators As List(Of IIndicator) = _state.Engine.GetAll()
+            For i As Integer = 0 To indicators.Count - 1
+                Dim tickInd As TickIntensity_Indicator = TryCast(indicators(i), TickIntensity_Indicator)
+                If tickInd IsNot Nothing Then
+                    ticks = tickInd.GetTickBarsSnapshot()
+                    ticks.Sort()
+                    Return ticks
+                End If
+            Next
+            Return ticks
+        End Function
+
         Private Function FindTickIntensityResults() As List(Of IndicatorResult)
             If _state Is Nothing OrElse _state.Engine Is Nothing OrElse _state.Engine.Results Is Nothing Then Return Nothing
             For Each kv As KeyValuePair(Of String, List(Of IndicatorResult)) In _state.Engine.Results
-                If kv.Key IsNot Nothing AndAlso kv.Key.StartsWith("TICKINT_", StringComparison.OrdinalIgnoreCase) Then
-                    Return kv.Value
-                End If
+                If kv.Key IsNot Nothing AndAlso kv.Key.StartsWith("TICKINT_", StringComparison.OrdinalIgnoreCase) Then Return kv.Value
             Next
             Return Nothing
         End Function
@@ -465,12 +435,30 @@ Namespace SimTrade
             Return total
         End Function
 
-        Private Function GetTickSourceDiagnosis() As String
+        Private Function GetTickSourceDiagnosis(rawTicks As List(Of DateTime)) As String
             If _state Is Nothing Then Return "NO_STATE"
-            If _state.TickBarCount > 0 Then Return "TickIntensity 입력 tickBars 존재"
+            If rawTicks IsNot Nothing AndAlso rawTicks.Count > 0 Then Return "원본 tick timestamp 로드됨"
+            If _state.TickBarCount > 0 Then Return "State.TickBarCount 존재, 원본 조회 실패"
             If GetMinuteCandleTickCountSum() > 0L Then Return "1분봉 Candle.TickCount 존재"
             If GetMinuteCandleNormalizedTickAbsSum() > 0.0R Then Return "1분봉 NormalizedTickSum 존재"
             Return "틱/30틱 데이터 미주입 또는 미다운로드 의심"
+        End Function
+
+        Private Function CountRawTicksInMinute(rawTicks As List(Of DateTime), candleStart As DateTime) As Integer
+            If rawTicks Is Nothing OrElse rawTicks.Count = 0 Then Return 0
+            Dim startTod As TimeSpan = candleStart.TimeOfDay
+            Dim endTod As TimeSpan = candleStart.AddMinutes(1).TimeOfDay
+            Dim cnt As Integer = 0
+            For i As Integer = 0 To rawTicks.Count - 1
+                Dim tod As TimeSpan = rawTicks(i).TimeOfDay
+                If tod >= startTod AndAlso tod < endTod Then cnt += 1
+            Next
+            Return cnt
+        End Function
+
+        Private Shared Function DiagnoseRawTickTimestamp(ts As DateTime) As String
+            If ts = DateTime.MinValue Then Return "INVALID"
+            Return "OK"
         End Function
 
         Private Shared Function DiagnoseMinuteCandleTick(c As CandleItem) As String
@@ -481,20 +469,12 @@ Namespace SimTrade
             Return "OK"
         End Function
 
-        Private Shared Function DiagnoseTickSourceRow(c As CandleItem, indicatorExists As Boolean, tickSumText As String) As String
+        Private Shared Function DiagnoseTickMapRow(rawMatched As Integer, c As CandleItem, indicatorExists As Boolean, tickSumText As String) As String
             If c Is Nothing Then Return "NO_CANDLE"
             If Not indicatorExists Then Return "TickIntensity 결과 없음"
-            If c.TickCount = 0 AndAlso Math.Abs(c.NormalizedTickSum) = 0.0R AndAlso tickSumText = "0.00" Then Return "틱/30틱 미주입 의심"
-            If tickSumText = "0.00" Then Return "지표 TickSum=0"
-            Return DiagnoseMinuteCandleTick(c)
-        End Function
-
-        Private Shared Function DiagnoseTickRow(c As CandleItem, tickSum As Single, ma5 As Single, ma20 As Single) As String
-            If Single.IsNaN(tickSum) Then Return "지표 TickSum 없음"
-            If Math.Abs(tickSum) = 0.0F Then Return "TickSum=0"
-            If Math.Abs(Math.Abs(tickSum) - 6.0F) < 0.0001F Then Return "TickSum=6 관찰"
-            If c IsNot Nothing AndAlso c.TickCount = 0 AndAlso Math.Abs(tickSum) > 0.0F Then Return "Candle TickCount=0"
-            If Single.IsNaN(ma5) OrElse Single.IsNaN(ma20) Then Return "MA 계산 대기"
+            If rawMatched > 0 AndAlso tickSumText = "0.00" Then Return "원본틱 있음 / 지표 TickSum=0"
+            If rawMatched = 0 AndAlso tickSumText <> "0.00" AndAlso tickSumText <> "-" Then Return "원본틱 0 / 지표값 존재"
+            If rawMatched = 0 Then Return "원본틱 매칭 없음"
             Return "OK"
         End Function
 
@@ -553,9 +533,17 @@ Namespace SimTrade
             AddColumn(dgv, "틱진단", 170, DataGridViewAutoSizeColumnMode.Fill)
         End Sub
 
-        Private Shared Sub AddTickSourceColumns(dgv As DataGridView)
+        Private Shared Sub AddRawTickColumns(dgv As DataGridView)
+            AddColumn(dgv, "Index", 70)
+            AddColumn(dgv, "TickTimestamp", 180)
+            AddColumn(dgv, "TimeOfDay", 120)
+            AddColumn(dgv, "진단", 180, DataGridViewAutoSizeColumnMode.Fill)
+        End Sub
+
+        Private Shared Sub AddTickMapColumns(dgv As DataGridView)
             AddColumn(dgv, "Index", 60)
             AddColumn(dgv, "MinuteCandleTime", 150)
+            AddColumn(dgv, "RawTickMatched", 110)
             AddColumn(dgv, "Candle.TickCount", 110)
             AddColumn(dgv, "Candle.NTS", 90)
             AddColumn(dgv, "Indicator.TickSum", 110)
@@ -573,25 +561,7 @@ Namespace SimTrade
             AddColumn(dgv, "Value", 120, DataGridViewAutoSizeColumnMode.Fill)
         End Sub
 
-        Private Shared Sub AddTickColumns(dgv As DataGridView)
-            AddColumn(dgv, "Index", 60)
-            AddColumn(dgv, "CandleTime", 90)
-            AddColumn(dgv, "Open", 80)
-            AddColumn(dgv, "Close", 80)
-            AddColumn(dgv, "TickSum", 80)
-            AddColumn(dgv, "AbsTick", 80)
-            AddColumn(dgv, "MA5", 80)
-            AddColumn(dgv, "MA20", 80)
-            AddColumn(dgv, "CandleNTS", 90)
-            AddColumn(dgv, "CandleTickCount", 115)
-            AddColumn(dgv, "Diff", 80)
-            AddColumn(dgv, "진단", 180, DataGridViewAutoSizeColumnMode.Fill)
-        End Sub
-
-        Private Shared Sub AddColumn(dgv As DataGridView,
-                                     headerText As String,
-                                     width As Integer,
-                                     Optional autoSizeMode As DataGridViewAutoSizeColumnMode = DataGridViewAutoSizeColumnMode.None)
+        Private Shared Sub AddColumn(dgv As DataGridView, headerText As String, width As Integer, Optional autoSizeMode As DataGridViewAutoSizeColumnMode = DataGridViewAutoSizeColumnMode.None)
             Dim idx As Integer = dgv.Columns.Add(headerText, headerText)
             dgv.Columns(idx).Width = width
             dgv.Columns(idx).AutoSizeMode = autoSizeMode
