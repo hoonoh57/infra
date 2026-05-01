@@ -1,4 +1,4 @@
-' ═══════════════════════════════════════════════════════════════
+﻿' ═══════════════════════════════════════════════════════════════
 ' KiwoomEngine.vb — 카탈로그 기반 범용 키움 API 실행기
 ' ═══════════════════════════════════════════════════════════════
 ' 99% 불변. 모든 TR/주문/실시간/조건검색을 카탈로그 기반으로 처리.
@@ -29,6 +29,7 @@ Public Class KiwoomEngine
     Private _condLoadResult As Msg
     Private _condSearchWaiter As ManualResetEventSlim
     Private _condSearchResult As Msg
+    Private ReadOnly _activeConditions As New ConcurrentDictionary(Of String, ActiveCondition)()
 
     Private Class PendingRequest
         Public Property Callback As Action(Of Msg)
@@ -42,6 +43,15 @@ Public Class KiwoomEngine
     End Class
 
     ' ─── 이벤트: 서버→클라이언트 푸시 ───
+
+    Private Class ActiveCondition
+        Public Property Key As String = ""
+        Public Property Name As String = ""
+        Public Property Index As Integer = 0
+        Public Property ScreenNo As String = ""
+        Public Property StartedAt As DateTime = DateTime.Now
+    End Class
+
     Public Event RealtimeReceived(msg As Msg)
     Public Event ChejanReceived(msg As Msg)
     Public Event ConditionHit(msg As Msg)
@@ -420,6 +430,58 @@ Public Class KiwoomEngine
     ' 조건검색
     ' ════════════════════════════════════════
 
+
+    Private Shared Function ConditionKey(name As String, index As Integer) As String
+        Return $"{If(name, "").Trim()}#{index}"
+    End Function
+
+    Private Sub StopAllActiveConditions(reason As String)
+        If _activeConditions Is Nothing OrElse _activeConditions.Count = 0 Then Return
+
+        Dim activeList As ActiveCondition() = _activeConditions.Values.ToArray()
+
+        For Each ac As ActiveCondition In activeList
+            If ac Is Nothing Then Continue For
+
+            Try
+                UiInvoke(Sub()
+                             _api.SendConditionStop(ac.ScreenNo, ac.Name, ac.Index)
+                         End Sub)
+            Catch
+            End Try
+
+            Dim removed As ActiveCondition = Nothing
+            _activeConditions.TryRemove(ac.Key, removed)
+        Next
+    End Sub
+
+    Private Function StopActiveConditionByName(name As String, index As Integer) As Boolean
+        Dim key As String = ConditionKey(name, index)
+        Dim ac As ActiveCondition = Nothing
+
+        If _activeConditions.TryGetValue(key, ac) Then
+            Try
+                UiInvoke(Sub()
+                             _api.SendConditionStop(ac.ScreenNo, ac.Name, ac.Index)
+                         End Sub)
+            Catch
+            End Try
+
+            Dim removed As ActiveCondition = Nothing
+            _activeConditions.TryRemove(key, removed)
+            Return True
+        End If
+
+        ' 현재 프로세스에서 활성 목록을 모르는 경우에도 고정 화면번호 9000으로 1회 방어 해제
+        Try
+            UiInvoke(Sub()
+                         _api.SendConditionStop("9000", name, index)
+                     End Sub)
+        Catch
+        End Try
+
+        Return False
+    End Function
     Private Sub DoCondition(def As KiwoomCatalog.FuncDef, msg As Msg, callback As Action(Of Msg))
         Select Case def.Name
             Case "조건검색목록"
@@ -433,29 +495,91 @@ Public Class KiwoomEngine
                 End If
 
             Case "조건검색시작"
-                Dim name = msg.Str("name")
-                Dim index = msg.Int("index")
-                Dim isRealtime = msg.Int("realtime", 1)
-                Dim scrNo = NextScreen()
+                Dim name As String = msg.Str("name")
+                Dim index As Integer = msg.Int("index")
+                Dim isRealtime As Integer = msg.Int("realtime", 1)
+                Dim key As String = ConditionKey(name, index)
+
+                If String.IsNullOrWhiteSpace(name) Then
+                    callback(MakeError("조건검색명 없음"))
+                    Return
+                End If
+
+                ' 현재 시스템 원칙:
+                ' 실시간 조건검색은 선택 조건식 1개만 유지한다.
+                ' Kiwoom OpenAPI 실시간 조건검색 10개 제한을 피하기 위해
+                ' 새 조건 시작 전 기존 활성 조건을 모두 해제한다.
+                If isRealtime <> 0 Then
+                    StopAllActiveConditions("before_new_condition_start")
+                End If
+
+                ' 조건검색 화면번호는 고정 사용.
+                ' 기존 구현처럼 매번 NextScreen()을 쓰면 SendConditionStop 시점에 화면번호를 잃어
+                ' 조건검색 해제가 실패할 수 있다.
+                Dim scrNo As String = msg.Str("screenNo", "9000")
+                If String.IsNullOrWhiteSpace(scrNo) Then scrNo = "9000"
 
                 _condSearchWaiter = New ManualResetEventSlim(False)
-                UiInvoke(Sub() _api.SendCondition(scrNo, name, index, isRealtime))
+                _condSearchResult = Nothing
+
+                Dim sendRet As Integer = UiInvoke(Of Integer)(
+                    Function()
+                        Return _api.SendCondition(scrNo, name, index, isRealtime)
+                    End Function)
+
+                ' Kiwoom SendCondition: 1 = 성공, 0 = 실패
+                If sendRet <> 1 Then
+                    callback(MakeError($"SendCondition 실패: {name}({index}), screen={scrNo}, realtime={isRealtime}, ret={sendRet}"))
+                    Return
+                End If
 
                 If _condSearchWaiter.Wait(15000) Then
+                    If _condSearchResult Is Nothing Then
+                        callback(MakeError("조건검색 결과 없음"))
+                        Return
+                    End If
+
+                    _condSearchResult("screenNo") = scrNo
+                    _condSearchResult("condName") = name
+                    _condSearchResult("condIndex") = index
+                    _condSearchResult("realtime") = isRealtime
+
+                    If isRealtime <> 0 Then
+                        Dim ac As New ActiveCondition With {
+                            .Key = key,
+                            .Name = name,
+                            .Index = index,
+                            .ScreenNo = scrNo,
+                            .StartedAt = DateTime.Now
+                        }
+                        _activeConditions(key) = ac
+                    End If
+
+                    _condSearchResult("activeRealtimeConditionCount") = _activeConditions.Count
                     callback(_condSearchResult)
                 Else
                     callback(MakeError("조건검색 타임아웃"))
                 End If
 
             Case "조건검색중지"
-                Dim name = msg.Str("name")
-                Dim index = msg.Int("index")
-                Dim scrNo = msg.Str("screenNo", "9000")
-                UiInvoke(Sub() _api.SendConditionStop(scrNo, name, index))
-                callback(MakeOk("조건검색 중지 완료"))
+                Dim name As String = msg.Str("name")
+                Dim index As Integer = msg.Int("index")
+
+                If String.IsNullOrWhiteSpace(name) Then
+                    StopAllActiveConditions("manual_stop_all")
+                    callback(MakeOk("조건검색 전체 중지 완료", "activeRealtimeConditionCount", _activeConditions.Count))
+                    Return
+                End If
+
+                Dim stopped As Boolean = StopActiveConditionByName(name, index)
+
+                If stopped Then
+                    callback(MakeOk("조건검색 중지 완료", "name", name, "index", index, "activeRealtimeConditionCount", _activeConditions.Count))
+                Else
+                    callback(MakeOk("조건검색 중지 대상 없음", "name", name, "index", index, "activeRealtimeConditionCount", _activeConditions.Count))
+                End If
         End Select
     End Sub
-
     Private Sub OnReceiveConditionVer(sender As Object, e As _DKHOpenAPIEvents_OnReceiveConditionVerEvent)
         Dim raw = _api.GetConditionNameList()
         Dim list As New List(Of Dictionary(Of String, String))()
@@ -554,3 +678,6 @@ Public Class KiwoomEngine
     End Function
 
 End Class
+
+
+
