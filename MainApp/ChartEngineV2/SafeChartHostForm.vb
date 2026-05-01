@@ -117,14 +117,14 @@ Public Class SafeChartHostForm
     End Sub
 
     Private Sub OnDataViewRequested(sender As Object, e As EventArgs)
-        Dim dataArrays As Dictionary(Of String, Single()) = _chart.GetDataArrays()
+        Dim dataArrays As List(Of ChartDataArray) = _chart.GetDataArrays()
         Dim frm As New frmDataView()
         frm.SetData(_stockCode, dataArrays)
         frm.Show(Me)
     End Sub
 
     Public Function GetStockName(stockCode As String) As String Implements IChartHost.GetStockName
-        Dim item = StockInfoManager.I.GetItem(stockCode)
+        Dim item As StockInfoItem = StockInfoManager.I.GetItem(stockCode)
         If item IsNot Nothing Then Return item.Name
         Return stockCode
     End Function
