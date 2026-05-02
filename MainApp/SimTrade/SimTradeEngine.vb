@@ -378,7 +378,7 @@ Namespace SimTrade
 
         ''' <summary>지표 등록 (기존 5종 + MACD + JMA)</summary>
         Private Sub RegisterIndicators(engine As IndicatorEngine)
-            engine.Register(New SuperTrend_Indicator(_settings.ST_Period, _settings.ST_Multiplier))
+            engine.Register(New SuperTrend_Indicator(_settings.ST_Period, CSng(_settings.ST_Multiplier)))
             engine.Register(New RSI_Indicator(_settings.RSI_Period))
             engine.Register(New Volume_Indicator())
             engine.Register(New OBV_Indicator())

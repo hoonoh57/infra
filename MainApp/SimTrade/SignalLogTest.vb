@@ -1,4 +1,4 @@
-﻿' ═══════════════════════════════════════════════════════════════
+' ═══════════════════════════════════════════════════════════════
 ' SignalLogTest.vb — 7조건 상세 로그 검증 (장외 테스트용)
 ' ═══════════════════════════════════════════════════════════════
 
@@ -240,7 +240,7 @@ Namespace SimTrade
 
         Private Shared Sub InjectMACDGoldenCross(state As StockState, settings As SimTradeSettings)
             Try
-                state.Engine.Register(New SuperTrend_Indicator(settings.ST_Period, settings.ST_Multiplier))
+                state.Engine.Register(New SuperTrend_Indicator(settings.ST_Period, CSng(settings.ST_Multiplier)))
                 state.Engine.Register(New RSI_Indicator(settings.RSI_Period))
                 state.Engine.Register(New Volume_Indicator())
                 state.Engine.Register(New OBV_Indicator())

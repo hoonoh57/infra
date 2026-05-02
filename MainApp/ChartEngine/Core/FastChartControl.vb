@@ -552,10 +552,10 @@ Public Class FastChartControl
 
                     list.Add(New CandleItem With {
                         .Dt = dt,
-                        .Open = SharedUtil.SafeDouble(opens(i).ToString()),
-                        .High = SharedUtil.SafeDouble(highs(i).ToString()),
-                        .Low = SharedUtil.SafeDouble(lows(i).ToString()),
-                        .Close = SharedUtil.SafeDouble(closes(i).ToString()),
+                        .Open = CSng(SharedUtil.SafeDouble(opens(i).ToString())),
+                        .High = CSng(SharedUtil.SafeDouble(highs(i).ToString())),
+                        .Low = CSng(SharedUtil.SafeDouble(lows(i).ToString())),
+                        .Close = CSng(SharedUtil.SafeDouble(closes(i).ToString())),
                         .Volume = SharedUtil.SafeLong(volumes(i).ToString())
                     })
                 Next

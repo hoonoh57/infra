@@ -340,7 +340,7 @@ Public Class ZeroLossLiveStrategy
 
         ' ── 주문 수량 계산 ──
         Dim capital = TradeManager.I.AvailableCash + TradeManager.I.TotalEvalAmount
-        If capital <= 0 Then capital = _initialCapital
+        If capital <= 0 Then capital = CLng(Math.Truncate(CDec(_initialCapital)))
         Dim positionAmount = capital * PositionSizePct / 100D
         Dim qty = CInt(Math.Floor(positionAmount / price))
 
