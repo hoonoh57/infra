@@ -1,4 +1,4 @@
-﻿' ═══════════════════════════════════════════════════════════════
+' ═══════════════════════════════════════════════════════════════
 ' SimTradeEngine.vb — 가변 로직 엔진 (데이터·신호·상태 전이)
 ' ═══════════════════════════════════════════════════════════════
 ' [v4.2] SimTradeForm.vb에서 분리.
@@ -985,22 +985,39 @@ Namespace SimTrade
             End If
 
             ' TickIntensity
-            Dim tiList = SimTradeHelper.FindResult(results, "TICKINT_")
-            If tiList IsNot Nothing AndAlso tiList.Count > idx Then
-                Dim rawTickSum = tiList(idx).Val("TickSum")
-                Dim rawMA5 = tiList(idx).Val("MA5")
-                Dim rawMA20 = tiList(idx).Val("MA20")
-
-                Dim intervalSec = 60
-                If idx < state.Candles.Count AndAlso state.Candles(idx).IntervalSec > 0 Then
-                    intervalSec = state.Candles(idx).IntervalSec
-                Else
-                    intervalSec = _candleBuilder.GetCurrentIntervalSec()
+            ' [2026-05-03 수정]
+            ' TICKINT_ IndicatorResult의 TickSum / MA5 / MA20은 이미 TickIntensity_Indicator가
+            ' 원본 tick timestamp와 1분봉 매핑을 기준으로 계산한 최종값이다.
+            ' 여기서 NormalizeTickSum()을 다시 적용하면 TickBarCount/interval 계열의 중간값이
+            ' StockState.TickSum_Normalized에 들어가 TopN 점수까지 오염될 수 있다.
+            Dim tiList As List(Of IndicatorResult) = SimTradeHelper.FindResult(results, "TICKINT_")
+            If tiList IsNot Nothing AndAlso tiList.Count > 0 Then
+                Dim tiIndex As Integer = idx
+                If tiIndex < 0 OrElse tiIndex >= tiList.Count Then
+                    tiIndex = tiList.Count - 1
                 End If
 
-                state.TickSum_Normalized = SimTradeHelper.NormalizeTickSum(rawTickSum, intervalSec)
-                state.TickMA5_Normalized = SimTradeHelper.NormalizeTickSum(rawMA5, intervalSec)
-                state.TickMA20_Normalized = SimTradeHelper.NormalizeTickSum(rawMA20, intervalSec)
+                Dim rawTickSum As Single = tiList(tiIndex).Val("TickSum")
+                Dim rawMA5 As Single = tiList(tiIndex).Val("MA5")
+                Dim rawMA20 As Single = tiList(tiIndex).Val("MA20")
+
+                If Not Single.IsNaN(rawTickSum) AndAlso Not Single.IsInfinity(rawTickSum) Then
+                    state.TickSum_Normalized = CDbl(rawTickSum)
+                Else
+                    state.TickSum_Normalized = Double.NaN
+                End If
+
+                If Not Single.IsNaN(rawMA5) AndAlso Not Single.IsInfinity(rawMA5) Then
+                    state.TickMA5_Normalized = CDbl(rawMA5)
+                Else
+                    state.TickMA5_Normalized = Double.NaN
+                End If
+
+                If Not Single.IsNaN(rawMA20) AndAlso Not Single.IsInfinity(rawMA20) Then
+                    state.TickMA20_Normalized = CDbl(rawMA20)
+                Else
+                    state.TickMA20_Normalized = Double.NaN
+                End If
             End If
 
             ' TickBar 카운트 저장
