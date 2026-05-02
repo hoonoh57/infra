@@ -41,6 +41,14 @@ Public Class CircuitDesignerForm
     Private _pnlParams As Panel                        ' 우측 파라미터 패널
     Private _lblInfo As Label
     Private _chkLive As CheckBox
+    ' ── Date range validation MVP ──
+    Private _dtpValidateFrom As DateTimePicker
+    Private _dtpValidateTo As DateTimePicker
+    Private _numTargetPct As NumericUpDown
+    Private _numStopPct As NumericUpDown
+    Private _btnRunValidation As Button
+    Private WithEvents _dgvValidation As New DataGridView()
+    Private _validationSignalCooldownBars As Integer = 3
 
     ' ── 상단 ──
     Private _txtStockCode As TextBox
@@ -130,10 +138,81 @@ Public Class CircuitDesignerForm
         AddHandler _btnLoadStock.Click, AddressOf OnLoadStock
         pnlTop.Controls.Add(_btnLoadStock)
 
+        Dim lblFrom As New Label()
+        lblFrom.Text = "From"
+        lblFrom.Location = New Point(265, 10)
+        lblFrom.AutoSize = True
+        lblFrom.ForeColor = Color.White
+        pnlTop.Controls.Add(lblFrom)
+
+        _dtpValidateFrom = New DateTimePicker()
+        _dtpValidateFrom.Format = DateTimePickerFormat.Custom
+        _dtpValidateFrom.CustomFormat = "yyyy-MM-dd"
+        _dtpValidateFrom.Location = New Point(305, 7)
+        _dtpValidateFrom.Size = New Size(105, 25)
+        pnlTop.Controls.Add(_dtpValidateFrom)
+
+        Dim lblTo As New Label()
+        lblTo.Text = "To"
+        lblTo.Location = New Point(415, 10)
+        lblTo.AutoSize = True
+        lblTo.ForeColor = Color.White
+        pnlTop.Controls.Add(lblTo)
+
+        _dtpValidateTo = New DateTimePicker()
+        _dtpValidateTo.Format = DateTimePickerFormat.Custom
+        _dtpValidateTo.CustomFormat = "yyyy-MM-dd"
+        _dtpValidateTo.Location = New Point(440, 7)
+        _dtpValidateTo.Size = New Size(105, 25)
+        pnlTop.Controls.Add(_dtpValidateTo)
+
+        Dim lblTarget As New Label()
+        lblTarget.Text = "T%"
+        lblTarget.Location = New Point(550, 10)
+        lblTarget.AutoSize = True
+        lblTarget.ForeColor = Color.LightGreen
+        pnlTop.Controls.Add(lblTarget)
+
+        _numTargetPct = New NumericUpDown()
+        _numTargetPct.DecimalPlaces = 1
+        _numTargetPct.Minimum = 0.5D
+        _numTargetPct.Maximum = 20D
+        _numTargetPct.Increment = 0.5D
+        _numTargetPct.Value = 5D
+        _numTargetPct.Location = New Point(575, 7)
+        _numTargetPct.Size = New Size(55, 25)
+        pnlTop.Controls.Add(_numTargetPct)
+
+        Dim lblStop As New Label()
+        lblStop.Text = "S%"
+        lblStop.Location = New Point(635, 10)
+        lblStop.AutoSize = True
+        lblStop.ForeColor = Color.Orange
+        pnlTop.Controls.Add(lblStop)
+
+        _numStopPct = New NumericUpDown()
+        _numStopPct.DecimalPlaces = 1
+        _numStopPct.Minimum = 0.5D
+        _numStopPct.Maximum = 10D
+        _numStopPct.Increment = 0.5D
+        _numStopPct.Value = 1.5D
+        _numStopPct.Location = New Point(660, 7)
+        _numStopPct.Size = New Size(55, 25)
+        pnlTop.Controls.Add(_numStopPct)
+
+        _btnRunValidation = New Button()
+        _btnRunValidation.Text = "Range Test"
+        _btnRunValidation.Location = New Point(720, 5)
+        _btnRunValidation.Size = New Size(90, 28)
+        _btnRunValidation.FlatStyle = FlatStyle.Flat
+        _btnRunValidation.BackColor = Color.FromArgb(60, 80, 70)
+        _btnRunValidation.ForeColor = Color.White
+        AddHandler _btnRunValidation.Click, AddressOf OnRunDateRangeValidation
+        pnlTop.Controls.Add(_btnRunValidation)
         _lblResult = New Label()
         _lblResult.Text = "종목 코드 입력 후 [캔들 로드]"
-        _lblResult.Location = New Point(270, 10)
-        _lblResult.Size = New Size(800, 20)
+        _lblResult.Location = New Point(820, 10)
+        _lblResult.Size = New Size(520, 20)
         _lblResult.ForeColor = Color.Gray
         pnlTop.Controls.Add(_lblResult)
 
@@ -174,6 +253,8 @@ Public Class CircuitDesignerForm
         _pnlTimeline.Controls.Add(_lblCandleInfo)
 
         ' ── 하단 옵션 ──
+        ' ── Date range validation result grid ──
+        InitValidationGrid()
         Dim pnlBottom As New Panel()
         pnlBottom.Dock = DockStyle.Bottom
         pnlBottom.Height = 35
@@ -238,6 +319,7 @@ Public Class CircuitDesignerForm
 
         ' ── 조립 순서 중요: Fill은 마지막 ──
         Me.Controls.Add(_splitMain)
+        Me.Controls.Add(_dgvValidation)
         Me.Controls.Add(_pnlScore)
         Me.Controls.Add(_pnlTimeline)
         Me.Controls.Add(pnlBottom)
@@ -1831,9 +1913,326 @@ Public Class CircuitDesignerForm
 
 #End Region
 
+
+#Region "Date range validation MVP"
+
+    Private Class CircuitValidationSignal
+        Public Property CandleIndex As Integer
+        Public Property SignalTime As DateTime
+        Public Property EntryPrice As Double
+        Public Property Score As Double
+        Public Property ConditionsMet As Integer
+        Public Property ConditionsTotal As Integer
+        Public Property ST As Double
+        Public Property JMA As Double
+        Public Property JMATurn As Integer
+        Public Property TickSum As Double
+        Public Property TickMA5 As Double
+        Public Property TickMA20 As Double
+        Public Property OBV As Double
+        Public Property RSI As Double
+        Public Property MACDHist As Double
+        Public Property VolumeRatio As Double
+        Public Property Ret1 As Double
+        Public Property Ret3 As Double
+        Public Property Ret5 As Double
+        Public Property Ret10 As Double
+        Public Property Ret20 As Double
+        Public Property MFE As Double
+        Public Property MAE As Double
+        Public Property TargetReached As Boolean
+        Public Property StopReached As Boolean
+        Public Property Grade As String
+    End Class
+
+    Private Sub InitValidationGrid()
+        _dgvValidation.Dock = DockStyle.Bottom
+        _dgvValidation.Height = 165
+        _dgvValidation.BackgroundColor = Color.FromArgb(24, 26, 34)
+        _dgvValidation.BorderStyle = BorderStyle.None
+        _dgvValidation.AllowUserToAddRows = False
+        _dgvValidation.AllowUserToDeleteRows = False
+        _dgvValidation.ReadOnly = True
+        _dgvValidation.SelectionMode = DataGridViewSelectionMode.FullRowSelect
+        _dgvValidation.MultiSelect = False
+        _dgvValidation.RowHeadersVisible = False
+        _dgvValidation.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None
+        _dgvValidation.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(40, 42, 52)
+        _dgvValidation.ColumnHeadersDefaultCellStyle.ForeColor = Color.White
+        _dgvValidation.EnableHeadersVisualStyles = False
+        _dgvValidation.DefaultCellStyle.BackColor = Color.FromArgb(30, 32, 40)
+        _dgvValidation.DefaultCellStyle.ForeColor = Color.White
+        _dgvValidation.DefaultCellStyle.SelectionBackColor = Color.FromArgb(55, 80, 110)
+        _dgvValidation.DefaultCellStyle.SelectionForeColor = Color.White
+        _dgvValidation.Font = New Font("Consolas", 8.5F)
+
+        _dgvValidation.Columns.Clear()
+        AddValidationColumn("Idx", "Idx", 45, False)
+        AddValidationColumn("Time", "Time", 70, True)
+        AddValidationColumn("Price", "Price", 70, True)
+        AddValidationColumn("Score", "Score", 55, True)
+        AddValidationColumn("Cond", "Cond", 55, True)
+        AddValidationColumn("ST", "ST", 35, True)
+        AddValidationColumn("JMA", "JMA", 45, True)
+        AddValidationColumn("Turn", "Turn", 45, True)
+        AddValidationColumn("Tick", "Tick", 55, True)
+        AddValidationColumn("MA5", "MA5", 55, True)
+        AddValidationColumn("RSI", "RSI", 45, True)
+        AddValidationColumn("R1", "+1", 50, True)
+        AddValidationColumn("R3", "+3", 50, True)
+        AddValidationColumn("R5", "+5", 50, True)
+        AddValidationColumn("R10", "+10", 55, True)
+        AddValidationColumn("R20", "+20", 55, True)
+        AddValidationColumn("MFE", "MFE", 55, True)
+        AddValidationColumn("MAE", "MAE", 55, True)
+        AddValidationColumn("Target", "T", 35, True)
+        AddValidationColumn("Stop", "S", 35, True)
+        AddValidationColumn("Grade", "Grade", 70, True)
+
+        AddHandler _dgvValidation.CellDoubleClick, AddressOf OnValidationRowDoubleClick
+    End Sub
+
+    Private Sub AddValidationColumn(name As String, header As String, width As Integer, visible As Boolean)
+        Dim col As New DataGridViewTextBoxColumn()
+        col.Name = name
+        col.HeaderText = header
+        col.Width = width
+        col.Visible = visible
+        _dgvValidation.Columns.Add(col)
+    End Sub
+
+    Private Sub OnRunDateRangeValidation(sender As Object, e As EventArgs)
+        If _candles Is Nothing OrElse _candles.Count < 10 Then
+            MessageBox.Show("Load candle data first.", "Range Test")
+            Return
+        End If
+
+        Dim fromDate As Date = _dtpValidateFrom.Value.Date
+        Dim toDate As Date = _dtpValidateTo.Value.Date
+        If toDate < fromDate Then
+            MessageBox.Show("Invalid date range.", "Range Test")
+            Return
+        End If
+
+        Dim targetPct As Double = CDbl(_numTargetPct.Value)
+        Dim stopPct As Double = CDbl(_numStopPct.Value)
+
+        RunSingleStockDateRangeValidation(fromDate, toDate, targetPct, stopPct)
+    End Sub
+
+    Private Sub RunSingleStockDateRangeValidation(fromDate As Date, toDate As Date,
+                                                  targetPct As Double, stopPct As Double)
+        _dgvValidation.Rows.Clear()
+
+        Dim signalCount As Integer = 0
+        Dim targetCount As Integer = 0
+        Dim stopCount As Integer = 0
+        Dim lastSignalIndex As Integer = -100000
+
+        Dim originalIndex As Integer = _currentCandleIndex
+
+        For i As Integer = 0 To _candles.Count - 2
+            Dim c As CandleItem = _candles(i)
+            If c Is Nothing Then Continue For
+            If c.Dt.Date < fromDate OrElse c.Dt.Date > toDate Then Continue For
+
+            EvaluateAtCandle(i)
+
+            If _lastEvalResult IsNot Nothing AndAlso _lastEvalResult.BuySignal Then
+                If i - lastSignalIndex <= _validationSignalCooldownBars Then
+                    Continue For
+                End If
+
+                Dim record As CircuitValidationSignal = BuildValidationSignal(i, targetPct, stopPct)
+                If record IsNot Nothing Then
+                    AddValidationSignalRow(record)
+                    signalCount += 1
+                    If record.TargetReached Then targetCount += 1
+                    If record.StopReached Then stopCount += 1
+                    lastSignalIndex = i
+                End If
+            End If
+        Next
+
+        If originalIndex >= 0 AndAlso originalIndex < _candles.Count Then
+            _currentCandleIndex = originalIndex
+            If _trkCandle IsNot Nothing Then _trkCandle.Value = originalIndex
+            EvaluateAtCandle(originalIndex)
+            EnsureCandleVisible(originalIndex)
+        End If
+
+        _pnlChart.Invalidate()
+        _canvas.Invalidate()
+        _pnlScore.Invalidate()
+
+        Dim targetRate As Double = If(signalCount > 0, CDbl(targetCount) / signalCount * 100.0, 0.0)
+        Dim stopRate As Double = If(signalCount > 0, CDbl(stopCount) / signalCount * 100.0, 0.0)
+
+        _lblResult.Text = $"{_stockCode} {_stockName} | RangeTest signals={signalCount}, target={targetCount}({targetRate:F1}%), stop={stopCount}({stopRate:F1}%)"
+        _lblResult.ForeColor = If(signalCount > 0, Color.LightGreen, Color.Orange)
+    End Sub
+
+    Private Function BuildValidationSignal(candleIndex As Integer, targetPct As Double,
+                                           stopPct As Double) As CircuitValidationSignal
+        If candleIndex < 0 OrElse candleIndex >= _candles.Count Then Return Nothing
+
+        Dim c As CandleItem = _candles(candleIndex)
+        Dim entryPrice As Double = CDbl(c.Close)
+        If entryPrice <= 0 Then Return Nothing
+
+        Dim rec As New CircuitValidationSignal()
+        rec.CandleIndex = candleIndex
+        rec.SignalTime = c.Dt
+        rec.EntryPrice = entryPrice
+        rec.Score = _overallScore
+
+        If _lastEvalResult IsNot Nothing Then
+            rec.ConditionsMet = _lastEvalResult.BuyConditionsMet
+            rec.ConditionsTotal = 7
+        End If
+
+        Dim tempState As New StockState()
+        tempState.Code = _stockCode
+        tempState.Name = _stockName
+        tempState.CurrentPrice = CInt(c.Close)
+        ExtractIndicators(tempState)
+
+        rec.ST = tempState.ST_Direction
+        rec.JMA = tempState.JMA_Direction
+        rec.JMATurn = tempState.JMA_TurnBar
+        rec.TickSum = tempState.TickSum_Normalized
+        rec.TickMA5 = tempState.TickMA5_Normalized
+        rec.TickMA20 = tempState.TickMA20_Normalized
+        rec.OBV = tempState.OBV_Direction
+        rec.RSI = tempState.RSI_Value
+        rec.MACDHist = tempState.MACD_Histogram
+        rec.VolumeRatio = tempState.Volume_Ratio
+
+        rec.Ret1 = CalcForwardReturn(candleIndex, 1, entryPrice)
+        rec.Ret3 = CalcForwardReturn(candleIndex, 3, entryPrice)
+        rec.Ret5 = CalcForwardReturn(candleIndex, 5, entryPrice)
+        rec.Ret10 = CalcForwardReturn(candleIndex, 10, entryPrice)
+        rec.Ret20 = CalcForwardReturn(candleIndex, 20, entryPrice)
+
+        CalcMfeMae(candleIndex, 20, entryPrice, rec.MFE, rec.MAE)
+
+        rec.TargetReached = (rec.MFE >= targetPct)
+        rec.StopReached = (rec.MAE <= -Math.Abs(stopPct))
+
+        If rec.TargetReached AndAlso Not rec.StopReached Then
+            rec.Grade = "TARGET"
+        ElseIf rec.TargetReached AndAlso rec.StopReached Then
+            rec.Grade = "MIXED"
+        ElseIf rec.StopReached Then
+            rec.Grade = "STOP"
+        ElseIf rec.Ret20 > 0 Then
+            rec.Grade = "WIN"
+        Else
+            rec.Grade = "FAIL"
+        End If
+
+        Return rec
+    End Function
+
+    Private Function CalcForwardReturn(candleIndex As Integer, barsForward As Integer,
+                                       entryPrice As Double) As Double
+        If entryPrice <= 0 Then Return 0.0
+        Dim targetIndex As Integer = candleIndex + barsForward
+        If targetIndex >= _candles.Count Then targetIndex = _candles.Count - 1
+        If targetIndex <= candleIndex Then Return 0.0
+
+        Dim exitPrice As Double = CDbl(_candles(targetIndex).Close)
+        Return (exitPrice - entryPrice) / entryPrice * 100.0
+    End Function
+
+    Private Sub CalcMfeMae(candleIndex As Integer, barsForward As Integer,
+                           entryPrice As Double, ByRef mfe As Double, ByRef mae As Double)
+        mfe = 0.0
+        mae = 0.0
+        If entryPrice <= 0 Then Return
+
+        Dim lastIndex As Integer = Math.Min(_candles.Count - 1, candleIndex + barsForward)
+        For i As Integer = candleIndex + 1 To lastIndex
+            Dim hi As Double = CDbl(_candles(i).High)
+            Dim lo As Double = CDbl(_candles(i).Low)
+            Dim upRet As Double = (hi - entryPrice) / entryPrice * 100.0
+            Dim downRet As Double = (lo - entryPrice) / entryPrice * 100.0
+            If upRet > mfe Then mfe = upRet
+            If downRet < mae Then mae = downRet
+        Next
+    End Sub
+
+    Private Sub AddValidationSignalRow(rec As CircuitValidationSignal)
+        Dim rowIndex As Integer = _dgvValidation.Rows.Add(
+            rec.CandleIndex,
+            rec.SignalTime.ToString("HH:mm"),
+            rec.EntryPrice.ToString("N0"),
+            rec.Score.ToString("F0"),
+            $"{rec.ConditionsMet}/{rec.ConditionsTotal}",
+            rec.ST.ToString("F0"),
+            rec.JMA.ToString("F0"),
+            rec.JMATurn.ToString(),
+            SafeFmt(rec.TickSum, "F1"),
+            SafeFmt(rec.TickMA5, "F1"),
+            SafeFmt(rec.RSI, "F0"),
+            rec.Ret1.ToString("F2"),
+            rec.Ret3.ToString("F2"),
+            rec.Ret5.ToString("F2"),
+            rec.Ret10.ToString("F2"),
+            rec.Ret20.ToString("F2"),
+            rec.MFE.ToString("F2"),
+            rec.MAE.ToString("F2"),
+            If(rec.TargetReached, "Y", "-"),
+            If(rec.StopReached, "Y", "-"),
+            rec.Grade
+        )
+
+        Dim row As DataGridViewRow = _dgvValidation.Rows(rowIndex)
+        Select Case rec.Grade
+            Case "TARGET"
+                row.DefaultCellStyle.BackColor = Color.FromArgb(20, 70, 55)
+            Case "MIXED"
+                row.DefaultCellStyle.BackColor = Color.FromArgb(80, 70, 25)
+            Case "STOP"
+                row.DefaultCellStyle.BackColor = Color.FromArgb(80, 35, 35)
+            Case "WIN"
+                row.DefaultCellStyle.BackColor = Color.FromArgb(35, 55, 75)
+            Case Else
+                row.DefaultCellStyle.BackColor = Color.FromArgb(45, 45, 50)
+        End Select
+    End Sub
+
+    Private Function SafeFmt(value As Double, fmt As String) As String
+        If Double.IsNaN(value) OrElse Double.IsInfinity(value) Then Return "-"
+        Return value.ToString(fmt)
+    End Function
+
+    Private Sub OnValidationRowDoubleClick(sender As Object, e As DataGridViewCellEventArgs)
+        If e.RowIndex < 0 OrElse e.RowIndex >= _dgvValidation.Rows.Count Then Return
+        Dim obj As Object = _dgvValidation.Rows(e.RowIndex).Cells("Idx").Value
+        If obj Is Nothing Then Return
+
+        Dim idx As Integer = 0
+        If Not Integer.TryParse(obj.ToString(), idx) Then Return
+        If _candles Is Nothing OrElse idx < 0 OrElse idx >= _candles.Count Then Return
+
+        _currentCandleIndex = idx
+        If _trkCandle IsNot Nothing Then _trkCandle.Value = idx
+        EvaluateAtCandle(idx)
+        EnsureCandleVisible(idx)
+
+        _pnlChart.Invalidate()
+        _canvas.Invalidate()
+        _pnlScore.Invalidate()
+    End Sub
+
+#End Region
+
+
 End Class
 
 ''' <summary>더블 버퍼링 지원 Panel (차트 깜박임 방지)</summary>
+
 Public Class DoubleBufferedPanel
     Inherits Panel
     Public Sub New()
@@ -1842,6 +2241,7 @@ Public Class DoubleBufferedPanel
                     ControlStyles.UserPaint, True)
         Me.UpdateStyles()
     End Sub
+
 End Class
 
 ''' <summary>Graphics 확장: 둥근 사각형</summary>
