@@ -1,4 +1,4 @@
-﻿' ═══════════════════════════════════════════════════════════════
+' ═══════════════════════════════════════════════════════════════
 ' SignalEvaluator.vb — 매수/매도 신호 판단 엔진 (원칙서 v4.0)
 ' ═══════════════════════════════════════════════════════════════
 ' ★ 매수: 7조건 동시 AND (제3조)
@@ -123,20 +123,15 @@ Namespace SimTrade
             result.C1_ST = (state.ST_Direction > 0)
             If Not result.C1_ST Then result.RejectReasons.Add($"ST하락(D={state.ST_Direction:F0})")
 
-            ' ── C2: JMA 상승 전환 (ConfirmBars_JMA 봉 이내) ──
-            Dim jmaConfirmBars = GetJMAConfirmBars(now)
-            result.C2_JMA = (state.JMA_Direction > 0) AndAlso
-                            (state.JMA_TurnBar >= 0 AndAlso state.JMA_TurnBar <= jmaConfirmBars)
+            ' ── C2: JMA 상승 상태 ──
+            ' [2026-05-03 수정]
+            ' 기존 JMA 전환 조건은 JMA_Direction > 0 AND JMA_TurnBar <= ConfirmBars였으나,
+            ' 실제 급등 초입에서는 JMA 전환 시점과 TickIntensity/ST/OBV/MACD 동시 상승 시점이 어긋난다.
+            ' 따라서 필수 매수 조건은 "전환 직후"가 아니라 "현재 JMA 상승 상태"로 판단한다.
+            result.C2_JMA = (state.JMA_Direction > 0)
             If Not result.C2_JMA Then
-                If state.JMA_Direction <= 0 Then
-                    result.RejectReasons.Add($"JMA하락(D={state.JMA_Direction:F0})")
-                ElseIf state.JMA_TurnBar < 0 Then
-                    result.RejectReasons.Add("JMA전환없음")
-                Else
-                    result.RejectReasons.Add($"JMA전환경과({state.JMA_TurnBar}봉>{jmaConfirmBars})")
-                End If
+                result.RejectReasons.Add($"JMA하락(D={state.JMA_Direction:F0}, Turn={state.JMA_TurnBar})")
             End If
-
             ' ── C3: TickSum 정규화 > 임계값 AND > MA5 ──
             Dim tickThreshold = GetTickSumThreshold(state)
             Dim tickOk = (Not Double.IsNaN(state.TickSum_Normalized)) AndAlso

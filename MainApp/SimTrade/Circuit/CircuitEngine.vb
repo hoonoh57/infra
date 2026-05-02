@@ -1,4 +1,4 @@
-﻿' ═══════════════════════════════════════════════════════════════
+' ═══════════════════════════════════════════════════════════════
 ' CircuitEngine.vb — 전략 회로 실행 엔진
 ' ═══════════════════════════════════════════════════════════════
 ' CircuitDefinition을 받아 StockState에 대해 실행하고,
@@ -158,12 +158,11 @@ Namespace SimTrade.Circuit
                 Case "C1_ST"
                     node.IsTriggered = (state.ST_Direction > 0)
                     node.ProbeText = If(node.IsTriggered, "ST▲", "ST▼")
-
                 Case "C2_JMA"
-                    Dim confirmBars = CInt(If(node.GetParam("ConfirmBars")?.Value, 2))
-                    node.IsTriggered = (state.JMA_Direction > 0) AndAlso
-                                       (state.JMA_TurnBar >= 0 AndAlso state.JMA_TurnBar <= confirmBars)
-                    node.ProbeText = $"JMA▲ Turn={state.JMA_TurnBar}/{confirmBars}"
+                    ' [2026-05-03 수정]
+                    ' JMA 전환 직후 제한 조건을 제거하고 현재 JMA 상승 상태만 필수 조건으로 사용한다.
+                    node.IsTriggered = (state.JMA_Direction > 0)
+                    node.ProbeText = $"JMA D={state.JMA_Direction:F0} Turn={state.JMA_TurnBar}"
 
                 Case "C3_TICK"
                     Dim threshold = CDbl(If(node.GetParam("Threshold")?.Value, 5.0))
@@ -294,10 +293,7 @@ Namespace SimTrade.Circuit
             ' ═══ 열 2: 매수 조건 노드 (x=280) ═══
             y = 10
             c.Nodes.Add(MakeCondition("C1_ST", "C1: ST▲", 280, y, "매수조건")) : y += 55
-            c.Nodes.Add(MakeCondition("C2_JMA", "C2: JMA전환", 280, y, "매수조건",
-                New CircuitParam() With {.Key = "ConfirmBars", .Label = "확인봉수", .DataType = ParamDataType.IntNumber,
-                    .Value = settings.ConfirmBars_JMA, .DefaultValue = 2, .MinValue = 1, .MaxValue = 10,
-                    .SettingsProperty = "ConfirmBars_JMA"})) : y += 55
+            c.Nodes.Add(MakeCondition("C2_JMA", "C2: JMA상승", 280, y, "매수조건")) : y += 55
             c.Nodes.Add(MakeCondition("C3_TICK", "C3: TickSum", 280, y, "매수조건",
                 New CircuitParam() With {.Key = "Threshold", .Label = "임계값", .DataType = ParamDataType.DecNumber,
                     .Value = settings.TICKINT_Threshold, .DefaultValue = 5.0, .MinValue = 0.5, .MaxValue = 50.0,
