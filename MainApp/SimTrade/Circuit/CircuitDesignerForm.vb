@@ -1,4 +1,4 @@
-﻿' ═══════════════════════════════════════════════════════════════
+' ═══════════════════════════════════════════════════════════════
 ' CircuitDesignerForm.vb — Phase 1: 캔들 차트 + 3색 신호 + 전략 점수
 ' ═══════════════════════════════════════════════════════════════
 ' [v5.0] 캔들 차트 클릭 → 지표 계산 → 회로 평가 → 3색 LED + 게이지 + 점수
@@ -565,19 +565,10 @@ Public Class CircuitDesignerForm
         ' C1: ST Direction (1=통과, -1=실패) → 비율: Direction > 0 이면 100%, 아니면 0%
         _conditionScores("C1_ST") = If(state.ST_Direction > 0, 1.0, 0.0)
 
-        ' C2: JMA Direction > 0 AND TurnBar 범위 내
-        Dim confirmBars = 2
-        Dim c2Node = _circuit.GetNode("C2_JMA")
-        If c2Node IsNot Nothing Then confirmBars = CInt(If(c2Node.GetParam("ConfirmBars")?.Value, 2))
-        Dim jmaScore = 0.0
-        If state.JMA_Direction > 0 Then
-            jmaScore = 0.5  ' 방향은 맞음
-            If state.JMA_TurnBar >= 0 AndAlso state.JMA_TurnBar <= confirmBars Then
-                jmaScore = 1.0  ' 전환봉 범위 내
-            End If
-        End If
-        _conditionScores("C2_JMA") = jmaScore
-
+        ' C2: JMA rising state
+        ' Keep the tester score aligned with SignalEvaluator and CircuitEngine.
+        ' JMA_TurnBar is a reference value only and must not reduce C2 score.
+        _conditionScores("C2_JMA") = If(state.JMA_Direction > 0, 1.0, 0.0)
         ' C3: TickSum >= Threshold AND TickSum > MA5
         Dim threshold = 5.0
         Dim c3Node = _circuit.GetNode("C3_TICK")
