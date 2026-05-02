@@ -202,7 +202,7 @@ Namespace SimTrade
 
             SetWatchColumn("ST", 40)
             SetWatchColumn("JMA", 45)
-            SetWatchColumn("TickSum", 70)
+            SetWatchColumn("TickSum", 86)
             SetWatchColumn("OBV", 45)
             SetWatchColumn("RSI", 45)
             SetWatchColumn("MACD", 60)
@@ -252,7 +252,64 @@ Namespace SimTrade
                 row.DefaultCellStyle.BackColor = baseColor
                 row.DefaultCellStyle.ForeColor = foreColor
             End If
+
+            ApplyTickCellStyle(row, s)
         End Sub
+        Private Shared Sub ApplyTickCellStyle(row As DataGridViewRow, s As StockStateSnapshot)
+            If row Is Nothing OrElse s Is Nothing Then Return
+            If row.Cells.Count <= 7 Then Return
+
+            Dim cell As DataGridViewCell = row.Cells(7)
+            Dim label As String = GetTickArrayLabel(s.TickSum_Normalized, s.TickMA5_Normalized, s.TickMA20_Normalized)
+
+            Select Case label
+                Case "정"
+                    cell.Style.ForeColor = Color.Lime
+                Case "역"
+                    cell.Style.ForeColor = Color.OrangeRed
+                Case "강"
+                    cell.Style.ForeColor = Color.Gold
+                Case "약"
+                    cell.Style.ForeColor = Color.LightGray
+                Case Else
+                    cell.Style.ForeColor = Color.Gray
+            End Select
+        End Sub
+
+        Private Shared Function FormatTickStrength(s As StockStateSnapshot) As String
+            If s Is Nothing Then Return "-"
+            If Double.IsNaN(s.TickSum_Normalized) Then Return "-"
+
+            Dim label As String = GetTickArrayLabel(s.TickSum_Normalized, s.TickMA5_Normalized, s.TickMA20_Normalized)
+            Return s.TickSum_Normalized.ToString("F1") & "/" & label
+        End Function
+
+        Private Shared Function GetTickArrayLabel(tickSum As Double, ma5 As Double, ma20 As Double) As String
+            If Double.IsNaN(tickSum) Then Return "무"
+
+            Dim absTick As Double = Math.Abs(tickSum)
+
+            If absTick = 0.0R Then Return "무"
+
+            If Double.IsNaN(ma5) OrElse Double.IsNaN(ma20) Then
+                If absTick >= 5.0R Then Return "강"
+                Return "약"
+            End If
+
+            If absTick >= 5.0R AndAlso absTick > ma5 AndAlso ma5 > ma20 Then
+                Return "정"
+            End If
+
+            If ma20 > ma5 AndAlso ma5 > absTick Then
+                Return "역"
+            End If
+
+            If absTick >= 5.0R Then
+                Return "강"
+            End If
+
+            Return "약"
+        End Function
 
 #End Region
 #Region "그리드 갱신"
@@ -276,7 +333,7 @@ Namespace SimTrade
                     row.Cells(4).Value = s.DayVolume.ToString("N0")
                     row.Cells(5).Value = SimTradeHelper.DirectionChar(s.ST_Direction)
                     row.Cells(6).Value = SimTradeHelper.DirectionChar(s.JMA_Direction)
-                    row.Cells(7).Value = If(Double.IsNaN(s.TickSum_Normalized), "-", s.TickSum_Normalized.ToString("F1"))
+                    row.Cells(7).Value = FormatTickStrength(s)
                     row.Cells(8).Value = SimTradeHelper.DirectionChar(s.OBV_Direction)
                     row.Cells(9).Value = If(Double.IsNaN(s.RSI_Value), "-", s.RSI_Value.ToString("F0"))
                     row.Cells(10).Value = If(Double.IsNaN(s.MACD_Histogram), "-", s.MACD_Histogram.ToString("F2"))
@@ -299,7 +356,7 @@ Namespace SimTrade
                         s.ChangeRate.ToString("F2") & "%", s.DayVolume.ToString("N0"),
                         SimTradeHelper.DirectionChar(s.ST_Direction),
                         SimTradeHelper.DirectionChar(s.JMA_Direction),
-                        If(Double.IsNaN(s.TickSum_Normalized), "-", s.TickSum_Normalized.ToString("F1")),
+                        FormatTickStrength(s),
                         SimTradeHelper.DirectionChar(s.OBV_Direction),
                         If(Double.IsNaN(s.RSI_Value), "-", s.RSI_Value.ToString("F0")),
                         If(Double.IsNaN(s.MACD_Histogram), "-", s.MACD_Histogram.ToString("F2")),
