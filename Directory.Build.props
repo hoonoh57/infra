@@ -1,0 +1,7 @@
+﻿<Project>
+  <PropertyGroup>
+    <!-- SkiaSharp obsolete API migration is scheduled separately.
+         Suppress noisy BC40000 warnings so real build issues remain visible. -->
+    <NoWarn>$(NoWarn);BC40000</NoWarn>
+  </PropertyGroup>
+</Project>
