@@ -20,6 +20,7 @@ Public Class SimTradeForm
     Private ReadOnly _ui As New SimTradeUI()
     Private ReadOnly _diagnostics As New SimTradeDiagnosticsUI()
     Private ReadOnly _btnDataCheck As New Button()
+    Private ReadOnly _btnBatchValidate As New Button()
 
     ' ── 타이머 ──
     Private WithEvents _tmrRefresh As New Timer()
@@ -36,6 +37,7 @@ Public Class SimTradeForm
     Public Sub New()
         _ui.Build(Me)
         InstallDataCheckButton()
+        InstallBatchValidatorButton()
         _diagnostics.Build(_ui.TabControl)
         _engine = New SimTradeEngine(_settings, Me)
 
@@ -44,6 +46,7 @@ Public Class SimTradeForm
         AddHandler _ui.BtnStop.Click, AddressOf OnStopClick
         AddHandler _ui.BtnCircuit.Click, AddressOf OnCircuitClick
         AddHandler _btnDataCheck.Click, AddressOf OnDataCheckClick
+        AddHandler _btnBatchValidate.Click, AddressOf OnBatchValidatorClick
         AddHandler _ui.DgvWatch.CellDoubleClick, AddressOf OnWatchGridCellDoubleClick
 
         _tmrRefresh.Interval = SimTradeConst.REFRESH_TIMER_INTERVAL_MS
@@ -71,6 +74,26 @@ Public Class SimTradeForm
             End If
         Next
     End Sub
+
+    Private Sub InstallBatchValidatorButton()
+        _btnBatchValidate.Text = "Batch"
+        _btnBatchValidate.Width = 95
+        _btnBatchValidate.Height = 30
+        _btnBatchValidate.Left = 465
+        _btnBatchValidate.Top = 10
+        _btnBatchValidate.FlatStyle = FlatStyle.Flat
+        _btnBatchValidate.BackColor = Color.FromArgb(60, 80, 70)
+        _btnBatchValidate.ForeColor = Color.White
+
+        For Each ctrl As Control In Me.Controls
+            Dim pnl As Panel = TryCast(ctrl, Panel)
+            If pnl IsNot Nothing AndAlso pnl.Dock = DockStyle.Top Then
+                pnl.Controls.Add(_btnBatchValidate)
+                Exit For
+            End If
+        Next
+    End Sub
+
 
 
     ' ═══════════════════════════════════════
@@ -161,6 +184,13 @@ Public Class SimTradeForm
         _circuitForm.Show(Me)
         Log("회로 설계기 열림")
     End Sub
+
+    Private Sub OnBatchValidatorClick(sender As Object, e As EventArgs)
+        Dim frm As New ConditionBatchValidatorForm(_settings, _engine.Manager)
+        frm.Show(Me)
+        Log("Condition Batch Validator 열림")
+    End Sub
+
 
 
 
@@ -283,5 +313,7 @@ Public Class SimTradeForm
     End Sub
 
 End Class
+
+
 
 

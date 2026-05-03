@@ -2251,6 +2251,48 @@ Public Class CircuitDesignerForm
         Return value.ToString(fmt)
     End Function
 
+
+    Public Function RunRangeValidationForStockForBatch(code As String,
+                                                       fromDate As Date,
+                                                       toDate As Date,
+                                                       targetPct As Double,
+                                                       stopPct As Double) As RangeSignalQualitySummary
+        Dim summary As RangeSignalQualitySummary = Nothing
+
+        If String.IsNullOrWhiteSpace(code) Then
+            summary = New RangeSignalQualitySummary()
+            Return summary
+        End If
+
+        Dim cleanCode As String = code.Trim()
+
+        If _txtStockCode IsNot Nothing Then
+            _txtStockCode.Text = cleanCode
+        End If
+
+        OnLoadStock(Me, EventArgs.Empty)
+
+        If _candles Is Nothing OrElse _candles.Count <= 0 Then
+            summary = New RangeSignalQualitySummary()
+            summary.Code = cleanCode
+            summary.Name = cleanCode
+            summary.RiskFlags = "NO_CANDLE"
+            Return summary
+        End If
+
+        RunSingleStockDateRangeValidation(fromDate.Date, toDate.Date, targetPct, stopPct)
+
+        summary = GetLastRangeSignalQualitySummarySnapshot()
+        If summary Is Nothing Then
+            summary = New RangeSignalQualitySummary()
+        End If
+
+        If String.IsNullOrWhiteSpace(summary.Code) Then summary.Code = cleanCode
+        If String.IsNullOrWhiteSpace(summary.Name) Then summary.Name = _stockName
+
+        Return summary
+    End Function
+
     Private Sub OnValidationRowDoubleClick(sender As Object, e As DataGridViewCellEventArgs)
         If e.RowIndex < 0 OrElse e.RowIndex >= _dgvValidation.Rows.Count Then Return
         Dim obj As Object = _dgvValidation.Rows(e.RowIndex).Cells("Idx").Value
@@ -2965,5 +3007,6 @@ Module GraphicsExtensions
         End Using
     End Sub
 End Module
+
 
 
