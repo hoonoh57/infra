@@ -32,6 +32,7 @@ Public Class CircuitDesignerForm
     Private _conditionScores As New Dictionary(Of String, Double)  ' C1~C7 충족률 0.0~1.0+
     Private _overallScore As Double = 0.0
     Private _lastEvalResult As CircuitEvalResult = Nothing
+    Private _lastEvaluatedState As StockState = Nothing
 
     ' ── UI 컨트롤 ──
     Private WithEvents _pnlChart As New DoubleBufferedPanel()
@@ -619,6 +620,9 @@ Public Class CircuitDesignerForm
         tempState.Name = _stockName
         tempState.CurrentPrice = CInt(c.Close)
         ExtractIndicators(tempState)
+
+        ' Store exact StockState used by current candle evaluation.
+        _lastEvaluatedState = tempState
 
         ' 회로 평가
         _lastEvalResult = _engine.Evaluate(tempState, 0, 0, 0)
@@ -2022,7 +2026,10 @@ Public Class CircuitDesignerForm
 
     Private Sub RunSingleStockDateRangeValidation(fromDate As Date, toDate As Date,
                                                   targetPct As Double, stopPct As Double)
+        If _candles Is Nothing OrElse _candles.Count < 2 Then Return
+
         _dgvValidation.Rows.Clear()
+        EnsureValidationAnalysisColumns()
 
         Dim signalCount As Integer = 0
         Dim targetCount As Integer = 0
@@ -2031,47 +2038,77 @@ Public Class CircuitDesignerForm
 
         Dim originalIndex As Integer = _currentCandleIndex
 
-        For i As Integer = 0 To _candles.Count - 2
-            Dim c As CandleItem = _candles(i)
-            If c Is Nothing Then Continue For
-            If c.Dt.Date < fromDate OrElse c.Dt.Date > toDate Then Continue For
+        Try
+            For i As Integer = 0 To _candles.Count - 2
+                Dim c As CandleItem = _candles(i)
+                If c Is Nothing Then Continue For
 
-            EvaluateAtCandle(i)
+                If c.Dt.Date < fromDate OrElse c.Dt.Date > toDate Then
+                    Continue For
+                End If
 
-            If _lastEvalResult IsNot Nothing AndAlso _lastEvalResult.BuySignal Then
+                ' 핵심:
+                ' 현재 화면에 남아 있는 _lastEvalResult를 쓰지 않고,
+                ' 반드시 i번째 봉을 먼저 평가한 뒤 그 결과만 사용한다.
+                _currentCandleIndex = i
+                EvaluateAtCandle(i)
+
+                Dim isBuySignal As Boolean = False
+                If _lastEvalResult IsNot Nothing AndAlso _lastEvalResult.BuySignal Then
+                    isBuySignal = True
+                End If
+
+                If Not isBuySignal Then
+                    Continue For
+                End If
+
                 If i - lastSignalIndex <= _validationSignalCooldownBars Then
                     Continue For
                 End If
 
                 Dim record As CircuitValidationSignal = BuildValidationSignal(i, targetPct, stopPct)
-                If record IsNot Nothing Then
-                    AddValidationSignalRow(record)
-                    signalCount += 1
-                    If record.TargetReached Then targetCount += 1
-                    If record.StopReached Then stopCount += 1
-                    lastSignalIndex = i
+                If record Is Nothing Then
+                    Continue For
                 End If
+
+                AddValidationSignalRow(record)
+                FillValidationAnalysisForLastRow(i, targetPct)
+
+                signalCount += 1
+                If record.TargetReached Then targetCount += 1
+                If record.StopReached Then stopCount += 1
+
+                lastSignalIndex = i
+            Next
+
+        Finally
+            If originalIndex >= 0 AndAlso originalIndex < _candles.Count Then
+                _currentCandleIndex = originalIndex
+
+                If _trkCandle IsNot Nothing Then
+                    _trkCandle.Value = originalIndex
+                End If
+
+                EvaluateAtCandle(originalIndex)
+                EnsureCandleVisible(originalIndex)
+
+                _pnlChart.Invalidate()
+                _canvas.Invalidate()
+                _pnlScore.Invalidate()
             End If
-        Next
+        End Try
 
-        If originalIndex >= 0 AndAlso originalIndex < _candles.Count Then
-            _currentCandleIndex = originalIndex
-            If _trkCandle IsNot Nothing Then _trkCandle.Value = originalIndex
-            EvaluateAtCandle(originalIndex)
-            EnsureCandleVisible(originalIndex)
+        Dim targetRate As Double = 0.0R
+        Dim stopRate As Double = 0.0R
+
+        If signalCount > 0 Then
+            targetRate = CDbl(targetCount) / CDbl(signalCount) * 100.0R
+            stopRate = CDbl(stopCount) / CDbl(signalCount) * 100.0R
         End If
-
-        _pnlChart.Invalidate()
-        _canvas.Invalidate()
-        _pnlScore.Invalidate()
-
-        Dim targetRate As Double = If(signalCount > 0, CDbl(targetCount) / signalCount * 100.0, 0.0)
-        Dim stopRate As Double = If(signalCount > 0, CDbl(stopCount) / signalCount * 100.0, 0.0)
 
         _lblResult.Text = $"{_stockCode} {_stockName} | RangeTest signals={signalCount}, target={targetCount}({targetRate:F1}%), stop={stopCount}({stopRate:F1}%)"
         _lblResult.ForeColor = If(signalCount > 0, Color.LightGreen, Color.Orange)
     End Sub
-
     Private Function BuildValidationSignal(candleIndex As Integer, targetPct As Double,
                                            stopPct As Double) As CircuitValidationSignal
         If candleIndex < 0 OrElse candleIndex >= _candles.Count Then Return Nothing
@@ -2229,6 +2266,338 @@ Public Class CircuitDesignerForm
 #End Region
 
 
+
+#Region "Range Test analysis v1"
+
+    Private Sub EnsureValidationAnalysisColumns()
+        AddValidationAnalysisColumn("Seq", "Seq", 45)
+        AddValidationAnalysisColumn("PrevGap", "PrevGap", 65)
+        AddValidationAnalysisColumn("OpenPct", "Open%", 65)
+        AddValidationAnalysisColumn("LowPct", "Low%", 65)
+        AddValidationAnalysisColumn("HighGapPct", "HighGap%", 75)
+        AddValidationAnalysisColumn("TickVsMA5", "Tick/MA5", 70)
+        AddValidationAnalysisColumn("TickVsMA20", "Tick/MA20", 75)
+
+        AddValidationAnalysisColumn("MFE10M", "MFE10M", 70)
+        AddValidationAnalysisColumn("MFE30M", "MFE30M", 70)
+        AddValidationAnalysisColumn("MFE60M", "MFE60M", 70)
+        AddValidationAnalysisColumn("MAE10M", "MAE10M", 70)
+        AddValidationAnalysisColumn("MAE30M", "MAE30M", 70)
+        AddValidationAnalysisColumn("MAE60M", "MAE60M", 70)
+
+        AddValidationAnalysisColumn("T10", "T10", 45)
+        AddValidationAnalysisColumn("T30", "T30", 45)
+        AddValidationAnalysisColumn("T60", "T60", 45)
+
+        AddValidationAnalysisColumn("ExitReason", "ExitReason", 150)
+        AddValidationAnalysisColumn("RealizedPct", "Realized%", 75)
+        AddValidationAnalysisColumn("HoldMin", "HoldMin", 65)
+        AddValidationAnalysisColumn("Ban", "Ban", 45)
+        AddValidationAnalysisColumn("RiskFlags", "RiskFlags", 220)
+    End Sub
+
+    Private Sub AddValidationAnalysisColumn(name As String, headerText As String, width As Integer)
+        If _dgvValidation Is Nothing Then Return
+        If _dgvValidation.Columns.Contains(name) Then Return
+
+        Dim col As New DataGridViewTextBoxColumn()
+        col.Name = name
+        col.HeaderText = headerText
+        col.Width = width
+        _dgvValidation.Columns.Add(col)
+    End Sub
+
+    Private Sub FillValidationAnalysisForLastRow(entryIndex As Integer, targetPct As Double)
+        If _dgvValidation Is Nothing Then Return
+        If _dgvValidation.Rows.Count <= 0 Then Return
+        If _candles Is Nothing OrElse entryIndex < 0 OrElse entryIndex >= _candles.Count Then Return
+
+        EnsureValidationAnalysisColumns()
+
+        Dim row As DataGridViewRow = _dgvValidation.Rows(_dgvValidation.Rows.Count - 1)
+        Dim entryCandle As CandleItem = _candles(entryIndex)
+        If entryCandle Is Nothing Then Return
+
+        Dim entryPrice As Double = CDbl(entryCandle.Close)
+        If entryPrice <= 0.0R Then Return
+
+        Dim seq As Integer = _dgvValidation.Rows.Count
+        Dim prevGap As Integer = -1
+
+        If _dgvValidation.Rows.Count >= 2 AndAlso _dgvValidation.Columns.Contains("Idx") Then
+            Dim prevObj As Object = _dgvValidation.Rows(_dgvValidation.Rows.Count - 2).Cells("Idx").Value
+            Dim prevIdx As Integer = -1
+            If prevObj IsNot Nothing AndAlso Integer.TryParse(prevObj.ToString(), prevIdx) Then
+                prevGap = entryIndex - prevIdx
+            End If
+        End If
+
+        Dim dayOpen As Double = 0.0R
+        Dim dayLow As Double = Double.MaxValue
+        Dim dayHigh As Double = Double.MinValue
+        Dim prevClose As Double = 0.0R
+
+        For i As Integer = 0 To entryIndex
+            Dim c As CandleItem = _candles(i)
+            If c Is Nothing Then Continue For
+
+            If c.Dt.Date < entryCandle.Dt.Date Then
+                prevClose = CDbl(c.Close)
+                Continue For
+            End If
+
+            If c.Dt.Date <> entryCandle.Dt.Date Then Continue For
+
+            If dayOpen <= 0.0R Then dayOpen = CDbl(c.Open)
+            If CDbl(c.Low) < dayLow Then dayLow = CDbl(c.Low)
+            If CDbl(c.High) > dayHigh Then dayHigh = CDbl(c.High)
+        Next
+
+        Dim openPct As Double = CalcPct(entryPrice, dayOpen)
+        Dim lowPct As Double = CalcPct(entryPrice, dayLow)
+        Dim highGapPct As Double = 0.0R
+        If dayHigh > 0.0R Then
+            highGapPct = (entryPrice - dayHigh) / dayHigh * 100.0R
+        End If
+
+        Dim tick As Double = Double.NaN
+        Dim tickMA5 As Double = Double.NaN
+        Dim tickMA20 As Double = Double.NaN
+        Dim tickVsMA5 As Double = Double.NaN
+        Dim tickVsMA20 As Double = Double.NaN
+        Dim jmaTurn As Integer = 0
+
+        If _lastEvaluatedState IsNot Nothing Then
+            tick = _lastEvaluatedState.TickSum_Normalized
+            tickMA5 = _lastEvaluatedState.TickMA5_Normalized
+            tickMA20 = _lastEvaluatedState.TickMA20_Normalized
+            jmaTurn = _lastEvaluatedState.JMA_TurnBar
+        End If
+
+        If Not Double.IsNaN(tick) AndAlso Not Double.IsNaN(tickMA5) AndAlso Math.Abs(tickMA5) > 0.000001R Then
+            tickVsMA5 = tick / tickMA5
+        End If
+
+        If Not Double.IsNaN(tick) AndAlso Not Double.IsNaN(tickMA20) AndAlso Math.Abs(tickMA20) > 0.000001R Then
+            tickVsMA20 = tick / tickMA20
+        End If
+
+        Dim mfe10 As Double = 0.0R
+        Dim mae10 As Double = 0.0R
+        Dim mfe30 As Double = 0.0R
+        Dim mae30 As Double = 0.0R
+        Dim mfe60 As Double = 0.0R
+        Dim mae60 As Double = 0.0R
+
+        CalcTimeMfeMae(entryIndex, 10, entryPrice, mfe10, mae10)
+        CalcTimeMfeMae(entryIndex, 30, entryPrice, mfe30, mae30)
+        CalcTimeMfeMae(entryIndex, 60, entryPrice, mfe60, mae60)
+
+        Dim exitReason As String = ""
+        Dim realizedPct As Double = 0.0R
+        Dim holdMin As Double = 0.0R
+        Dim banAfterExit As Boolean = False
+
+        SimulateStandardExit(entryIndex, targetPct, exitReason, realizedPct, holdMin, banAfterExit)
+
+        Dim riskFlags As String = BuildRangeRiskFlags(seq, prevGap, openPct, lowPct, highGapPct,
+                                                       tickVsMA5, tickVsMA20, jmaTurn,
+                                                       prevClose, dayOpen, mfe30, mae10)
+
+        SetValidationCell(row, "Seq", seq.ToString())
+        SetValidationCell(row, "PrevGap", If(prevGap < 0, "-", prevGap.ToString()))
+        SetValidationCell(row, "OpenPct", FmtPct(openPct))
+        SetValidationCell(row, "LowPct", FmtPct(lowPct))
+        SetValidationCell(row, "HighGapPct", FmtPct(highGapPct))
+        SetValidationCell(row, "TickVsMA5", FmtRatio(tickVsMA5))
+        SetValidationCell(row, "TickVsMA20", FmtRatio(tickVsMA20))
+
+        SetValidationCell(row, "MFE10M", FmtPct(mfe10))
+        SetValidationCell(row, "MFE30M", FmtPct(mfe30))
+        SetValidationCell(row, "MFE60M", FmtPct(mfe60))
+        SetValidationCell(row, "MAE10M", FmtPct(mae10))
+        SetValidationCell(row, "MAE30M", FmtPct(mae30))
+        SetValidationCell(row, "MAE60M", FmtPct(mae60))
+
+        SetValidationCell(row, "T10", If(mfe10 >= targetPct, "Y", "-"))
+        SetValidationCell(row, "T30", If(mfe30 >= targetPct, "Y", "-"))
+        SetValidationCell(row, "T60", If(mfe60 >= targetPct, "Y", "-"))
+
+        SetValidationCell(row, "ExitReason", exitReason)
+        SetValidationCell(row, "RealizedPct", FmtPct(realizedPct))
+        SetValidationCell(row, "HoldMin", holdMin.ToString("F0"))
+        SetValidationCell(row, "Ban", If(banAfterExit, "Y", "-"))
+        SetValidationCell(row, "RiskFlags", riskFlags)
+    End Sub
+
+    Private Sub SetValidationCell(row As DataGridViewRow, columnName As String, valueText As String)
+        If row Is Nothing OrElse _dgvValidation Is Nothing Then Return
+        If Not _dgvValidation.Columns.Contains(columnName) Then Return
+
+        row.Cells(columnName).Value = valueText
+    End Sub
+
+    Private Function CalcPct(currentValue As Double, baseValue As Double) As Double
+        If baseValue <= 0.0R Then Return 0.0R
+        Return (currentValue - baseValue) / baseValue * 100.0R
+    End Function
+
+    Private Function FmtPct(value As Double) As String
+        If Double.IsNaN(value) OrElse Double.IsInfinity(value) Then Return "-"
+        Return value.ToString("F2") & "%"
+    End Function
+
+    Private Function FmtRatio(value As Double) As String
+        If Double.IsNaN(value) OrElse Double.IsInfinity(value) Then Return "-"
+        Return value.ToString("F2")
+    End Function
+
+    Private Sub CalcTimeMfeMae(entryIndex As Integer, minutesForward As Integer,
+                               entryPrice As Double, ByRef mfe As Double, ByRef mae As Double)
+        mfe = 0.0R
+        mae = 0.0R
+
+        If _candles Is Nothing OrElse entryIndex < 0 OrElse entryIndex >= _candles.Count Then Return
+        If entryPrice <= 0.0R Then Return
+
+        Dim entryTime As DateTime = _candles(entryIndex).Dt
+        Dim limitTime As DateTime = entryTime.AddMinutes(minutesForward)
+
+        For i As Integer = entryIndex + 1 To _candles.Count - 1
+            Dim c As CandleItem = _candles(i)
+            If c Is Nothing Then Continue For
+            If c.Dt.Date <> entryTime.Date Then Exit For
+            If c.Dt > limitTime Then Exit For
+
+            Dim highRet As Double = (CDbl(c.High) - entryPrice) / entryPrice * 100.0R
+            Dim lowRet As Double = (CDbl(c.Low) - entryPrice) / entryPrice * 100.0R
+
+            If highRet > mfe Then mfe = highRet
+            If lowRet < mae Then mae = lowRet
+        Next
+    End Sub
+
+    Private Sub SimulateStandardExit(entryIndex As Integer, targetPct As Double,
+                                     ByRef exitReason As String,
+                                     ByRef realizedPct As Double,
+                                     ByRef holdMin As Double,
+                                     ByRef banAfterExit As Boolean)
+        exitReason = "NO_EXIT"
+        realizedPct = 0.0R
+        holdMin = 0.0R
+        banAfterExit = False
+
+        If _candles Is Nothing OrElse entryIndex < 0 OrElse entryIndex >= _candles.Count Then Return
+
+        Dim entryCandle As CandleItem = _candles(entryIndex)
+        Dim entryPrice As Double = CDbl(entryCandle.Close)
+        If entryPrice <= 0.0R Then Return
+
+        Dim targetReached As Boolean = False
+        Dim exitIndex As Integer = -1
+        Dim exitPrice As Double = entryPrice
+
+        For i As Integer = entryIndex + 1 To _candles.Count - 1
+            Dim c As CandleItem = _candles(i)
+            If c Is Nothing Then Continue For
+            If c.Dt.Date <> entryCandle.Dt.Date Then Exit For
+
+            EvaluateAtCandle(i)
+
+            If CDbl(c.High) >= entryPrice * (1.0R + targetPct / 100.0R) Then
+                targetReached = True
+            End If
+
+            Dim stDown As Boolean = False
+            Dim jmaDown As Boolean = False
+
+            If _lastEvaluatedState IsNot Nothing Then
+                stDown = (_lastEvaluatedState.ST_Direction <= 0)
+                jmaDown = (_lastEvaluatedState.JMA_Direction <= 0)
+            End If
+
+            If stDown Then
+                exitReason = "ST_DOWN_FORCE_EXIT"
+                exitIndex = i
+                exitPrice = CDbl(c.Close)
+                Exit For
+            End If
+
+            If jmaDown Then
+                If targetReached Then
+                    exitReason = "TARGET_THEN_JMA_DOWN"
+                    exitIndex = i
+                    exitPrice = CDbl(c.Close)
+                    banAfterExit = True
+                    Exit For
+                Else
+                    ' 목표수익 전 JMA 하락이지만 SuperTrend가 아직 상승이면 보유한다.
+                End If
+            End If
+        Next
+
+        If exitIndex < 0 Then
+            Dim lastIndex As Integer = entryIndex
+            For i As Integer = entryIndex + 1 To _candles.Count - 1
+                Dim c As CandleItem = _candles(i)
+                If c Is Nothing Then Continue For
+                If c.Dt.Date <> entryCandle.Dt.Date Then Exit For
+                lastIndex = i
+            Next
+
+            exitIndex = lastIndex
+            exitPrice = CDbl(_candles(exitIndex).Close)
+            exitReason = If(targetReached, "TARGET_NO_JMA_EXIT", "LAST_BAR_NO_TARGET")
+        End If
+
+        realizedPct = (exitPrice - entryPrice) / entryPrice * 100.0R
+        holdMin = (_candles(exitIndex).Dt - entryCandle.Dt).TotalMinutes
+    End Sub
+
+    Private Function BuildRangeRiskFlags(seq As Integer, prevGap As Integer,
+                                         openPct As Double, lowPct As Double, highGapPct As Double,
+                                         tickVsMA5 As Double, tickVsMA20 As Double, jmaTurn As Integer,
+                                         prevClose As Double, dayOpen As Double,
+                                         mfe30 As Double, mae10 As Double) As String
+        Dim flags As New List(Of String)()
+
+        If prevClose > 0.0R AndAlso dayOpen > 0.0R Then
+            Dim gapPct As Double = (dayOpen - prevClose) / prevClose * 100.0R
+            If gapPct >= 5.0R Then flags.Add("GAP_OVERHEAT")
+        End If
+
+        If openPct >= 8.0R AndAlso openPct <= 12.0R Then
+            flags.Add("VI_NEAR")
+        End If
+
+        If seq >= 2 Then
+            flags.Add("POST_SURGE_REENTRY")
+        End If
+
+        If lowPct >= 8.0R Then
+            flags.Add("HIGH_CHASE")
+        End If
+
+        If highGapPct <= -1.5R Then
+            flags.Add("FAKE_BREAK_OR_PULLBACK")
+        End If
+
+        If Not Double.IsNaN(tickVsMA5) AndAlso tickVsMA5 >= 1.5R AndAlso mfe30 < 1.5R Then
+            flags.Add("TICK_NO_PRICE_EFF")
+        End If
+
+        If jmaTurn >= 10 Then
+            flags.Add("JMA_LATE")
+        End If
+
+        If mae10 <= -1.5R Then
+            flags.Add("FAST_ADVERSE_MOVE")
+        End If
+
+        Return String.Join("|", flags)
+    End Function
+
+#End Region
 End Class
 
 ''' <summary>더블 버퍼링 지원 Panel (차트 깜박임 방지)</summary>
