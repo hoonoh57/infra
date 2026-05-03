@@ -1,4 +1,4 @@
-' ═══════════════════════════════════════════════════════════════
+﻿' ═══════════════════════════════════════════════════════════════
 ' CircuitDesignerForm.vb — Phase 1: 캔들 차트 + 3색 신호 + 전략 점수
 ' ═══════════════════════════════════════════════════════════════
 ' [v5.0] 캔들 차트 클릭 → 지표 계산 → 회로 평가 → 3색 LED + 게이지 + 점수
@@ -50,6 +50,7 @@ Public Class CircuitDesignerForm
     Private _btnRunValidation As Button
     Private WithEvents _dgvValidation As New DataGridView()
     Private _validationSignalCooldownBars As Integer = 3
+    Private _lastRangeSignalQualityResults As New List(Of RangeSignalQualityResult)()
 
     ' ── 상단 ──
     Private _txtStockCode As TextBox
@@ -2029,6 +2030,7 @@ Public Class CircuitDesignerForm
         If _candles Is Nothing OrElse _candles.Count < 2 Then Return
 
         _dgvValidation.Rows.Clear()
+        _lastRangeSignalQualityResults.Clear()
         EnsureValidationAnalysisColumns()
 
         Dim signalCount As Integer = 0
@@ -2073,6 +2075,11 @@ Public Class CircuitDesignerForm
 
                 AddValidationSignalRow(record)
                 FillValidationAnalysisForLastRow(i, targetPct)
+
+                Dim quality As RangeSignalQualityResult = BuildRangeSignalQualityResultFromValidationRow(_dgvValidation.Rows.Count - 1)
+                If quality IsNot Nothing Then
+                    _lastRangeSignalQualityResults.Add(quality)
+                End If
 
                 signalCount += 1
                 If record.TargetReached Then targetCount += 1
@@ -2429,6 +2436,110 @@ Public Class CircuitDesignerForm
         SetValidationCell(row, "Ban", If(banAfterExit, "Y", "-"))
         SetValidationCell(row, "RiskFlags", riskFlags)
     End Sub
+    Private Function BuildRangeSignalQualityResultFromValidationRow(rowIndex As Integer) As RangeSignalQualityResult
+        If _dgvValidation Is Nothing Then Return Nothing
+        If rowIndex < 0 OrElse rowIndex >= _dgvValidation.Rows.Count Then Return Nothing
+
+        Dim row As DataGridViewRow = _dgvValidation.Rows(rowIndex)
+
+        Dim result As New RangeSignalQualityResult()
+        result.Code = _stockCode
+        result.Name = _stockName
+
+        result.EntryIndex = ParseValidationInt(row, "Idx", -1)
+        If _candles IsNot Nothing AndAlso result.EntryIndex >= 0 AndAlso result.EntryIndex < _candles.Count Then
+            result.EntryTime = _candles(result.EntryIndex).Dt
+            result.EntryPrice = CDbl(_candles(result.EntryIndex).Close)
+        Else
+            result.EntryTime = DateTime.MinValue
+            result.EntryPrice = ParseValidationDouble(row, "Price", 0.0R)
+        End If
+
+        result.Seq = ParseValidationInt(row, "Seq", 0)
+        result.PrevGap = ParseValidationInt(row, "PrevGap", -1)
+
+        result.OpenPct = ParseValidationDouble(row, "OpenPct", 0.0R)
+        result.LowPct = ParseValidationDouble(row, "LowPct", 0.0R)
+        result.HighGapPct = ParseValidationDouble(row, "HighGapPct", 0.0R)
+
+        result.Tick = ParseValidationDouble(row, "Tick", 0.0R)
+        result.TickMA5 = ParseValidationDouble(row, "MA5", 0.0R)
+        result.TickMA20 = 0.0R
+        result.TickVsMA5 = ParseValidationDouble(row, "TickVsMA5", 0.0R)
+        result.TickVsMA20 = ParseValidationDouble(row, "TickVsMA20", 0.0R)
+
+        result.MFE10M = ParseValidationDouble(row, "MFE10M", 0.0R)
+        result.MFE30M = ParseValidationDouble(row, "MFE30M", 0.0R)
+        result.MFE60M = ParseValidationDouble(row, "MFE60M", 0.0R)
+
+        result.MAE10M = ParseValidationDouble(row, "MAE10M", 0.0R)
+        result.MAE30M = ParseValidationDouble(row, "MAE30M", 0.0R)
+        result.MAE60M = ParseValidationDouble(row, "MAE60M", 0.0R)
+
+        result.T10 = ParseValidationBool(row, "T10")
+        result.T30 = ParseValidationBool(row, "T30")
+        result.T60 = ParseValidationBool(row, "T60")
+
+        result.ExitReason = GetValidationCellText(row, "ExitReason")
+        result.RealizedPct = ParseValidationDouble(row, "RealizedPct", 0.0R)
+        result.HoldMin = ParseValidationDouble(row, "HoldMin", 0.0R)
+
+        result.BanAfterExit = ParseValidationBool(row, "Ban")
+        result.RiskFlags = GetValidationCellText(row, "RiskFlags")
+
+        result.LeaderScore = 0.0R
+
+        Return result
+    End Function
+
+    Private Function GetValidationCellText(row As DataGridViewRow, columnName As String) As String
+        If row Is Nothing Then Return ""
+        If _dgvValidation Is Nothing Then Return ""
+        If Not _dgvValidation.Columns.Contains(columnName) Then Return ""
+
+        Dim value As Object = row.Cells(columnName).Value
+        If value Is Nothing Then Return ""
+
+        Return Convert.ToString(value).Trim()
+    End Function
+
+    Private Function ParseValidationInt(row As DataGridViewRow, columnName As String, defaultValue As Integer) As Integer
+        Dim text As String = GetValidationCellText(row, columnName)
+        If String.IsNullOrWhiteSpace(text) Then Return defaultValue
+        If text = "-" Then Return defaultValue
+
+        text = text.Replace(",", "").Replace("%", "").Replace("x", "").Trim()
+
+        Dim parsed As Integer = 0
+        If Integer.TryParse(text, parsed) Then Return parsed
+
+        Dim parsedDouble As Double = 0.0R
+        If Double.TryParse(text, parsedDouble) Then Return CInt(Math.Round(parsedDouble))
+
+        Return defaultValue
+    End Function
+
+    Private Function ParseValidationDouble(row As DataGridViewRow, columnName As String, defaultValue As Double) As Double
+        Dim text As String = GetValidationCellText(row, columnName)
+        If String.IsNullOrWhiteSpace(text) Then Return defaultValue
+        If text = "-" Then Return defaultValue
+
+        text = text.Replace(",", "").Replace("%", "").Replace("x", "").Trim()
+
+        Dim parsed As Double = 0.0R
+        If Double.TryParse(text, parsed) Then Return parsed
+
+        Return defaultValue
+    End Function
+
+    Private Function ParseValidationBool(row As DataGridViewRow, columnName As String) As Boolean
+        Dim text As String = GetValidationCellText(row, columnName)
+        If String.IsNullOrWhiteSpace(text) Then Return False
+
+        text = text.Trim().ToUpperInvariant()
+
+        Return text = "Y" OrElse text = "TRUE" OrElse text = "1" OrElse text = "YES"
+    End Function
 
     Private Sub SetValidationCell(row As DataGridViewRow, columnName As String, valueText As String)
         If row Is Nothing OrElse _dgvValidation Is Nothing Then Return
@@ -2639,3 +2750,4 @@ Module GraphicsExtensions
         End Using
     End Sub
 End Module
+
