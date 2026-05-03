@@ -78,6 +78,19 @@ Namespace SimTrade.Circuit
                 result.BuySignal = buyGate.IsTriggered AndAlso result.ActiveFilterBlocks.Count = 0
             End If
 
+ 
+            ' Sync output nodes with final evaluated signals.
+            For Each node In _circuit.Nodes.Where(Function(n) n.NodeType = NodeType.Output)
+                Select Case node.Id
+                    Case "OUT_BUY"
+                        node.IsTriggered = result.BuySignal
+                        node.ProbeText = If(result.BuySignal, "BUY PASS", "BUY FAIL")
+                    Case Else
+                        node.IsTriggered = False
+                        node.ProbeText = "OUTPUT"
+                End Select
+                node.LastEvalTime = DateTime.Now
+            Next
             ' 조건 충족 수 계산
             For Each node In _circuit.Nodes.Where(Function(n) n.NodeType = NodeType.Condition AndAlso n.Category = "매수조건")
                 result.BuyConditionsTotal += 0  ' 이미 7로 초기화
