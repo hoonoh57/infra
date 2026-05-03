@@ -2487,7 +2487,7 @@ Public Class CircuitDesignerForm
         result.BanAfterExit = ParseValidationBool(row, "Ban")
         result.RiskFlags = GetValidationCellText(row, "RiskFlags")
 
-        result.LeaderScore = 0.0R
+        result.LeaderScore = CalculateRangeLeaderScore(result)
 
         Return result
     End Function
@@ -2539,6 +2539,221 @@ Public Class CircuitDesignerForm
         text = text.Trim().ToUpperInvariant()
 
         Return text = "Y" OrElse text = "TRUE" OrElse text = "1" OrElse text = "YES"
+    End Function
+
+
+    Private Function CalculateRangeLeaderScore(result As RangeSignalQualityResult) As Double
+        If result Is Nothing Then Return 0.0R
+
+        Dim score As Double = 0.0R
+
+        '  TickPowerScore 
+        If result.TickVsMA5 >= 1.5R Then score += 15.0R
+        If result.TickVsMA20 >= 1.5R Then score += 15.0R
+        If result.Tick >= 20.0R Then
+            score += 10.0R
+        ElseIf result.Tick >= 10.0R Then
+            score += 5.0R
+        End If
+
+        '  TickPositionScore 
+        If result.Seq = 1 Then score += 20.0R
+        If result.PrevGap >= 10 Then score += 5.0R
+        If result.LowPct <= 8.0R Then score += 10.0R
+        If result.HighGapPct >= -2.0R Then score += 10.0R
+
+        '  OutcomePreviewScore: 검증용. 실매매 신호에는 직접 사용하지 않음 
+        If result.T10 Then
+            score += 15.0R
+        ElseIf result.T30 Then
+            score += 10.0R
+        ElseIf result.T60 Then
+            score += 5.0R
+        End If
+
+        If result.MAE10M > -1.5R Then score += 5.0R
+        If result.RealizedPct > 0.0R Then score += 5.0R
+
+        '  RiskPenalty 
+        If HasRangeRiskFlag(result, "POST_SURGE_REENTRY") Then score -= 20.0R
+        If HasRangeRiskFlag(result, "HIGH_CHASE") Then score -= 15.0R
+        If HasRangeRiskFlag(result, "TICK_NO_PRICE_EFF") Then score -= 20.0R
+        If HasRangeRiskFlag(result, "GAP_OVERHEAT") Then score -= 15.0R
+        If HasRangeRiskFlag(result, "VI_NEAR") Then score -= 20.0R
+        If HasRangeRiskFlag(result, "FAST_ADVERSE_MOVE") Then score -= 25.0R
+        If HasRangeRiskFlag(result, "JMA_LATE") Then score -= 10.0R
+
+        Return score
+    End Function
+
+    Private Function HasRangeRiskFlag(result As RangeSignalQualityResult, flagName As String) As Boolean
+        If result Is Nothing Then Return False
+        If String.IsNullOrWhiteSpace(result.RiskFlags) Then Return False
+        If String.IsNullOrWhiteSpace(flagName) Then Return False
+
+        Return result.RiskFlags.IndexOf(flagName, StringComparison.OrdinalIgnoreCase) >= 0
+    End Function
+
+    Public Function GetLastRangeSignalQualityResultsSnapshot() As List(Of RangeSignalQualityResult)
+        Dim snapshot As New List(Of RangeSignalQualityResult)()
+
+        If _lastRangeSignalQualityResults Is Nothing Then Return snapshot
+
+        For i As Integer = 0 To _lastRangeSignalQualityResults.Count - 1
+            Dim src As RangeSignalQualityResult = _lastRangeSignalQualityResults(i)
+            If src IsNot Nothing Then
+                snapshot.Add(CloneRangeSignalQualityResult(src))
+            End If
+        Next
+
+        Return snapshot
+    End Function
+
+    Public Function GetLastRangeSignalQualitySummarySnapshot() As RangeSignalQualitySummary
+        Return BuildRangeSignalQualitySummaryFromResults(_stockCode, _stockName, _lastRangeSignalQualityResults)
+    End Function
+
+    Private Function CloneRangeSignalQualityResult(src As RangeSignalQualityResult) As RangeSignalQualityResult
+        Dim dst As New RangeSignalQualityResult()
+
+        If src Is Nothing Then Return dst
+
+        dst.Code = src.Code
+        dst.Name = src.Name
+        dst.EntryIndex = src.EntryIndex
+        dst.EntryTime = src.EntryTime
+        dst.EntryPrice = src.EntryPrice
+
+        dst.Seq = src.Seq
+        dst.PrevGap = src.PrevGap
+
+        dst.OpenPct = src.OpenPct
+        dst.LowPct = src.LowPct
+        dst.HighGapPct = src.HighGapPct
+
+        dst.Tick = src.Tick
+        dst.TickMA5 = src.TickMA5
+        dst.TickMA20 = src.TickMA20
+        dst.TickVsMA5 = src.TickVsMA5
+        dst.TickVsMA20 = src.TickVsMA20
+
+        dst.MFE10M = src.MFE10M
+        dst.MFE30M = src.MFE30M
+        dst.MFE60M = src.MFE60M
+
+        dst.MAE10M = src.MAE10M
+        dst.MAE30M = src.MAE30M
+        dst.MAE60M = src.MAE60M
+
+        dst.T10 = src.T10
+        dst.T30 = src.T30
+        dst.T60 = src.T60
+
+        dst.ExitReason = src.ExitReason
+        dst.RealizedPct = src.RealizedPct
+        dst.HoldMin = src.HoldMin
+        dst.BanAfterExit = src.BanAfterExit
+        dst.RiskFlags = src.RiskFlags
+
+        dst.LeaderScore = src.LeaderScore
+
+        Return dst
+    End Function
+
+    Private Function BuildRangeSignalQualitySummaryFromResults(code As String,
+                                                              name As String,
+                                                              results As List(Of RangeSignalQualityResult)) As RangeSignalQualitySummary
+        Dim summary As New RangeSignalQualitySummary()
+        summary.Code = If(code, "")
+        summary.Name = If(name, "")
+        summary.FirstSignalTime = DateTime.MinValue
+        summary.BestExitReason = ""
+        summary.RiskFlags = ""
+        summary.Rank = 0
+
+        If results Is Nothing OrElse results.Count = 0 Then Return summary
+
+        summary.SignalCount = results.Count
+
+        Dim firstTimeSet As Boolean = False
+        Dim bestRealized As Double = Double.MinValue
+        Dim totalMAE10 As Double = 0.0R
+        Dim riskDict As New Dictionary(Of String, Boolean)(StringComparer.OrdinalIgnoreCase)
+
+        For i As Integer = 0 To results.Count - 1
+            Dim r As RangeSignalQualityResult = results(i)
+            If r Is Nothing Then Continue For
+
+            If Not firstTimeSet OrElse r.EntryTime < summary.FirstSignalTime Then
+                summary.FirstSignalTime = r.EntryTime
+                firstTimeSet = True
+            End If
+
+            If i = 0 Then
+                summary.BestMFE10M = r.MFE10M
+                summary.BestMFE30M = r.MFE30M
+                summary.BestMFE60M = r.MFE60M
+                summary.WorstMAE10M = r.MAE10M
+                summary.LeaderScore = r.LeaderScore
+            Else
+                If r.MFE10M > summary.BestMFE10M Then summary.BestMFE10M = r.MFE10M
+                If r.MFE30M > summary.BestMFE30M Then summary.BestMFE30M = r.MFE30M
+                If r.MFE60M > summary.BestMFE60M Then summary.BestMFE60M = r.MFE60M
+                If r.MAE10M < summary.WorstMAE10M Then summary.WorstMAE10M = r.MAE10M
+                If r.LeaderScore > summary.LeaderScore Then summary.LeaderScore = r.LeaderScore
+            End If
+
+            totalMAE10 += r.MAE10M
+
+            If r.T10 Then summary.Target10Count += 1
+            If r.T30 Then summary.Target30Count += 1
+            If r.T60 Then summary.Target60Count += 1
+
+            If r.RealizedPct > bestRealized Then
+                bestRealized = r.RealizedPct
+                summary.BestExitReason = r.ExitReason
+            End If
+
+            AddRiskFlagsToDictionary(r.RiskFlags, riskDict)
+        Next
+
+        If results.Count > 0 Then
+            summary.AvgMAE10M = totalMAE10 / CDbl(results.Count)
+        End If
+
+        summary.RiskFlags = JoinRiskFlags(riskDict)
+
+        Return summary
+    End Function
+
+    Private Sub AddRiskFlagsToDictionary(flagsText As String, riskDict As Dictionary(Of String, Boolean))
+        If riskDict Is Nothing Then Return
+        If String.IsNullOrWhiteSpace(flagsText) Then Return
+        If flagsText.Trim() = "-" Then Return
+
+        Dim separators As Char() = New Char() {","c, ";"c, "|"c, " "c}
+        Dim parts As String() = flagsText.Split(separators, StringSplitOptions.RemoveEmptyEntries)
+
+        For i As Integer = 0 To parts.Length - 1
+            Dim flag As String = parts(i).Trim()
+            If flag.Length > 0 AndAlso Not riskDict.ContainsKey(flag) Then
+                riskDict.Add(flag, True)
+            End If
+        Next
+    End Sub
+
+    Private Function JoinRiskFlags(riskDict As Dictionary(Of String, Boolean)) As String
+        If riskDict Is Nothing OrElse riskDict.Count = 0 Then Return ""
+
+        Dim items As New List(Of String)()
+
+        For Each kvp As KeyValuePair(Of String, Boolean) In riskDict
+            items.Add(kvp.Key)
+        Next
+
+        items.Sort()
+
+        Return String.Join(",", items.ToArray())
     End Function
 
     Private Sub SetValidationCell(row As DataGridViewRow, columnName As String, valueText As String)
@@ -2750,4 +2965,5 @@ Module GraphicsExtensions
         End Using
     End Sub
 End Module
+
 
