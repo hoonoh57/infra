@@ -25,6 +25,8 @@ Public Class ConditionBatchValidatorForm
     Private ReadOnly _btnClose As New Button()
 
     Private ReadOnly _lblStatus As New Label()
+    Private ReadOnly _pnlTopNHitRate As New Panel()
+    Private ReadOnly _lblTopNHitRate As New Label()
 
     Private ReadOnly _dgvUniverse As New DataGridView()
     Private ReadOnly _dgvSummary As New DataGridView()
@@ -174,6 +176,8 @@ Public Class ConditionBatchValidatorForm
         _lblStatus.ForeColor = Color.LightGray
         pnlTop.Controls.Add(_lblStatus)
 
+        BuildTopNHitRatePanel()
+
         Dim splitOuter As New SplitContainer()
         splitOuter.Dock = DockStyle.Fill
         splitOuter.Orientation = Orientation.Vertical
@@ -182,6 +186,7 @@ Public Class ConditionBatchValidatorForm
         splitOuter.Panel1.Padding = New Padding(0)
         splitOuter.Panel2.Padding = New Padding(0)
         Me.Controls.Add(splitOuter)
+        Me.Controls.Add(_pnlTopNHitRate)
         Me.Controls.Add(pnlTop)
 
         InitUniverseGrid()
@@ -204,6 +209,23 @@ Public Class ConditionBatchValidatorForm
         InitDetailGrid()
         _dgvDetail.Dock = DockStyle.Fill
         splitRight.Panel2.Controls.Add(_dgvDetail)
+    End Sub
+
+
+    Private Sub BuildTopNHitRatePanel()
+        _pnlTopNHitRate.Dock = DockStyle.Top
+        _pnlTopNHitRate.Height = 70
+        _pnlTopNHitRate.BackColor = Color.FromArgb(18, 21, 30)
+        _pnlTopNHitRate.Padding = New Padding(10, 6, 10, 6)
+
+        _lblTopNHitRate.Dock = DockStyle.Fill
+        _lblTopNHitRate.ForeColor = Color.FromArgb(200, 235, 255)
+        _lblTopNHitRate.BackColor = Color.Transparent
+        _lblTopNHitRate.Font = New Font("Consolas", 9.0F, FontStyle.Bold)
+        _lblTopNHitRate.TextAlign = ContentAlignment.MiddleLeft
+        _lblTopNHitRate.Text = "TopN Hit Rate: Batch 검증 후 표시됩니다."
+
+        _pnlTopNHitRate.Controls.Add(_lblTopNHitRate)
     End Sub
 
     Private Sub InitBaseGrid(grid As DataGridView)
@@ -399,6 +421,7 @@ Public Class ConditionBatchValidatorForm
 
             RankSummaries(summaries)
             RenderSummaries(summaries)
+            RenderTopNHitRate(summaries)
 
             _lblStatus.Text = "Batch 완료: Summary " & summaries.Count.ToString() & "개, Detail " & _dgvDetail.Rows.Count.ToString() & "개"
             _lblStatus.ForeColor = Color.LightGreen
@@ -551,9 +574,207 @@ Public Class ConditionBatchValidatorForm
         Return value.ToString("F2")
     End Function
 
+
+    Private Sub RenderTopNHitRate(summaries As List(Of RangeSignalQualitySummary))
+        If _lblTopNHitRate Is Nothing Then Return
+
+        If summaries Is Nothing OrElse summaries.Count = 0 Then
+            _lblTopNHitRate.Text = "TopN Hit Rate: 검증 결과 없음"
+            Return
+        End If
+
+        Dim topN As Integer = CInt(_numTopN.Value)
+        If topN < 1 Then topN = 1
+        If topN > summaries.Count Then topN = summaries.Count
+
+        Dim leaderTopCodes As New List(Of String)()
+        Dim sumMFE10 As Double = 0.0R
+        Dim sumMFE30 As Double = 0.0R
+        Dim sumMFE60 As Double = 0.0R
+        Dim sumMAE10 As Double = 0.0R
+
+        Dim t10Hit As Integer = 0
+        Dim t30Hit As Integer = 0
+        Dim t60Hit As Integer = 0
+
+        Dim riskDict As New Dictionary(Of String, Boolean)(StringComparer.OrdinalIgnoreCase)
+
+        For i As Integer = 0 To topN - 1
+            Dim s As RangeSignalQualitySummary = summaries(i)
+            If s Is Nothing Then Continue For
+
+            If Not String.IsNullOrWhiteSpace(s.Code) Then
+                leaderTopCodes.Add(s.Code)
+            End If
+
+            sumMFE10 += s.BestMFE10M
+            sumMFE30 += s.BestMFE30M
+            sumMFE60 += s.BestMFE60M
+            sumMAE10 += s.AvgMAE10M
+
+            If s.Target10Count > 0 Then t10Hit += 1
+            If s.Target30Count > 0 Then t30Hit += 1
+            If s.Target60Count > 0 Then t60Hit += 1
+
+            AddSummaryRiskFlagsToDictionary(s.RiskFlags, riskDict)
+        Next
+
+        Dim actualMFE30TopCodes As List(Of String) = BuildActualTopCodesByMetric(summaries, topN, "MFE30")
+        Dim actualMFE60TopCodes As List(Of String) = BuildActualTopCodesByMetric(summaries, topN, "MFE60")
+
+        Dim overlap30 As Integer = CountCodeIntersection(leaderTopCodes, actualMFE30TopCodes)
+        Dim overlap60 As Integer = CountCodeIntersection(leaderTopCodes, actualMFE60TopCodes)
+
+        Dim avgMFE10 As Double = sumMFE10 / CDbl(topN)
+        Dim avgMFE30 As Double = sumMFE30 / CDbl(topN)
+        Dim avgMFE60 As Double = sumMFE60 / CDbl(topN)
+        Dim avgMAE10 As Double = sumMAE10 / CDbl(topN)
+
+        Dim t10Rate As Double = CDbl(t10Hit) / CDbl(topN) * 100.0R
+        Dim t30Rate As Double = CDbl(t30Hit) / CDbl(topN) * 100.0R
+        Dim t60Rate As Double = CDbl(t60Hit) / CDbl(topN) * 100.0R
+
+        Dim overlap30Rate As Double = CDbl(overlap30) / CDbl(topN) * 100.0R
+        Dim overlap60Rate As Double = CDbl(overlap60) / CDbl(topN) * 100.0R
+
+        Dim riskText As String = JoinSummaryRiskFlags(riskDict)
+        If String.IsNullOrWhiteSpace(riskText) Then riskText = "-"
+
+        _lblTopNHitRate.Text =
+            "TopN=" & topN.ToString() &
+            " | Avg MFE10/30/60=" & avgMFE10.ToString("F2") & "% / " & avgMFE30.ToString("F2") & "% / " & avgMFE60.ToString("F2") & "%" &
+            " | Avg MAE10=" & avgMAE10.ToString("F2") & "%" &
+            " | T10/T30/T60=" & t10Rate.ToString("F0") & "% / " & t30Rate.ToString("F0") & "% / " & t60Rate.ToString("F0") & "%" &
+            Environment.NewLine &
+            "Leader TopN  Actual MFE30 TopN=" & overlap30.ToString() & "/" & topN.ToString() & " (" & overlap30Rate.ToString("F0") & "%)" &
+            " | Leader TopN  Actual MFE60 TopN=" & overlap60.ToString() & "/" & topN.ToString() & " (" & overlap60Rate.ToString("F0") & "%)" &
+            " | TopN RiskFlags=" & riskText
+    End Sub
+
+    Private Function BuildActualTopCodesByMetric(summaries As List(Of RangeSignalQualitySummary),
+                                                 topN As Integer,
+                                                 metricName As String) As List(Of String)
+        Dim result As New List(Of String)()
+        If summaries Is Nothing OrElse summaries.Count = 0 Then Return result
+
+        Dim copied As New List(Of RangeSignalQualitySummary)()
+
+        For i As Integer = 0 To summaries.Count - 1
+            If summaries(i) IsNot Nothing Then
+                copied.Add(summaries(i))
+            End If
+        Next
+
+        If metricName.Equals("MFE60", StringComparison.OrdinalIgnoreCase) Then
+            copied.Sort(AddressOf CompareSummaryByMFE60Desc)
+        Else
+            copied.Sort(AddressOf CompareSummaryByMFE30Desc)
+        End If
+
+        Dim limit As Integer = topN
+        If limit > copied.Count Then limit = copied.Count
+
+        For i As Integer = 0 To limit - 1
+            If Not String.IsNullOrWhiteSpace(copied(i).Code) Then
+                result.Add(copied(i).Code)
+            End If
+        Next
+
+        Return result
+    End Function
+
+    Private Function CompareSummaryByMFE30Desc(a As RangeSignalQualitySummary, b As RangeSignalQualitySummary) As Integer
+        If a Is Nothing AndAlso b Is Nothing Then Return 0
+        If a Is Nothing Then Return 1
+        If b Is Nothing Then Return -1
+
+        Dim cmp As Integer = b.BestMFE30M.CompareTo(a.BestMFE30M)
+        If cmp <> 0 Then Return cmp
+
+        cmp = b.BestMFE10M.CompareTo(a.BestMFE10M)
+        If cmp <> 0 Then Return cmp
+
+        Return b.LeaderScore.CompareTo(a.LeaderScore)
+    End Function
+
+    Private Function CompareSummaryByMFE60Desc(a As RangeSignalQualitySummary, b As RangeSignalQualitySummary) As Integer
+        If a Is Nothing AndAlso b Is Nothing Then Return 0
+        If a Is Nothing Then Return 1
+        If b Is Nothing Then Return -1
+
+        Dim cmp As Integer = b.BestMFE60M.CompareTo(a.BestMFE60M)
+        If cmp <> 0 Then Return cmp
+
+        cmp = b.BestMFE30M.CompareTo(a.BestMFE30M)
+        If cmp <> 0 Then Return cmp
+
+        Return b.LeaderScore.CompareTo(a.LeaderScore)
+    End Function
+
+    Private Function CountCodeIntersection(leftCodes As List(Of String), rightCodes As List(Of String)) As Integer
+        If leftCodes Is Nothing OrElse rightCodes Is Nothing Then Return 0
+
+        Dim count As Integer = 0
+
+        For i As Integer = 0 To leftCodes.Count - 1
+            Dim code As String = leftCodes(i)
+            If String.IsNullOrWhiteSpace(code) Then Continue For
+
+            If ContainsCode(rightCodes, code) Then
+                count += 1
+            End If
+        Next
+
+        Return count
+    End Function
+
+    Private Function ContainsCode(codes As List(Of String), code As String) As Boolean
+        If codes Is Nothing Then Return False
+        If String.IsNullOrWhiteSpace(code) Then Return False
+
+        For i As Integer = 0 To codes.Count - 1
+            If String.Equals(codes(i), code, StringComparison.OrdinalIgnoreCase) Then
+                Return True
+            End If
+        Next
+
+        Return False
+    End Function
+
+    Private Sub AddSummaryRiskFlagsToDictionary(flagsText As String, riskDict As Dictionary(Of String, Boolean))
+        If riskDict Is Nothing Then Return
+        If String.IsNullOrWhiteSpace(flagsText) Then Return
+        If flagsText.Trim() = "-" Then Return
+
+        Dim separators As Char() = New Char() {","c, ";"c, "|"c, " "c}
+        Dim parts As String() = flagsText.Split(separators, StringSplitOptions.RemoveEmptyEntries)
+
+        For i As Integer = 0 To parts.Length - 1
+            Dim flag As String = parts(i).Trim()
+            If flag.Length > 0 AndAlso Not riskDict.ContainsKey(flag) Then
+                riskDict.Add(flag, True)
+            End If
+        Next
+    End Sub
+
+    Private Function JoinSummaryRiskFlags(riskDict As Dictionary(Of String, Boolean)) As String
+        If riskDict Is Nothing OrElse riskDict.Count = 0 Then Return ""
+
+        Dim items As New List(Of String)()
+
+        For Each kvp As KeyValuePair(Of String, Boolean) In riskDict
+            items.Add(kvp.Key)
+        Next
+
+        items.Sort()
+
+        Return String.Join(",", items.ToArray())
+    End Function
+
     Private Sub OnCloseClick(sender As Object, e As EventArgs)
         Me.Close()
     End Sub
 
 End Class
+
 
